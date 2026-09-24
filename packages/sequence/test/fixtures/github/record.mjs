@@ -19,6 +19,9 @@
 //     malformed-body.json, malformed-shape.json: GitHub does not hand out 5xx/429/malformed
 //     bodies on request, so these carry the documented shape of those responses (a JSON
 //     `message`, non-JSON text, or valid JSON in an unexpected shape) with `synthetic: true`.
+//   - workflow-runs-paginated-page1.json/-page2.json, workflow-runs-cap-page1..5.json: hand-built
+//     from the shape of workflow-runs-success.json to exercise `Link: rel="next"` pagination and
+//     the 5-page cap — a real SHA with >20 runs on this repo does not exist on demand.
 // Everything else here is a live recording, re-run to refresh it.
 
 import { writeFile } from 'node:fs/promises';
@@ -77,6 +80,13 @@ async function main() {
     'workflow-runs-unauthorized',
     `https://api.github.com/repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SUCCESS_SHA}&per_page=20`,
     { headers: { Authorization: 'Bearer ghp_invalidtokenxxxxxxxxxxxxxxxxxxxxxx' } },
+  );
+  // The full workflow *path* form, percent-encoded (`.github%2Fworkflows%2Fci.yml`) — GitHub 200s
+  // this too, but the unencoded form 404s. The adapter normalizes to the basename (`ci.yml`)
+  // rather than relying on this, so this fixture is evidence the alternative form also works.
+  await record(
+    'workflow-runs-success-path-form',
+    `https://api.github.com/repos/${REPO}/actions/workflows/${encodeURIComponent('.github/workflows/ci.yml')}/runs?head_sha=${SUCCESS_SHA}&per_page=20`,
   );
   await record('compare-ahead', `https://api.github.com/repos/${REPO}/compare/${OLDER_SHA}...${SUCCESS_SHA}`);
   await record('compare-behind', `https://api.github.com/repos/${REPO}/compare/${SUCCESS_SHA}...${OLDER_SHA}`);

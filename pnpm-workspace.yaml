@@ -1,0 +1,14 @@
+packages:
+  - apps/*
+  - packages/*
+  - e2e
+
+# Supply-chain policy, as in Foreman and D3 Auth: nothing published in the last seven days, no
+# provenance downgrades, no exotic transitive sources.
+minimumReleaseAge: 10080
+trustPolicy: no-downgrade
+trustPolicyIgnoreAfter: 43200
+blockExoticSubdeps: true
+
+# pnpm 10 runs no install scripts unless named; each entry is a decision recorded when it is added.
+onlyBuiltDependencies: []

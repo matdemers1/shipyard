@@ -1,0 +1,43 @@
+# Shipyard: server (internet-facing, no Docker access) + agent (Docker access, no port).
+# Skeleton only — images are published by CI from main as sha-<40hex>. Pin tags literally on a host.
+name: shipyard
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: shipyard
+      POSTGRES_DB: shipyard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shipyard"]
+      interval: 5s
+      retries: 10
+
+  server:
+    image: ghcr.io/matdemers1/shipyard/server:${SHIPYARD_TAG:-local}
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3300:3300"
+
+  agent:
+    image: ghcr.io/matdemers1/shipyard/agent:${SHIPYARD_TAG:-local}
+    env_file: .env
+    # No ports, ever (SHP-ADR-002). The socket is root-equivalent; the agent runs only
+    # manifest-defined argv steps (SHP-ADR-003).
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SHIPYARD_DATA_ROOT:-/srv/shipyard}:${SHIPYARD_DATA_ROOT:-/srv/shipyard}
+      # Each managed stack directory is added here at its IDENTICAL host path, by hand, when the
+      # app is onboarded (SHP-D-053, SHP-D-059), e.g.:
+      # - /DATA/foreman:/DATA/foreman
+    depends_on:
+      - server
+
+volumes:
+  postgres_data:

@@ -1,0 +1,14 @@
+{
+  "synthetic": true,
+  "status": 403,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-reset": "1790300000"
+  },
+  "body": {
+    "message": "API rate limit exceeded for 203.0.113.1. (But here's the good news: Authenticated requests get a higher rate limit. Check out the documentation for more details.)",
+    "documentation_url": "https://docs.github.com/rest#rate-limiting"
+  }
+}

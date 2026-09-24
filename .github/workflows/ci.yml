@@ -126,7 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           image="ghcr.io/${{ github.repository }}/${{ matrix.app }}:sha-${{ github.sha }}"
-          revision=$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' | jq -r '.Config.Labels["org.opencontainers.image.revision"]')
+          revision=$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' | jq -r '.config.Labels["org.opencontainers.image.revision"]')
           if [ "$revision" != "${{ github.sha }}" ]; then
             echo "revision label '$revision' does not match ${{ github.sha }}" >&2
             exit 1

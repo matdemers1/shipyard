@@ -144,7 +144,18 @@ function buildPaths(): Record<string, unknown> {
         operationId: 'postAuthLogout',
         security: [{ session: [] }],
         responses: {
-          '204': { description: 'Session ended.' },
+          '200': {
+            description: 'Session ended.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { ok: { type: 'boolean', const: true } },
+                  required: ['ok'],
+                },
+              },
+            },
+          },
           '401': ERROR_RESPONSE,
         },
       },

@@ -31,6 +31,7 @@ export function createApp(deps: AppDeps): Express {
 
   const app = express();
   app.disable('x-powered-by');
+  if (config.TRUST_PROXY_HOPS !== undefined) app.set('trust proxy', config.TRUST_PROXY_HOPS);
   app.use(express.json({ limit: '256kb' }));
 
   app.use((req, res, next) => {

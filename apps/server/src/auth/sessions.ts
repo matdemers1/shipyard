@@ -24,10 +24,14 @@ export async function createSession(
   input: { userId: string; method: SessionMethod; ip?: string | undefined; userAgent?: string | undefined },
 ): Promise<CreatedSession> {
   const token = randomBytes(32).toString('base64url');
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  // Both ends of the lifetime come from one clock. Letting the database default `created_at` while
+  // the expiry came from Node made the absolute lifetime drift by a millisecond or so.
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + SESSION_TTL_MS);
   const row = await db.session.create({
     data: {
       userId: input.userId,
+      createdAt,
       tokenHash: hashSessionToken(token),
       expiresAt,
       method: input.method,

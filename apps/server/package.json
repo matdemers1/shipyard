@@ -4,6 +4,11 @@
   "version": "0.0.0",
   "description": "Internet-facing: Express, Prisma, dual login, REST, MCP, SSE, outbox. Never touches Docker",
   "type": "module",
+  "files": [
+    "dist",
+    "prisma",
+    "prisma.config.ts"
+  ],
   "scripts": {
     "build": "pnpm --filter @shipyard/schema build && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",

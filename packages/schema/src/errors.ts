@@ -45,6 +45,7 @@ export const ErrorCode = z
     'ghcr_unreachable',
     'agent_offline',
     'conflict',
+    'too_many_attempts',
   ])
   .meta({ id: 'ErrorCode', description: 'Machine-readable refusal reason' });
 export type ErrorCode = z.infer<typeof ErrorCode>;
@@ -74,6 +75,11 @@ export const CATALOGUE: Record<ErrorCode, CatalogueEntry> = {
   ghcr_unreachable: { gate: 'none', httpStatus: 503, defaultFix: 'Retry once GHCR is reachable; the gate fails closed.' },
   agent_offline: { gate: 'none', httpStatus: 503, defaultFix: 'Check the agent long-poll connection and retry.' },
   conflict: { gate: 'none', httpStatus: 409, defaultFix: 'Refresh state and retry.' },
+  too_many_attempts: {
+    gate: 'none',
+    httpStatus: 429,
+    defaultFix: 'Too many failed sign-in attempts. Wait for the cooling-off period, then try again.',
+  },
 };
 
 export const Refusal = z

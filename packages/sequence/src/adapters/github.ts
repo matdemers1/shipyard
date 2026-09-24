@@ -25,6 +25,40 @@ const DEFAULT_BASE_URL = 'https://api.github.com';
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_USER_AGENT = 'shipyard-agent';
 const TOKEN_EXPIRY_HEADER = 'github-authentication-token-expiration';
+/** Cap on `workflowRuns` pagination: never follow more than this many `Link: rel="next"` pages. */
+const MAX_WORKFLOW_RUN_PAGES = 5;
+
+/**
+ * `repo`, `base`, `head` and `workflow` are each encoded per path segment (not as one joined
+ * string) so a literal `/` inside a segment — e.g. a workflow path like
+ * `.github/workflows/ci.yml` before it is normalized — is percent-encoded rather than treated as
+ * a path separator GitHub's router then 404s on.
+ */
+function encodeRepoPath(repo: string): string {
+  const slash = repo.indexOf('/');
+  if (slash === -1) return encodeURIComponent(repo);
+  return `${encodeURIComponent(repo.slice(0, slash))}/${encodeURIComponent(repo.slice(slash + 1))}`;
+}
+
+/**
+ * GitHub's workflow-runs endpoint wants a bare filename (`ci.yml`), not the workflow's repo path
+ * (`.github/workflows/ci.yml`) — the latter 404s unless every `/` is percent-encoded, which is
+ * unnecessary once we just take the basename. Accepts either form from the manifest.
+ */
+function normalizeWorkflowFilename(workflow: string): string {
+  const segments = workflow.split('/');
+  return segments[segments.length - 1] || workflow;
+}
+
+/** Parses `rel="next"` out of a `Link` response header (RFC 8288), or null if there is none. */
+function parseNextLink(linkHeader: string | null): string | null {
+  if (linkHeader === null) return null;
+  for (const part of linkHeader.split(',')) {
+    const match = /<([^>]+)>\s*;\s*rel="next"/.exec(part.trim());
+    if (match?.[1] !== undefined) return match[1];
+  }
+  return null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -180,19 +214,32 @@ export function createGitHubAdapter(options: GitHubAdapterOptions = {}): GitHubP
 
   return {
     async workflowRuns(repo, workflow, headSha) {
-      const url = `${baseUrl}/repos/${repo}/actions/workflows/${workflow}/runs?head_sha=${encodeURIComponent(headSha)}&per_page=20`;
-      const res = await request(url);
-      if (res.status === 404) return [];
+      const filename = encodeURIComponent(normalizeWorkflowFilename(workflow));
+      let url = `${baseUrl}/repos/${encodeRepoPath(repo)}/actions/workflows/${filename}/runs?head_sha=${encodeURIComponent(headSha)}&per_page=20`;
 
-      const body = await parseJson(res);
-      if (!isRecord(body) || !Array.isArray(body.workflow_runs)) {
-        throw unreachable('returned an unexpected response: missing workflow_runs');
+      const runs: WorkflowRun[] = [];
+      for (let page = 0; page < MAX_WORKFLOW_RUN_PAGES; page++) {
+        const res = await request(url);
+        if (res.status === 404) return page === 0 ? [] : runs;
+
+        const body = await parseJson(res);
+        if (!isRecord(body) || !Array.isArray(body.workflow_runs)) {
+          throw unreachable('returned an unexpected response: missing workflow_runs');
+        }
+        const pageRuns = body.workflow_runs.map(parseWorkflowRun);
+        runs.push(...pageRuns);
+
+        if (pageRuns.some((run) => run.conclusion === 'success')) break;
+
+        const next = parseNextLink(res.headers.get('link'));
+        if (next === null) break;
+        url = next;
       }
-      return body.workflow_runs.map(parseWorkflowRun);
+      return runs;
     },
 
     async compare(repo, base, head) {
-      const url = `${baseUrl}/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+      const url = `${baseUrl}/repos/${encodeRepoPath(repo)}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
       const res = await request(url);
       if (res.status === 404) return null;
 

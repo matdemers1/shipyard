@@ -96,6 +96,57 @@ describe('workflowRuns', () => {
     expect(err.refusal.message).toContain('GitHub');
     expect(err.refusal.fix.toLowerCase()).toContain('token');
   });
+
+  it('the path form (`.github/workflows/ci.yml`) resolves to the same request as the bare form (SHP-REQ-008)', async () => {
+    const bareFetch = fetchFor('workflow-runs-success');
+    const bareAdapter = createGitHubAdapter({ fetch: bareFetch });
+    await bareAdapter.workflowRuns(REPO, 'ci.yml', SUCCESS_SHA);
+    const bareUrl = (bareFetch as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
+
+    const pathFetch = fetchFor('workflow-runs-success-path-form');
+    const pathAdapter = createGitHubAdapter({ fetch: pathFetch });
+    const runs = await pathAdapter.workflowRuns(REPO, '.github/workflows/ci.yml', SUCCESS_SHA);
+    const pathUrl = (pathFetch as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
+
+    // The raw (unencoded) path form 404s on GitHub's real API; the adapter must never send it.
+    expect(pathUrl).not.toContain('.github/workflows/ci.yml');
+    expect(pathUrl).toBe(bareUrl);
+    expect(pathUrl).toContain('/actions/workflows/ci.yml/runs');
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ headSha: SUCCESS_SHA, conclusion: 'success' });
+  });
+
+  it('percent-encodes the repo owner and name in the request URL', async () => {
+    const fetchStub = fetchFor('workflow-runs-absent');
+    const adapter = createGitHubAdapter({ fetch: fetchStub });
+    await adapter.workflowRuns('weird/repo name', 'ci.yml', NO_RUN_SHA);
+    const url = (fetchStub as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
+    expect(url).toContain('/repos/weird/repo%20name/');
+  });
+
+  it('follows Link: rel="next" and finds a success run on page 2 (synthetic fixtures)', async () => {
+    const fetchStub = fetchFor('workflow-runs-paginated-page1', 'workflow-runs-paginated-page2');
+    const adapter = createGitHubAdapter({ fetch: fetchStub });
+    const runs = await adapter.workflowRuns(REPO, 'ci.yml', SUCCESS_SHA);
+    expect((fetchStub as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    expect(runs.some((r) => r.conclusion === 'success')).toBe(true);
+  });
+
+  it('caps pagination at 5 pages and never fetches a 6th (synthetic fixtures)', async () => {
+    const fetchStub = fetchFor(
+      'workflow-runs-cap-page1',
+      'workflow-runs-cap-page2',
+      'workflow-runs-cap-page3',
+      'workflow-runs-cap-page4',
+      'workflow-runs-cap-page5',
+    );
+    const adapter = createGitHubAdapter({ fetch: fetchStub });
+    const runs = await adapter.workflowRuns(REPO, 'ci.yml', SUCCESS_SHA);
+    expect((fetchStub as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(5);
+    expect(runs).toHaveLength(5);
+    expect(runs.some((r) => r.conclusion === 'success')).toBe(false);
+  });
 });
 
 describe('compare', () => {

@@ -1,0 +1,26 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-remaining": "50",
+    "x-ratelimit-limit": "60",
+    "link": "<https://api.github.com/repos/matdemers1/shipyard/actions/workflows/ci.yml/runs?head_sha=x&per_page=20&page=2>; rel=\"next\", <https://api.github.com/repos/matdemers1/shipyard/actions/workflows/ci.yml/runs?head_sha=x&per_page=20&page=2>; rel=\"last\""
+  },
+  "body": {
+    "total_count": 2,
+    "workflow_runs": [
+      {
+        "id": 9000001,
+        "name": "CI",
+        "head_branch": "main",
+        "head_sha": "30593dd333296f7f9ef5613ea1c211e9f32d310b",
+        "path": ".github/workflows/ci.yml",
+        "run_number": 1,
+        "event": "push",
+        "status": "in_progress",
+        "conclusion": null
+      }
+    ]
+  },
+  "synthetic": true
+}

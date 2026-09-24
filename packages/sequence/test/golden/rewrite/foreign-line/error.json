@@ -1,0 +1,9 @@
+{
+  "code": "image_line_invalid",
+  "messageIncludes": [
+    "app",
+    "input.yml",
+    "ghcr.io/someoneelse/other-app",
+    "ghcr.io/matdemers1/toy/app"
+  ]
+}

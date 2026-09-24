@@ -1,0 +1,9 @@
+{
+  "code": "image_line_invalid",
+  "messageIncludes": [
+    "app",
+    "input.yml",
+    "input.dup.yml",
+    "more than one"
+  ]
+}

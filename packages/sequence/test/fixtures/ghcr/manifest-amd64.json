@@ -1,0 +1,57 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/vnd.oci.image.manifest.v1+json"
+  },
+  "body": {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "config": {
+      "mediaType": "application/vnd.oci.image.config.v1+json",
+      "digest": "sha256:6cf93abf60e19725d617ebd3ac9881c332a74b12051b2a9babc5355e5bc78aef",
+      "size": 9969
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:6b37362b3da78869050b894b799ad4df04f1f3b52774087db0d81151570244c8",
+        "size": 29830418
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:02060ae1e876f8d070ce13ed6451b127ef011a20dc4ab3549cd051fd4a6df085",
+        "size": 3309
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:e1b80866eb6917e0f540d02842475c787b51e1531dcb33f1e5f0fbbbf4bec9b0",
+        "size": 49875891
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:81a6dbdb83fe8c5cc6daf2cc4895c54646592b6968d7d22eb4b1e93209168f9d",
+        "size": 1717618
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:19cff6dafcc18cc2d338d1588a07c9a8254091caf979bf511089cd5a15e8c64f",
+        "size": 447
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:60b10e4b235e731358b2ec1a67b5cd7765ed603de213d6aa044453155de2dad4",
+        "size": 24792981
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:d6b0aff6536db68af23a4adb3d5703aa4de0c19f43b6276caeda7cbde7786a70",
+        "size": 93
+      },
+      {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": "sha256:c61df434679211b29b4f220532a0be2b5db6fbf31563dcc8c1286152180685d2",
+        "size": 95981125
+      }
+    ]
+  }
+}

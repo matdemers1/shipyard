@@ -1,4 +1,5 @@
-import { isMap, isScalar, parseDocument } from 'yaml';
+import { isAlias, isMap, isScalar, parseDocument } from 'yaml';
+import { isDeepStrictEqual } from 'node:util';
 
 import { refusal } from '@shipyard/schema';
 
@@ -57,20 +58,43 @@ function repositoryOf(value: string): string {
   return withoutDigest.slice(0, tagStart);
 }
 
-function findImage(text: string, service: string): { range: [number, number]; quote: FoundImage['quote']; currentValue: string } | null {
+type FindImageResult =
+  | { kind: 'found'; range: [number, number]; quote: FoundImage['quote']; currentValue: string }
+  | { kind: 'absent' }
+  | { kind: 'invalid'; detail: string };
+
+/**
+ * Finds the `image:` line of a service, refusing (`kind: 'invalid'`) anything that is not a
+ * single-line plain or quoted scalar — a block scalar (`>`/`|`), an alias, or a flow scalar whose
+ * value spans more than one line. Splicing any of those in place would corrupt the surrounding
+ * document (SHP-REQ-013, SHP-REQ-014).
+ */
+function findImage(text: string, service: string): FindImageResult {
   const doc = parseDocument(text, { keepSourceTokens: true });
   const services = doc.get('services', true);
-  if (!isMap(services)) return null;
+  if (!isMap(services)) return { kind: 'absent' };
   const svc = services.get(service, true);
-  if (!isMap(svc)) return null;
+  if (!isMap(svc)) return { kind: 'absent' };
   const imagePair = svc.items.find((p) => isScalar(p.key) && p.key.value === 'image');
-  if (!imagePair) return null;
+  if (!imagePair) return { kind: 'absent' };
   const node = imagePair.value;
-  if (!isScalar(node) || typeof node.value !== 'string') return null;
+  if (isAlias(node)) {
+    return { kind: 'invalid', detail: 'is an alias, not a literal value' };
+  }
+  if (!isScalar(node) || typeof node.value !== 'string') {
+    return { kind: 'invalid', detail: 'is not a plain or quoted scalar value' };
+  }
+  if (node.type === 'BLOCK_FOLDED' || node.type === 'BLOCK_LITERAL') {
+    return { kind: 'invalid', detail: 'is a block scalar (">" or "|") spanning multiple lines' };
+  }
   const range = node.range;
-  if (!range) return null;
+  if (!range) return { kind: 'invalid', detail: 'has no source range' };
+  const raw = text.slice(range[0], range[1]);
+  if (raw.includes('\n')) {
+    return { kind: 'invalid', detail: 'is a quoted or flow scalar spanning multiple lines' };
+  }
   const quote: FoundImage['quote'] = node.type === 'QUOTE_DOUBLE' ? '"' : node.type === 'QUOTE_SINGLE' ? "'" : 'none';
-  return { range: [range[0], range[1]], quote, currentValue: node.value };
+  return { kind: 'found', range: [range[0], range[1]], quote, currentValue: node.value };
 }
 
 /**
@@ -80,15 +104,33 @@ function findImage(text: string, service: string): { range: [number, number]; qu
  * (`${...}` interpolation).
  */
 export function planRewrite(files: RewriteFile[], mappings: RewriteMapping[]): RewritePlanFile[] {
-  // fileIndex -> list of { range, replacement }
-  const editsByFile = new Map<number, { range: [number, number]; replacement: string; service: string }[]>();
+  // fileIndex -> list of { range, replacement, service, originalValue }
+  interface PlannedEdit {
+    range: [number, number];
+    replacement: string;
+    service: string;
+    originalValue: string;
+  }
+  const editsByFile = new Map<number, PlannedEdit[]>();
 
   for (const mapping of mappings) {
     const matches: FoundImage[] = [];
-    files.forEach((file, fileIndex) => {
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      const file = files[fileIndex];
+      if (!file) continue;
       const found = findImage(file.text, mapping.service);
-      if (found) matches.push({ fileIndex, ...found });
-    });
+      if (found.kind === 'found') {
+        matches.push({ fileIndex, range: found.range, quote: found.quote, currentValue: found.currentValue });
+      } else if (found.kind === 'invalid') {
+        throw new RefusalError(
+          refusal(
+            'image_line_invalid',
+            `Service "${mapping.service}" in ${file.path} has an image: line that ${found.detail}.`,
+            'Write the image line as a single-line plain or quoted scalar, e.g. "image: repo:tag", not a block scalar, alias or multi-line value.',
+          ),
+        );
+      }
+    }
 
     if (matches.length === 0) {
       throw new RefusalError(
@@ -135,7 +177,7 @@ export function planRewrite(files: RewriteFile[], mappings: RewriteMapping[]): R
 
     const replacement = match.quote === 'none' ? mapping.reference : `${match.quote}${mapping.reference}${match.quote}`;
     const edits = editsByFile.get(match.fileIndex) ?? [];
-    edits.push({ range: match.range, replacement, service: mapping.service });
+    edits.push({ range: match.range, replacement, service: mapping.service, originalValue: match.currentValue });
     editsByFile.set(match.fileIndex, edits);
   }
 
@@ -151,6 +193,9 @@ export function planRewrite(files: RewriteFile[], mappings: RewriteMapping[]): R
     for (const edit of sorted) {
       after = after.slice(0, edit.range[0]) + edit.replacement + after.slice(edit.range[1]);
     }
+
+    assertRewriteIsIsolated(file, after, edits);
+
     plan.push({
       path: file.path,
       before: file.text,
@@ -159,6 +204,93 @@ export function planRewrite(files: RewriteFile[], mappings: RewriteMapping[]): R
     });
   });
   return plan;
+}
+
+/**
+ * Post-condition guarding against the whole class of "splicing a non-flat scalar range corrupts
+ * the document" bugs (SHP-REQ-013, SHP-REQ-014). After splicing:
+ *
+ * 1. `after` must still parse, with no parse errors.
+ * 2. Every mapped service's image value in the parsed `after` document must equal its intended
+ *    reference exactly.
+ * 3. Reverting just those image values back to their originals must reproduce the original
+ *    document exactly (`toJS()` deep-equal) — proving nothing else moved.
+ *
+ * Any violation refuses rather than writing a broken or silently-altered file.
+ */
+function assertRewriteIsIsolated(
+  file: RewriteFile,
+  after: string,
+  edits: { service: string; replacement: string; originalValue: string; range: [number, number] }[],
+): void {
+  const fail = (reason: string): never => {
+    throw new RefusalError(
+      refusal(
+        'image_line_invalid',
+        `Rewriting ${file.path} would change more than the image line (${reason}).`,
+        'This compose file could not be safely rewritten; edit the image line by hand to a single-line value and retry.',
+      ),
+    );
+  };
+
+  let afterDoc: ReturnType<typeof parseDocument>;
+  try {
+    afterDoc = parseDocument(after, { keepSourceTokens: true });
+  } catch {
+    fail('the rewritten file does not parse');
+    return;
+  }
+  if (afterDoc.errors.length > 0) {
+    fail('the rewritten file does not parse');
+    return;
+  }
+
+  const afterServices: unknown = afterDoc.get('services', true);
+  if (!isMap(afterServices)) {
+    fail('the "services" map is gone after rewriting');
+    return;
+  }
+
+  for (const edit of edits) {
+    const svc = afterServices.get(edit.service, true);
+    if (!isMap(svc)) {
+      fail(`service "${edit.service}" is gone after rewriting`);
+      return;
+    }
+    const imagePair = svc.items.find((p) => isScalar(p.key) && p.key.value === 'image');
+    const imageValue = imagePair && isScalar(imagePair.value) ? imagePair.value.value : undefined;
+    const expected = edit.replacement.replace(/^["']|["']$/g, '');
+    if (imageValue !== expected) {
+      fail(`service "${edit.service}"'s image is not exactly the intended reference`);
+      return;
+    }
+  }
+
+  let originalDoc: ReturnType<typeof parseDocument>;
+  try {
+    originalDoc = parseDocument(file.text, { keepSourceTokens: true });
+  } catch {
+    // The original text is caller-supplied and already known to parse (findImage succeeded);
+    // this cannot happen in practice, but fail closed if it ever does.
+    fail('the original file no longer parses for comparison');
+    return;
+  }
+
+  // Revert each edited service's image value in the parsed after-document back to what it was
+  // before, then compare the whole document to the original — anything else that moved shows up
+  // as a diff.
+  for (const edit of edits) {
+    const svc = afterServices.get(edit.service, true);
+    if (!isMap(svc)) continue;
+    const imagePair = svc.items.find((p) => isScalar(p.key) && p.key.value === 'image');
+    if (imagePair && isScalar(imagePair.value)) {
+      imagePair.value.value = edit.originalValue;
+    }
+  }
+
+  if (!isDeepStrictEqual(afterDoc.toJS(), originalDoc.toJS())) {
+    fail('the reverted document does not match the original');
+  }
 }
 
 // ─── Apply / restore ──────────────────────────────────────────────────────────

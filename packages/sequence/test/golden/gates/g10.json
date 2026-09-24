@@ -1,0 +1,37 @@
+[
+  {
+    "name": "is skipped when laterMigrationLabels was never checked",
+    "facts": { "kind": "rollback" },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when no later release carries the contract label",
+    "facts": { "kind": "rollback", "laterMigrationLabels": [null, "app"] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when there are no later releases at all",
+    "facts": { "kind": "rollback", "laterMigrationLabels": [] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses, pointing at restore, when a later release carries the contract label",
+    "facts": { "kind": "rollback", "laterMigrationLabels": [null, "contract"] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": false, "code": "later_contract_release" }
+    ]
+  }
+]

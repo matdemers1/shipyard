@@ -1,0 +1,64 @@
+[
+  {
+    "name": "passes when every mapped service has a resolved digest",
+    "facts": {
+      "manifest": { "services": { "web": { "image": "ghcr.io/acme/demo/web" }, "worker": { "image": "ghcr.io/acme/demo/worker" } } },
+      "digests": {
+        "web": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "worker": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses naming a service absent from the digest map",
+    "facts": {
+      "manifest": { "services": { "web": { "image": "ghcr.io/acme/demo/web" }, "worker": { "image": "ghcr.io/acme/demo/worker" } } },
+      "digests": { "web": "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": false, "code": "image_missing" }
+    ]
+  },
+  {
+    "name": "refuses naming a service whose digest is explicitly null",
+    "facts": {
+      "manifest": { "services": { "web": { "image": "ghcr.io/acme/demo/web" }, "worker": { "image": "ghcr.io/acme/demo/worker" } } },
+      "digests": {
+        "web": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "worker": null
+      }
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": false, "code": "image_missing" }
+    ]
+  },
+  {
+    "name": "refuses naming every missing service at once",
+    "facts": {
+      "manifest": { "services": { "web": { "image": "ghcr.io/acme/demo/web" }, "worker": { "image": "ghcr.io/acme/demo/worker" } } },
+      "digests": {}
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": false, "code": "image_missing" }
+    ]
+  }
+]

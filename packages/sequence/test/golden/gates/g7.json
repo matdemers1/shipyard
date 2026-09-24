@@ -1,0 +1,83 @@
+[
+  {
+    "name": "passes on the first Shipyard deploy for this app (no live SHA)",
+    "facts": { "live": { "sha": null } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when ahead of the live SHA",
+    "facts": {
+      "live": { "sha": "facadefacadefacadefacadefacadefacadeface" },
+      "aheadOfLive": { "status": "ahead" }
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when the requested SHA is already live",
+    "facts": {
+      "live": { "sha": "c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ff" },
+      "aheadOfLive": { "status": "identical" }
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": false, "code": "not_ahead_of_live" },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when behind the live SHA, naming the live SHA in the fix",
+    "facts": {
+      "live": { "sha": "facadefacadefacadefacadefacadefacadeface" },
+      "aheadOfLive": { "status": "behind" }
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": false, "code": "not_ahead_of_live" },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when diverged from the live SHA",
+    "facts": {
+      "live": { "sha": "facadefacadefacadefacadefacadefacadeface" },
+      "aheadOfLive": { "status": "diverged" }
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": false, "code": "not_ahead_of_live" },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when the comparison to live is unknown to GitHub",
+    "facts": {
+      "live": { "sha": "facadefacadefacadefacadefacadefacadeface" },
+      "aheadOfLive": null
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": false, "code": "not_ahead_of_live" },
+      { "gate": "G8", "pass": true }
+    ]
+  }
+]

@@ -1,0 +1,69 @@
+[
+  {
+    "name": "is skipped when envNamesPresent was never checked",
+    "facts": { "manifest": { "requiredEnv": ["DATABASE_URL"] } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "is skipped when the manifest names no required env",
+    "facts": { "envNamesPresent": ["DATABASE_URL"] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when every required env name is present",
+    "facts": {
+      "manifest": { "requiredEnv": ["DATABASE_URL", "API_KEY"] },
+      "envNamesPresent": ["DATABASE_URL", "API_KEY", "EXTRA_VAR"]
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G9", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses naming the missing env name",
+    "facts": {
+      "manifest": { "requiredEnv": ["DATABASE_URL", "API_KEY"] },
+      "envNamesPresent": ["DATABASE_URL"]
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G9", "pass": false, "code": "env_missing" }
+    ]
+  },
+  {
+    "name": "refuses naming every missing env name at once",
+    "facts": {
+      "manifest": { "requiredEnv": ["DATABASE_URL", "API_KEY"] },
+      "envNamesPresent": []
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G9", "pass": false, "code": "env_missing" }
+    ]
+  }
+]

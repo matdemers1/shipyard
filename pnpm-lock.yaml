@@ -148,6 +148,9 @@ importers:
       dockerode:
         specifier: ^5.0.1
         version: 5.0.1
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
     devDependencies:
       '@types/dockerode':
         specifier: ^4.0.1

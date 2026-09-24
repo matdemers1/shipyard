@@ -1,0 +1,10 @@
+{
+  "target": {
+    "targetId": "tgt_01HZY",
+    "deployId": "dep_01HZY",
+    "kind": "deploy",
+    "app": "bindery",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "dryRun": false
+  }
+}

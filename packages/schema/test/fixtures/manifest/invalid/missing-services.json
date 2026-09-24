@@ -1,0 +1,14 @@
+{
+  "name": "bindery",
+  "repo": "matdemers1/bindery",
+  "workflow": "ci.yml",
+  "compose": {
+    "files": ["/DATA/apps/bindery/docker-compose.yml"],
+    "project": "bindery"
+  },
+  "services": {},
+  "health": {
+    "service": "server",
+    "path": "/health"
+  }
+}

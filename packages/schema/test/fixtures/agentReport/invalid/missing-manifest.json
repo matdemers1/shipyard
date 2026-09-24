@@ -1,0 +1,12 @@
+{
+  "agentVersion": "0.1.0",
+  "composeVersion": "v5.2.1",
+  "engineApiVersion": "1.47",
+  "patExpiresAt": null,
+  "apps": [
+    {
+      "manifestSha256": "5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd",
+      "running": {}
+    }
+  ]
+}

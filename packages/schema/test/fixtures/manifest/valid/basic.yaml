@@ -1,0 +1,39 @@
+name: bindery
+repo: matdemers1/bindery
+defaultBranch: main
+workflow: ci.yml
+compose:
+  files:
+    - /DATA/apps/bindery/docker-compose.yml
+  project: bindery
+services:
+  server:
+    image: ghcr.io/matdemers1/bindery/server
+  web:
+    image: ghcr.io/matdemers1/bindery/web
+health:
+  service: server
+  path: /health
+  expectSchema: HealthResponse
+soakSeconds: 120
+approval: required
+steps:
+  backup:
+    service: server
+    argv:
+      - pnpm
+      - run
+      - backup
+  migrate:
+    service: server
+    argv:
+      - pnpm
+      - run
+      - migrate
+requiredEnv:
+  - DATABASE_URL
+  - JWT_SECRET
+foreman:
+  project: BND
+group: bindery-stack
+canary: false

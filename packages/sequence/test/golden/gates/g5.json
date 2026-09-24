@@ -1,0 +1,62 @@
+[
+  {
+    "name": "passes when a run for the SHA succeeded",
+    "facts": { "workflowRuns": [{ "conclusion": "success", "status": "completed" }] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when any run among several succeeded",
+    "facts": {
+      "workflowRuns": [
+        { "conclusion": "failure", "status": "completed" },
+        { "conclusion": "success", "status": "completed" }
+      ]
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when there is no run for the SHA (absent is not green)",
+    "facts": { "workflowRuns": [] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": false, "code": "ci_not_green" },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when the only run is still in progress",
+    "facts": { "workflowRuns": [{ "conclusion": null, "status": "in_progress" }] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": false, "code": "ci_not_green" },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses naming the conclusion when every run finished without success",
+    "facts": { "workflowRuns": [{ "conclusion": "failure", "status": "completed" }] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": false, "code": "ci_not_green" },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  }
+]

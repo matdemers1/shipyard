@@ -1,0 +1,89 @@
+[
+  {
+    "name": "firstRefusal picks disk over CI and image gates that also fail",
+    "facts": {
+      "freeBytes": 1024,
+      "workflowRuns": [],
+      "digests": {}
+    },
+    "expect": [
+      { "gate": "disk", "pass": false, "code": "insufficient_disk" },
+      { "gate": "G5", "pass": false, "code": "ci_not_green" },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": false, "code": "image_missing" }
+    ],
+    "firstRefusalCode": "insufficient_disk"
+  },
+  {
+    "name": "firstRefusal picks CI over the image gate when disk passes",
+    "facts": {
+      "workflowRuns": [],
+      "digests": {}
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": false, "code": "ci_not_green" },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": false, "code": "image_missing" }
+    ],
+    "firstRefusalCode": "ci_not_green"
+  },
+  {
+    "name": "firstRefusal picks the image gate over env when both fail",
+    "facts": {
+      "digests": {},
+      "manifest": { "requiredEnv": ["DATABASE_URL"] },
+      "envNamesPresent": []
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": false, "code": "image_missing" },
+      { "gate": "G9", "pass": false, "code": "env_missing" }
+    ],
+    "firstRefusalCode": "image_missing"
+  },
+  {
+    "name": "firstRefusal is null when every evaluated gate passes",
+    "facts": {},
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ],
+    "firstRefusalCode": null
+  },
+  {
+    "name": "firstRefusal for a rollback skips G5-G7 and picks disk over the later contract-release gate",
+    "facts": {
+      "kind": "rollback",
+      "freeBytes": 1024,
+      "laterMigrationLabels": ["contract"]
+    },
+    "expect": [
+      { "gate": "disk", "pass": false, "code": "insufficient_disk" },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": false, "code": "later_contract_release" }
+    ],
+    "firstRefusalCode": "insufficient_disk"
+  },
+  {
+    "name": "firstRefusal for a rollback picks the later contract-release gate when disk passes",
+    "facts": {
+      "kind": "rollback",
+      "laterMigrationLabels": ["contract"]
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": false, "code": "later_contract_release" }
+    ],
+    "firstRefusalCode": "later_contract_release"
+  }
+]

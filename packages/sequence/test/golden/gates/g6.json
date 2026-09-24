@@ -1,0 +1,57 @@
+[
+  {
+    "name": "passes when identical to the default branch head",
+    "facts": { "onDefaultBranch": { "status": "identical" } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when an ancestor of the default branch head",
+    "facts": { "onDefaultBranch": { "status": "ahead" } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when behind the default branch head",
+    "facts": { "onDefaultBranch": { "status": "behind" } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": false, "code": "not_on_default_branch" },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when diverged from the default branch head",
+    "facts": { "onDefaultBranch": { "status": "diverged" } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": false, "code": "not_on_default_branch" },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when the SHA is unknown to GitHub",
+    "facts": { "onDefaultBranch": null },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": false, "code": "not_on_default_branch" },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  }
+]

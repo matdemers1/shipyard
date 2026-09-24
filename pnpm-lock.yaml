@@ -127,6 +127,12 @@ importers:
 
   e2e:
     devDependencies:
+      '@shipyard/schema':
+        specifier: workspace:*
+        version: link:../packages/schema
+      '@shipyard/sequence':
+        specifier: workspace:*
+        version: link:../packages/sequence
       yaml:
         specifier: ^2.9.1
         version: 2.9.1

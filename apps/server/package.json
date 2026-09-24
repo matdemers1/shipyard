@@ -10,7 +10,10 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --project unit --passWithNoTests",
-    "test:integration": "vitest run --project integration --passWithNoTests"
+    "test:integration": "vitest run --project integration --passWithNoTests",
+    "postinstall": "prisma generate",
+    "db:generate": "prisma generate",
+    "db:deploy": "prisma migrate deploy"
   },
   "devDependencies": {
     "@seriousme/openapi-schema-validator": "^2.9.1",

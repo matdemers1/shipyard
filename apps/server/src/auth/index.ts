@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Router, type Request, type RequestHandler, type Response } from 'express';
 import { LoginRequest, TotpRequest, refusal, type Refusal } from '@shipyard/schema';
 import type { Logger } from 'pino';
@@ -20,6 +20,8 @@ import {
 import { OIDC_TX_TTL_MS, OidcError, type OidcClient } from './oidc.js';
 import { verifyAgainstDummy, verifyPassword } from './passwords.js';
 import { SESSION_TTL_MS, createSession, hashSessionToken, resolveSession } from './sessions.js';
+import { MfaTickets } from './tickets.js';
+import { DEFAULT_ACCOUNT_LIMITS, DEFAULT_IP_LIMITS, Throttle, type ThrottleLimits } from './throttle.js';
 import { TotpReplayGuard } from './totp.js';
 
 // Helpers other tasks import (SHP-T-0.6 bootstrap-admin, tests).
@@ -28,6 +30,7 @@ export { generateTotpSecret, totpCode, totpUri, verifyTotp, TotpReplayGuard } fr
 export { createSession, hashSessionToken, resolveSession, SESSION_TTL_MS } from './sessions.js';
 export { createOidcClient, OidcError, PendingSignIns, type CompletedSignIn, type OidcClient } from './oidc.js';
 export { SESSION_COOKIE, MFA_COOKIE, OIDC_TX_COOKIE } from './cookies.js';
+export { Throttle, DEFAULT_ACCOUNT_LIMITS, DEFAULT_IP_LIMITS, type ThrottleLimits } from './throttle.js';
 
 export interface AuthDeps {
   db: Db;
@@ -35,6 +38,12 @@ export interface AuthDeps {
   config: Config;
   /** Sign in with D3 Auth, or null when it is unconfigured or discovery failed at boot. */
   oidc: OidcClient | null;
+  /** Failed-attempt throttling (SHP-REQ-108). Defaults apply when absent; tests pass small limits and a clock. */
+  throttle?: {
+    account?: ThrottleLimits;
+    ip?: ThrottleLimits;
+    now?: () => number;
+  };
 }
 
 /** The password step is good for five minutes, and for this many TOTP guesses. */
@@ -72,6 +81,11 @@ const NOT_LINKED = refusal(
   'unauthenticated',
   'No Shipyard account is linked to this D3 Auth identity.',
   'Sign in with your password and authenticator code, then use Sign in with D3 Auth to link it. Accounts are never matched by email.',
+);
+const THROTTLED = refusal(
+  'too_many_attempts',
+  'Too many failed sign-in attempts. Sign-in is paused for a while.',
+  'Wait for the cooling-off period (up to fifteen minutes), then try again.',
 );
 const IDENTITY_TAKEN = refusal(
   'conflict',
@@ -119,6 +133,16 @@ export function authRouter(deps: AuthDeps): Router {
   const secret = resolveSessionSecret(config, logger);
   const replay = new TotpReplayGuard();
   const mfaAttempts = new Map<string, { count: number; expiresAt: number }>();
+  const tickets = new MfaTickets();
+  const clock = deps.throttle?.now;
+  const accountThrottle = new Throttle({
+    limits: deps.throttle?.account ?? DEFAULT_ACCOUNT_LIMITS,
+    ...(clock !== undefined ? { now: clock } : {}),
+  });
+  const ipThrottle = new Throttle({
+    limits: deps.throttle?.ip ?? DEFAULT_IP_LIMITS,
+    ...(clock !== undefined ? { now: clock } : {}),
+  });
   const router = Router();
 
   async function fail(
@@ -155,6 +179,45 @@ export function authRouter(deps: AuthDeps): Router {
     });
   }
 
+  const accountKey = (email: string): string => email.trim().toLowerCase();
+  const ipKey = (req: Request): string => req.ip ?? 'unknown';
+
+  function recordFailure(req: Request, email: string): void {
+    accountThrottle.recordFailure(accountKey(email));
+    ipThrottle.recordFailure(ipKey(req));
+  }
+
+  /**
+   * Refuses (and audits) when the source address, or the account when named, is cooling off. The
+   * refusal is the same whichever it is and whether the account exists, so it says nothing about
+   * which emails are real. The email is logged only as a short hash.
+   */
+  async function refuseIfThrottled(
+    req: Request,
+    res: Response,
+    step: 'password' | 'totp',
+    email: string | undefined,
+    entityId?: string,
+  ): Promise<boolean> {
+    const scope =
+      ipThrottle.blockedUntil(ipKey(req)) !== null
+        ? 'ip'
+        : email !== undefined && accountThrottle.blockedUntil(accountKey(email)) !== null
+          ? 'account'
+          : null;
+    if (scope === null) return false;
+    const emailHash =
+      email === undefined ? undefined : createHash('sha256').update(accountKey(email)).digest('hex').slice(0, 16);
+    logger.warn({ scope, step, ip: req.ip, emailHash }, 'sign-in throttled');
+    await fail(req, res, THROTTLED, {
+      action: 'auth.login.throttled',
+      reason: 'too_many_attempts',
+      ...(entityId !== undefined ? { entityId } : {}),
+      after: { method: 'password', step, scope, ...(emailHash !== undefined ? { emailHash } : {}) },
+    });
+    return true;
+  }
+
   function sweepAttempts(now: number): void {
     for (const [key, value] of mfaAttempts) if (value.expiresAt <= now) mfaAttempts.delete(key);
   }
@@ -169,6 +232,8 @@ export function authRouter(deps: AuthDeps): Router {
       return;
     }
     const { email, password } = parsed.data;
+    // Before any password work: a throttled attempt does not get to spend argon2 time.
+    if (await refuseIfThrottled(req, res, 'password', email)) return;
     const user = await db.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
 
     const ok =
@@ -176,6 +241,7 @@ export function authRouter(deps: AuthDeps): Router {
         ? await verifyPassword(user.passwordHash, password)
         : await verifyAgainstDummy(password);
     if (user === null || !ok) {
+      recordFailure(req, email);
       await fail(req, res, BAD_CREDENTIALS, {
         reason: 'bad_credentials',
         ...(user !== null ? { entityId: user.id } : {}),
@@ -196,7 +262,10 @@ export function authRouter(deps: AuthDeps): Router {
       return;
     }
 
-    const ticket = { userId: user.id, nonce: randomBytes(16).toString('base64url'), expiresAt: Date.now() + MFA_TTL_MS };
+    const issuedAt = Date.now();
+    const ticket = { userId: user.id, nonce: randomBytes(16).toString('base64url'), expiresAt: issuedAt + MFA_TTL_MS };
+    // Latest ticket wins: any earlier password step for this user can no longer finish.
+    tickets.issue(user.id, ticket.nonce, ticket.expiresAt, issuedAt);
     setCookie(res, config, MFA_COOKIE, signMfaTicket(secret, ticket), { maxAgeMs: MFA_TTL_MS, path: '/api/auth' });
     await req.audit({
       action: 'auth.login.password_verified',
@@ -211,10 +280,21 @@ export function authRouter(deps: AuthDeps): Router {
   // ── Password, step 2: TOTP ──────────────────────────────────────────
   router.post('/totp', async (req, res) => {
     const now = Date.now();
+    if (await refuseIfThrottled(req, res, 'totp', undefined)) return;
     const raw = readCookie(req, MFA_COOKIE);
     const ticket = raw === undefined ? null : verifyMfaTicket(secret, raw, now);
     if (ticket === null) {
       await fail(req, res, NO_MFA_TICKET, { reason: 'no_mfa_ticket', after: { method: 'password' } });
+      return;
+    }
+    const ticketState = tickets.state(ticket, now);
+    if (ticketState !== 'live') {
+      clearCookie(res, config, MFA_COOKIE, '/api/auth');
+      await fail(req, res, NO_MFA_TICKET, {
+        reason: ticketState === 'spent' ? 'mfa_ticket_spent' : 'mfa_ticket_superseded',
+        entityId: ticket.userId,
+        after: { method: 'password' },
+      });
       return;
     }
 
@@ -246,12 +326,21 @@ export function authRouter(deps: AuthDeps): Router {
       await fail(req, res, TOTP_NOT_ENROLLED, { reason: 'totp_not_enrolled', entityId: user.id });
       return;
     }
+    if (await refuseIfThrottled(req, res, 'totp', user.email, user.id)) return;
     if (!replay.consume(user.id, user.totpSecret, parsed.data.code, now)) {
+      recordFailure(req, user.email);
       await fail(req, res, BAD_TOTP, { reason: 'bad_totp', entityId: user.id, after: { method: 'password' } });
+      return;
+    }
+    // Spend the ticket before any await, so two concurrent requests holding it cannot both finish.
+    if (!tickets.consume(ticket, now)) {
+      clearCookie(res, config, MFA_COOKIE, '/api/auth');
+      await fail(req, res, NO_MFA_TICKET, { reason: 'mfa_ticket_spent', entityId: user.id, after: { method: 'password' } });
       return;
     }
 
     mfaAttempts.delete(ticket.nonce);
+    accountThrottle.reset(accountKey(user.email));
     clearCookie(res, config, MFA_COOKIE, '/api/auth');
     await startSession(req, res, user, 'password');
     res.json({ id: user.id, email: user.email, displayName: user.displayName, role: user.role });

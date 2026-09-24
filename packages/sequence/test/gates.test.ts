@@ -237,6 +237,33 @@ describe('refusal shape and specificity', () => {
     const result = evaluateGates(facts).find((r) => r.gate === 'disk');
     expect(result?.refusal?.message).toContain('GB');
   });
+
+  it('disk refusal message says free space is unknown when freeBytes is NaN', () => {
+    const facts = buildFacts({ freeBytes: NaN });
+    const result = evaluateGates(facts).find((r) => r.gate === 'disk');
+    expect(result?.refusal?.message).toContain('free space unknown');
+  });
+
+  it('disk refusal message says free space is unknown when freeBytes is negative', () => {
+    const facts = buildFacts({ freeBytes: -1 });
+    const result = evaluateGates(facts).find((r) => r.gate === 'disk');
+    expect(result?.refusal?.message).toContain('free space unknown');
+  });
+
+  it('G10 treats the migration label as case-insensitive and trims whitespace', () => {
+    for (const label of ['CONTRACT', ' contract ', 'Contract', '\tcontract\n']) {
+      const facts = buildFacts({ kind: 'rollback', laterMigrationLabels: [label] });
+      const result = evaluateGates(facts).find((r) => r.gate === 'G10');
+      expect(result?.pass, `label ${JSON.stringify(label)} should refuse`).toBe(false);
+      expect(result?.refusal?.code).toBe('later_contract_release');
+    }
+  });
+
+  it('G10 does not fail-open on labels that merely contain "contract" as a substring', () => {
+    const facts = buildFacts({ kind: 'rollback', laterMigrationLabels: ['contract-ish', 'noncontract'] });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G10');
+    expect(result?.pass).toBe(true);
+  });
 });
 
 describe('programming errors', () => {

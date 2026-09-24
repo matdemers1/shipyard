@@ -33,5 +33,59 @@
       { "gate": "G8", "pass": true },
       { "gate": "G10", "pass": false, "code": "later_contract_release" }
     ]
+  },
+  {
+    "name": "refuses when a later release carries the contract label upper-cased",
+    "facts": { "kind": "rollback", "laterMigrationLabels": ["CONTRACT"] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": false, "code": "later_contract_release" }
+    ]
+  },
+  {
+    "name": "refuses when a later release carries the contract label with surrounding whitespace",
+    "facts": { "kind": "rollback", "laterMigrationLabels": [" contract "] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": false, "code": "later_contract_release" }
+    ]
+  },
+  {
+    "name": "refuses when a later release carries the contract label mixed-case",
+    "facts": { "kind": "rollback", "laterMigrationLabels": ["Contract"] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": false, "code": "later_contract_release" }
+    ]
+  },
+  {
+    "name": "passes when the only later label is expand",
+    "facts": { "kind": "rollback", "laterMigrationLabels": ["expand"] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when the only later label is null",
+    "facts": { "kind": "rollback", "laterMigrationLabels": [null] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when the only later label is an empty string",
+    "facts": { "kind": "rollback", "laterMigrationLabels": [""] },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G10", "pass": true }
+    ]
   }
 ]

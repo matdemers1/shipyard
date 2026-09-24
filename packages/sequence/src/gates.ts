@@ -21,8 +21,10 @@ function evaluateDisk(facts: GateFacts): GateResult {
   if (facts.freeBytes >= floorBytes) {
     return { gate: 'disk', pass: true, reason: 'free space is at or above the manifest floor' };
   }
-  const freeGb = (facts.freeBytes / 1024 ** 3).toFixed(1);
-  const message = `${freeGb} GB free is below the manifest's ${facts.manifest.diskFloorGb} GB floor after pruning Shipyard-known old images`;
+  const freeDescription = Number.isFinite(facts.freeBytes) && facts.freeBytes >= 0
+    ? `${(facts.freeBytes / 1024 ** 3).toFixed(1)} GB free`
+    : 'free space unknown';
+  const message = `${freeDescription} is below the manifest's ${facts.manifest.diskFloorGb} GB floor after pruning Shipyard-known old images`;
   return {
     gate: 'disk',
     pass: false,
@@ -126,7 +128,8 @@ function evaluateG10(facts: GateFacts): GateResult | null {
   if (facts.laterMigrationLabels === undefined) {
     return null;
   }
-  if (!facts.laterMigrationLabels.includes('contract')) {
+  const normalized = facts.laterMigrationLabels.map((label) => label?.trim().toLowerCase() ?? null);
+  if (!normalized.includes('contract')) {
     return { gate: 'G10', pass: true, reason: 'no later release carries a contract migration label' };
   }
   const message = `a release deployed after ${short(facts.sha)} carried the contract migration label`;

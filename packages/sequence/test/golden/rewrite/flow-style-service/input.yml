@@ -1,0 +1,2 @@
+services:
+  app: {image: ghcr.io/matdemers1/toy/app, ports: ["8080:8080"]}

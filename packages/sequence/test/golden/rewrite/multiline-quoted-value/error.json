@@ -1,0 +1,8 @@
+{
+  "code": "image_line_invalid",
+  "messageIncludes": [
+    "app",
+    "input.yml",
+    "multiple lines"
+  ]
+}

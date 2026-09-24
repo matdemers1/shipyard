@@ -1,0 +1,13 @@
+{
+  "status": 404,
+  "headers": {
+    "connection": "close",
+    "content-length": "70",
+    "content-type": "application/json",
+    "date": "Thu, 24 Sep 2026 23:28:23 GMT",
+    "docker-distribution-api-version": "registry/2.0",
+    "strict-transport-security": "max-age=63072000; includeSubDomains; preload",
+    "x-github-edge-region": "iad",
+    "x-github-request-id": "D2EA:205687:2A1526:3355C2:6AB5B217"
+  }
+}

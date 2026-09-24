@@ -5,6 +5,8 @@ import type { Config } from './config.js';
 import { auditContext, type AuditContextOptions } from './audit.js';
 import type { Db } from './db.js';
 import { errorHandler, sendRefusal } from './errors.js';
+import { authenticate, authRouter } from './auth/index.js';
+import { openapiRouter } from './openapi.js';
 import { healthRouter } from './routes/health.js';
 
 export interface AppDeps {
@@ -42,13 +44,15 @@ export function createApp(deps: AppDeps): Express {
 
   app.use(auditContext(db, logger, onUnauditedMutation === undefined ? {} : { onUnauditedMutation }));
 
+  // Before every route, so `req.actor` is set by the time any handler (or `req.audit`) runs.
+  app.use(authenticate({ db, logger, config }));
+
   app.use('/api', healthRouter(db, config.SHIPYARD_VERSION));
 
   // ── Registration section ──────────────────────────────────────────────
-  // Later tasks mount their routers here, before the 404 handler below:
-  //   app.use('/api/auth', authRouter(...));      // login/session/tokens
-  //   app.use('/api/openapi.json', openapiRouter); // generated OpenAPI document
-  //   app.use('/api', deploysRouter(...));         // deploy request/status/rollback
+  // Feature routers mount here, before the 404 handler below.
+  app.use('/api/auth', authRouter({ db, logger, config }));
+  app.use('/api', openapiRouter());
   // ─────────────────────────────────────────────────────────────────────
 
   if (testRouter !== undefined) {

@@ -1,0 +1,35 @@
+# The e2e harness. Always run with an explicit project name (shp-e2e-<id>) and torn down with
+# `down -v`. Every host port is ephemeral and bound to loopback; discover them with
+# `docker compose -p <project> -f compose.yml port <service> <port>`.
+services:
+  dind:
+    image: docker:29-dind
+    privileged: true
+    environment:
+      # Plain TCP on 2375, reachable only through the loopback mapping below.
+      DOCKER_TLS_CERTDIR: ""
+    command: ["--insecure-registry=registry:5000"]
+    ports:
+      - "127.0.0.1::2375"
+    networks: [harness]
+
+  registry:
+    image: registry:2
+    ports:
+      - "127.0.0.1::5000"
+    networks: [harness]
+
+  fake-github:
+    image: node:22-alpine
+    working_dir: /srv/fake-github
+    command: ["node", "server.mjs"]
+    environment:
+      PORT: "8080"
+    volumes:
+      - ../fake-github:/srv/fake-github:ro
+    ports:
+      - "127.0.0.1::8080"
+    networks: [harness]
+
+networks:
+  harness: {}

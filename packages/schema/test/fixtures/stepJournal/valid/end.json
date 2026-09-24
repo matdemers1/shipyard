@@ -1,0 +1,8 @@
+{
+  "targetId": "tgt_01HZY",
+  "name": "migrate",
+  "argv": ["pnpm", "run", "migrate"],
+  "phase": "end",
+  "exitCode": 0,
+  "output": "Migration complete.\n"
+}

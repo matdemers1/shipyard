@@ -54,5 +54,14 @@ decisions SHP-D-001…087, risks SHP-R-001…010.
 
 ## Dev commands
 
-Not yet — Phase 0 (SHP-P-0) creates them. Expected: `pnpm install`, `pnpm lint`, `pnpm typecheck`,
-`pnpm test`, `pnpm e2e`.
+```bash
+pnpm install            # workspace install (supply-chain policy in pnpm-workspace.yaml)
+pnpm lint               # eslint, strict type-checked, every package
+pnpm typecheck          # tsc --noEmit, every package
+pnpm test               # unit tests, every package except e2e — no database, safe in parallel
+pnpm test:integration   # server integration tests — needs DATABASE_URL to a PG16 *_test database
+pnpm e2e                # Docker-in-Docker harness — needs Docker
+```
+
+Workspace packages: `@shipyard/schema`, `@shipyard/sequence`, `shipyard-server`, `shipyard-agent`,
+`shipyard-cli`, `shipyard-web`, `e2e`.

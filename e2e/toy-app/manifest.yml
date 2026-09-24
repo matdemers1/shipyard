@@ -1,0 +1,20 @@
+# A Shipyard manifest for the toy app. Steps are argv arrays, never command strings.
+name: toy
+repo: example/toy
+workflow: ci.yml
+compose:
+  files:
+    - compose.yml
+  project: toy
+services:
+  app:
+    image: registry:5000/toy/app
+health:
+  service: app
+  path: /health
+  expectSchema: "20260924-0001"
+soakSeconds: 5
+steps:
+  migrate:
+    service: app
+    argv: ["node", "migrate.mjs"]

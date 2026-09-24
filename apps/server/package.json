@@ -1,0 +1,48 @@
+{
+  "name": "shipyard-server",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Internet-facing: Express, Prisma, dual login, REST, MCP, SSE, outbox. Never touches Docker",
+  "type": "module",
+  "files": [
+    "dist",
+    "prisma",
+    "prisma.config.ts"
+  ],
+  "scripts": {
+    "build": "pnpm --filter @shipyard/schema build && tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --project unit --passWithNoTests",
+    "test:integration": "vitest run --project integration --passWithNoTests",
+    "postinstall": "prisma generate",
+    "bootstrap-admin": "pnpm --filter @shipyard/schema build && node --env-file-if-exists=../../.env --import tsx src/cli/bootstrap-admin.ts",
+    "db:generate": "prisma generate",
+    "db:deploy": "prisma migrate deploy",
+    "dev": "pnpm --filter @shipyard/schema build && tsx watch src/index.ts"
+  },
+  "devDependencies": {
+    "@seriousme/openapi-schema-validator": "^2.9.1",
+    "@types/express": "^5.0.6",
+    "@types/pg": "^8.23.1",
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.2.2",
+    "tsx": "^4.23.13"
+  },
+  "dependencies": {
+    "@d3cloudio/auth-client": "0.1.1",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "@shipyard/schema": "workspace:*",
+    "argon2": "^0.45.1",
+    "express": "^5.2.1",
+    "jose": "^6.2.12",
+    "openid-client": "^6.8.8",
+    "otpauth": "^9.5.2",
+    "pg": "^8.23.0",
+    "pino": "^10.3.1",
+    "prisma": "7.10.0",
+    "zod": "^4.6.5"
+  }
+}

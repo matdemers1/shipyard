@@ -1,0 +1,30 @@
+{
+  "agentVersion": "0.1.0",
+  "composeVersion": "v5.2.1",
+  "engineApiVersion": "1.47",
+  "patExpiresAt": "2027-01-01T00:00:00.000Z",
+  "apps": [
+    {
+      "manifest": {
+        "name": "bindery",
+        "repo": "matdemers1/bindery",
+        "defaultBranch": "main",
+        "workflow": "ci.yml",
+        "compose": {
+          "files": ["/DATA/apps/bindery/docker-compose.yml"],
+          "project": "bindery"
+        },
+        "services": {
+          "server": { "image": "ghcr.io/matdemers1/bindery/server" }
+        },
+        "health": { "service": "server", "path": "/health" },
+        "soakSeconds": 60,
+        "approval": "none"
+      },
+      "manifestSha256": "5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd",
+      "running": {
+        "server": "sha256:5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd"
+      }
+    }
+  ]
+}

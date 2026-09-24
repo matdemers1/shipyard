@@ -1,0 +1,16 @@
+{
+  "name": "bindery",
+  "repo": "matdemers1/bindery",
+  "workflow": "ci.yml",
+  "compose": {
+    "files": ["apps/bindery/docker-compose.yml"],
+    "project": "bindery"
+  },
+  "services": {
+    "server": { "image": "ghcr.io/matdemers1/bindery/server" }
+  },
+  "health": {
+    "service": "server",
+    "path": "/health"
+  }
+}

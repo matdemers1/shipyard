@@ -2,10 +2,11 @@
   "name": "e2e",
   "private": true,
   "version": "0.0.0",
-  "description": "Docker-in-Docker, registry:2, fake GitHub and the toy app — real agent, real compose",
+  "description": "Docker-in-Docker, registry:2, fake GitHub and the toy app \u2014 real agent, real compose",
   "type": "module",
   "scripts": {
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/fake-github-logic.test.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

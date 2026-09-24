@@ -1,0 +1,10 @@
+# The toy app's stack, as it would sit on a host. The image line is rewritten to
+# registry:5000/toy/app:sha-<40hex>@sha256:<digest> at deploy time.
+services:
+  app:
+    image: registry:5000/toy/app:sha-0000000000000000000000000000000000000000
+    environment:
+      TOY_SECRET: ${TOY_SECRET:-not-a-real-secret}
+    ports:
+      # Ephemeral, loopback-only, inside the dind daemon.
+      - "127.0.0.1::3000"

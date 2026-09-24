@@ -57,11 +57,21 @@ const ARTIFACT_GRACE_MS = 1000;
  * what it was never given.
  */
 export async function runBackup(ports: StepPorts, target: ComposeTarget, step: BackupStepDef): Promise<BackupResult> {
+  // What was there before the step, so an existing file can never pass as this step's artifact —
+  // not even one whose mtime is skewed into the future.
+  const before = new Map((await ports.fs.list(step.artifactsDir)).map((entry) => [entry.path, entry.mtimeMs]));
   const startedAt = ports.clock.now().getTime();
   const result = await ports.docker.compose(target, ['exec', '-T', step.service, ...step.argv]);
+  const endedAt = ports.clock.now().getTime();
 
   const entries = await ports.fs.list(step.artifactsDir);
-  const candidates = entries.filter((entry) => entry.size > 0 && entry.mtimeMs >= startedAt - ARTIFACT_GRACE_MS);
+  const candidates = entries.filter(
+    (entry) =>
+      entry.size > 0 &&
+      before.get(entry.path) !== entry.mtimeMs &&
+      entry.mtimeMs >= startedAt - ARTIFACT_GRACE_MS &&
+      entry.mtimeMs <= endedAt + ARTIFACT_GRACE_MS,
+  );
   const newest = candidates.reduce<Artifact | null>((best, entry) => (best === null || entry.mtimeMs > best.mtimeMs ? entry : best), null);
 
   if (result.exitCode !== 0) {
@@ -111,7 +121,7 @@ export async function runMigrate(
     }
   }
 
-  const output = redact(`${result.stdout}\n${result.stderr}`, secrets);
+  const output = redactStreams(result.stdout, result.stderr, secrets);
 
   if (result.exitCode !== 0) {
     throw new RefusalError(refusal('migrate_failed', `Migrate step for service "${step.service}" exited ${result.exitCode}.\n${output}`));
@@ -123,11 +133,19 @@ export async function runMigrate(
 /** A generic journaled step: `compose exec -T` with redacted, tail-capped output. */
 export async function runExec(ports: StepPorts, target: ComposeTarget, step: MigrateStepDef, secrets: Map<string, string>): Promise<ExecStepResult> {
   const result = await ports.docker.compose(target, ['exec', '-T', step.service, ...step.argv]);
-  const output = redact(`${result.stdout}\n${result.stderr}`, secrets);
+  const output = redactStreams(result.stdout, result.stderr, secrets);
 
   if (result.exitCode !== 0) {
     throw new RefusalError(refusal('step_failed', `Step for service "${step.service}" exited ${result.exitCode}.\n${output}`));
   }
 
   return { exitCode: result.exitCode, output };
+}
+
+/**
+ * Redacts each stream on its own before joining them, so a value can never straddle the seam the
+ * join creates and survive redaction in neither half.
+ */
+function redactStreams(stdout: string, stderr: string, secrets: Map<string, string>): string {
+  return redact(`${redact(stdout, secrets)}\n${redact(stderr, secrets)}`, secrets);
 }

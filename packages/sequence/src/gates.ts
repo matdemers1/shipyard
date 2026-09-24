@@ -126,6 +126,9 @@ function evaluateG9(facts: GateFacts): GateResult | null {
 
 function evaluateG10(facts: GateFacts): GateResult | null {
   if (facts.laterMigrationLabels === undefined) {
+    // Unknown later releases must never read as "none": a rollback across a contract release
+    // destroys data, so a caller that did not gather the labels is a programming error.
+    if (facts.kind === 'rollback') throw new Error('G10 requires laterMigrationLabels on rollback facts');
     return null;
   }
   const normalized = facts.laterMigrationLabels.map((label) => label?.trim().toLowerCase() ?? null);

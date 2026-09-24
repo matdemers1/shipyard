@@ -233,6 +233,10 @@ export function createGitHubAdapter(options: GitHubAdapterOptions = {}): GitHubP
 
         const next = parseNextLink(res.headers.get('link'));
         if (next === null) break;
+        // Follow pagination only on the API's own origin: the request carries the PAT.
+        if (new URL(next).origin !== new URL(baseUrl).origin) {
+          throw unreachable(`returned a pagination link to another origin (${new URL(next).origin})`);
+        }
         url = next;
       }
       return runs;

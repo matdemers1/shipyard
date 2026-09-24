@@ -285,3 +285,11 @@ describe('programming errors', () => {
     expect(() => evaluateGates(facts)).toThrow();
   });
 });
+
+describe('G10 without facts', () => {
+  it('throws for a rollback whose later migration labels were not gathered, rather than passing', () => {
+    const facts = buildFacts({ kind: 'rollback' });
+    delete (facts as { laterMigrationLabels?: unknown }).laterMigrationLabels;
+    expect(() => evaluateGates(facts)).toThrow(/laterMigrationLabels/);
+  });
+});

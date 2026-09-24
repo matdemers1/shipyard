@@ -1,0 +1,9 @@
+x-base: &base
+  image: ghcr.io/matdemers1/toy/app:sha-0000000000000000000000000000000000000000
+  restart: unless-stopped
+
+services:
+  app:
+    <<: *base
+    ports:
+      - "3000"

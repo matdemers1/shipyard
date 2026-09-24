@@ -38,8 +38,10 @@ interface FakeFile {
   mtimeMs: number;
 }
 
-function fakeFs(files: FakeFile[] = []): { fs: FsPort; written: { path: string; content: string }[] } {
+/** `before` is what the directory held before the step ran; `files` is what it holds after. */
+function fakeFs(files: FakeFile[] = [], before: FakeFile[] = []): { fs: FsPort; written: { path: string; content: string }[] } {
   const written: { path: string; content: string }[] = [];
+  let listed = 0;
   const fs: FsPort = {
     readFile: () => Promise.reject(new Error('not implemented')),
     writeFileAtomic: (path, content) => {
@@ -49,12 +51,29 @@ function fakeFs(files: FakeFile[] = []): { fs: FsPort; written: { path: string; 
     appendLine: () => Promise.resolve(),
     exists: () => Promise.resolve(true),
     mkdirp: () => Promise.resolve(),
-    list: () => Promise.resolve(files),
+    list: () => Promise.resolve(listed++ === 0 ? before : files),
   };
   return { fs, written };
 }
 
 describe('runBackup', () => {
+  it('never takes a file that existed before the step, even one with a future-skewed mtime', async () => {
+    const { docker } = fakeDocker();
+    const stale = { path: '/backups/stale.tar', size: 100, mtimeMs: 50_000_000 };
+    const { fs } = fakeFs([stale], [stale]);
+    await expect(
+      runBackup({ docker, fs, clock: fakeClock(1000) }, TARGET, { service: 'db', argv: ['backup'], artifactsDir: '/backups' }),
+    ).rejects.toThrow(RefusalError);
+  });
+
+  it('never takes a new file whose mtime lies beyond the step', async () => {
+    const { docker } = fakeDocker();
+    const { fs } = fakeFs([{ path: '/backups/future.tar', size: 100, mtimeMs: 50_000_000 }]);
+    await expect(
+      runBackup({ docker, fs, clock: fakeClock(1000) }, TARGET, { service: 'db', argv: ['backup'], artifactsDir: '/backups' }),
+    ).rejects.toThrow(RefusalError);
+  });
+
   it('records the newest non-empty file created since the step began, and never stores output', async () => {
     const secretOutput = { exitCode: 0, stdout: 'DB_PASSWORD=hunter2 dumped', stderr: '' };
     const { docker, calls } = fakeDocker({ execResult: secretOutput });
@@ -78,9 +97,9 @@ describe('runBackup', () => {
   it('picks the newest of several new files', async () => {
     const { docker } = fakeDocker();
     const { fs } = fakeFs([
-      { path: '/backups/a.tar', size: 10, mtimeMs: 1500 },
-      { path: '/backups/b.tar', size: 10, mtimeMs: 3000 },
-      { path: '/backups/c.tar', size: 10, mtimeMs: 2000 },
+      { path: '/backups/a.tar', size: 10, mtimeMs: 1200 },
+      { path: '/backups/b.tar', size: 10, mtimeMs: 1900 },
+      { path: '/backups/c.tar', size: 10, mtimeMs: 1500 },
     ]);
     const clock = fakeClock(1000);
 

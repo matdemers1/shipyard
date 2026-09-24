@@ -4,26 +4,62 @@
     "facts": {
       "kind": "rollback",
       "workflowRuns": [],
-      "onDefaultBranch": { "status": "behind" },
-      "aheadOfLive": { "status": "behind" },
-      "live": { "sha": "facadefacadefacadefacadefacadefacadeface" }
+      "onDefaultBranch": {
+        "status": "behind"
+      },
+      "aheadOfLive": {
+        "status": "behind"
+      },
+      "live": {
+        "sha": "facadefacadefacadefacadefacadefacadeface"
+      },
+      "laterMigrationLabels": []
     },
     "expect": [
-      { "gate": "disk", "pass": true },
-      { "gate": "G8", "pass": true }
+      {
+        "gate": "disk",
+        "pass": true
+      },
+      {
+        "gate": "G8",
+        "pass": true
+      },
+      {
+        "gate": "G10",
+        "pass": true
+      }
     ]
   },
   {
     "name": "still evaluates env and disk for a rollback",
     "facts": {
       "kind": "rollback",
-      "manifest": { "requiredEnv": ["TOKEN"] },
-      "envNamesPresent": []
+      "manifest": {
+        "requiredEnv": [
+          "TOKEN"
+        ]
+      },
+      "envNamesPresent": [],
+      "laterMigrationLabels": []
     },
     "expect": [
-      { "gate": "disk", "pass": true },
-      { "gate": "G8", "pass": true },
-      { "gate": "G9", "pass": false, "code": "env_missing" }
+      {
+        "gate": "disk",
+        "pass": true
+      },
+      {
+        "gate": "G8",
+        "pass": true
+      },
+      {
+        "gate": "G9",
+        "pass": false,
+        "code": "env_missing"
+      },
+      {
+        "gate": "G10",
+        "pass": true
+      }
     ]
   },
   {
@@ -31,12 +67,25 @@
     "facts": {
       "kind": "rollback",
       "freeBytes": 1024,
-      "laterMigrationLabels": ["contract"]
+      "laterMigrationLabels": [
+        "contract"
+      ]
     },
     "expect": [
-      { "gate": "disk", "pass": false, "code": "insufficient_disk" },
-      { "gate": "G8", "pass": true },
-      { "gate": "G10", "pass": false, "code": "later_contract_release" }
+      {
+        "gate": "disk",
+        "pass": false,
+        "code": "insufficient_disk"
+      },
+      {
+        "gate": "G8",
+        "pass": true
+      },
+      {
+        "gate": "G10",
+        "pass": false,
+        "code": "later_contract_release"
+      }
     ]
   }
 ]

@@ -133,6 +133,19 @@ describe('workflowRuns', () => {
     expect(runs.some((r) => r.conclusion === 'success')).toBe(true);
   });
 
+  it('refuses a pagination link to another origin rather than sending the token there', async () => {
+    const page1 = new Response(JSON.stringify({ total_count: 40, workflow_runs: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json', link: '<https://evil.example.com/steal?page=2>; rel="next"' },
+    });
+    const fetchStub = vi.fn(() => Promise.resolve(page1));
+    const adapter = createGitHubAdapter({ fetch: fetchStub as unknown as typeof fetch, token: 'pat-secret' });
+    await expect(adapter.workflowRuns(REPO, 'ci.yml', SUCCESS_SHA)).rejects.toMatchObject({
+      refusal: { code: 'github_unreachable' },
+    });
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
   it('caps pagination at 5 pages and never fetches a 6th (synthetic fixtures)', async () => {
     const fetchStub = fetchFor(
       'workflow-runs-cap-page1',

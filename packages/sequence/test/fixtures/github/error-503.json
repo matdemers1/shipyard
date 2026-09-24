@@ -1,0 +1,11 @@
+{
+  "synthetic": true,
+  "status": 503,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "message": "Service Unavailable",
+    "documentation_url": "https://docs.github.com/rest"
+  }
+}

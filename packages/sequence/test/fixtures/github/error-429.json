@@ -1,0 +1,12 @@
+{
+  "synthetic": true,
+  "status": 429,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "retry-after": "60"
+  },
+  "body": {
+    "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+    "documentation_url": "https://docs.github.com/rest"
+  }
+}

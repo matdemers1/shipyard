@@ -1,0 +1,12 @@
+{
+  "targetId": "tgt_01HZY",
+  "state": "succeeded",
+  "images": [
+    {
+      "service": "server",
+      "sha": "0123456789abcdef0123456789abcdef01234567",
+      "digest": "sha256:5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd"
+    }
+  ],
+  "schemaRevision": "20260924_01"
+}

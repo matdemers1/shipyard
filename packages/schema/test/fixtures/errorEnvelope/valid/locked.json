@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "locked",
+    "gate": "G4",
+    "message": "Another deploy is in progress for bindery.",
+    "fix": "Wait for the current deploy to finish, or ask its holder to release the lock."
+  }
+}

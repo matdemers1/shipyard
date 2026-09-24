@@ -1,0 +1,10 @@
+{
+  "targetId": "tgt_01HZY",
+  "state": "refused",
+  "images": [],
+  "refusal": {
+    "code": "ci_not_green",
+    "gate": "G5",
+    "message": "The image workflow for this SHA has not succeeded."
+  }
+}

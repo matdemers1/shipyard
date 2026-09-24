@@ -1,0 +1,6 @@
+{
+  "targetId": "tgt_01HZY",
+  "name": "migrate",
+  "argv": ["pnpm", "run", "migrate"],
+  "phase": "start"
+}

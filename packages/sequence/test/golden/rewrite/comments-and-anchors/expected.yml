@@ -1,0 +1,12 @@
+# top-level comment, must survive
+x-common: &defaults
+  restart: unless-stopped
+
+services:
+  app:
+    <<: *defaults
+    image: ghcr.io/matdemers1/toy/app:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb # inline comment on the image line
+    ports:
+      - "8080:8080" # port comment
+  db:
+    image: postgres:16 # unrelated service, untouched

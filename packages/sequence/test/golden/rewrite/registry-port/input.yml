@@ -1,0 +1,3 @@
+services:
+  app:
+    image: registry:5000/toy/app:sha-0000000000000000000000000000000000000000

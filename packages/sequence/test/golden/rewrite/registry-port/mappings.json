@@ -1,0 +1,7 @@
+[
+  {
+    "service": "app",
+    "repo": "registry:5000/toy/app",
+    "reference": "registry:5000/toy/app:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+]

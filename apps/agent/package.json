@@ -1,0 +1,17 @@
+{
+  "name": "shipyard-agent",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Touches Docker, faces nothing: no listening port, signed long-poll to the server, re-verifies every request itself",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@shipyard/schema": "workspace:*"
+  }
+}

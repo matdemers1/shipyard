@@ -1,0 +1,23 @@
+{
+  "name": "@shipyard/schema",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Zod: manifest, API, MCP tools, agent protocol and the error catalogue — one source for validation, types and OpenAPI (SHP-REQ-004)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  }
+}

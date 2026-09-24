@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "harness",
+    "fake-github",
+    "toy-app",
+    "tests",
+    "*.config.ts"
+  ]
+}

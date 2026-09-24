@@ -11,4 +11,26 @@ trustPolicyIgnoreAfter: 43200
 blockExoticSubdeps: true
 
 # pnpm 10 runs no install scripts unless named; each entry is a decision recorded when it is added.
-onlyBuiltDependencies: []
+# Allowed, because the project does not work without them: argon2 builds its native binding (without
+# it, hashing segfaults); esbuild installs the binary tsx and Vite run on; @prisma/engines fetches
+# the schema engine migrations use.
+onlyBuiltDependencies:
+  - argon2
+  - esbuild
+  - '@prisma/engines'
+# Refused, because nothing needs them: prisma's own postinstall (the build runs `prisma generate`).
+ignoredBuiltDependencies:
+  - prisma
+
+# prisma@7.10.0 (the CLI only) was published without the SLSA provenance 7.8.0–7.9.1 carried; its
+# runtime packages at 7.10.0 have it. A publishing slip, not a takeover — the same finding D3 Auth
+# recorded on 2026-09-16 and Foreman re-verified on 2026-09-17. Remove with the next Prisma upgrade.
+trustPolicyExclude:
+  - prisma@7.10.0
+
+# `@d3cloudio/auth-client` is first-party — published from the d3-auth repository by the operator, and
+# already read and depended on by Foreman (FRM ADR-010). The seven-day rule is about somebody else's
+# package being taken over. It is excused by exact version, not by name: a compromised 0.1.2 would be
+# a new release and would meet the seven-day wall like anything else.
+minimumReleaseAgeExclude:
+  - '@d3cloudio/auth-client@0.1.1'

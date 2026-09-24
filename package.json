@@ -15,6 +15,16 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present --filter '!e2e' test",
     "build": "pnpm -r --if-present build",
-    "e2e": "pnpm --filter e2e test"
+    "e2e": "pnpm --filter e2e test",
+    "test:integration": "pnpm --filter shipyard-server test:integration"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.3",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.1"
   }
 }

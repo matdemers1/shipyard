@@ -25,7 +25,10 @@ export const Config = z
     // How many reverse-proxy hops sit in front of the server (a tunnel is one). Unset means none,
     // so `req.ip` is the socket peer. Behind a proxy with this unset, every client shares the
     // proxy's address, and the per-IP sign-in throttle becomes one bucket anyone can fill.
-    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).optional(),
+    TRUST_PROXY_HOPS: z.preprocess(
+      (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+      z.coerce.number().int().min(0).max(5).optional(),
+    ),
   })
   .transform((c) => ({
     ...c,

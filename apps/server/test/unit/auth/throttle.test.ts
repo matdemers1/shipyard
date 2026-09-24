@@ -99,3 +99,21 @@ describe('MfaTickets', () => {
     expect(tickets.state({ userId: 'u', nonce: 'x' }, T)).toBe('superseded');
   });
 });
+
+describe('Throttle bound', () => {
+  it('sheds unblocked keys before a live block when the map is full', () => {
+    let now = 0;
+    const throttle = new Throttle({
+      limits: { maxFailures: 2, windowMs: 1000, coolOffMs: 1000 },
+      maxKeys: 4,
+      now: () => now,
+    });
+    throttle.recordFailure('admin');
+    throttle.recordFailure('admin');
+    expect(throttle.blockedUntil('admin')).toBe(1000);
+    for (let i = 0; i < 10; i += 1) throttle.recordFailure(`junk-${String(i)}`);
+    expect(throttle.blockedUntil('admin')).toBe(1000);
+    now = 1001;
+    expect(throttle.blockedUntil('admin')).toBeNull();
+  });
+});

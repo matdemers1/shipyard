@@ -98,7 +98,16 @@ export class Throttle {
     for (const [key, entry] of this.entries) {
       if (entry.windowEndsAt <= now && entry.blockedUntil <= now) this.entries.delete(key);
     }
-    // Map iteration is insertion order: the first keys are the oldest.
+    if (this.entries.size < this.maxKeys) return;
+    // Over the bound: shed the oldest keys that are *not* in a cool-off first. Evicting a live block
+    // would let a flood of junk keys (many addresses, random emails) clear an account's lockout and
+    // buy fresh guesses. Map iteration is insertion order, so the first keys are the oldest.
+    for (const [key, entry] of this.entries) {
+      if (this.entries.size < this.maxKeys) return;
+      if (entry.blockedUntil <= now) this.entries.delete(key);
+    }
+    // Every tracked key is blocked. Only now does the bound win over the oldest block; a flood
+    // big enough to get here has already cost one address's cap for every blocked key.
     while (this.entries.size >= this.maxKeys) {
       const oldest = this.entries.keys().next();
       if (oldest.done === true) break;

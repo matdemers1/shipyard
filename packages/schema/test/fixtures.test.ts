@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 import { parse as parseYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import type { ZodType } from 'zod';
+import { z, type ZodType } from 'zod';
 
+import * as schemaExports from '../src/index.js';
 import {
   Manifest,
   ErrorEnvelope,
@@ -16,6 +17,24 @@ import {
   TargetResult,
   DeployRequest,
   HealthResponse,
+  AppName,
+  Sha40,
+  ImageTag,
+  Digest,
+  GhRepo,
+  ProjectCode,
+  Argv,
+  Step,
+  Gate,
+  ErrorCode,
+  DeployTargetState,
+  SignatureHeaders,
+  PollRequest,
+  Requester,
+  DeployKind,
+  DeployAccepted,
+  LoginRequest,
+  TotpRequest,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -45,7 +64,34 @@ const SCHEMAS: Record<string, ZodType> = {
   mcpDeploy: ShipyardDeployInput,
   mcpDeployStatus: ShipyardDeployStatusInput,
   mcpRollback: ShipyardRollbackInput,
+  appName: AppName,
+  sha40: Sha40,
+  imageTag: ImageTag,
+  digest: Digest,
+  ghRepo: GhRepo,
+  projectCode: ProjectCode,
+  argv: Argv,
+  step: Step,
+  gate: Gate,
+  errorCode: ErrorCode,
+  deployTargetState: DeployTargetState,
+  signatureHeaders: SignatureHeaders,
+  pollRequest: PollRequest,
+  requester: Requester,
+  deployKind: DeployKind,
+  deployAccepted: DeployAccepted,
+  loginRequest: LoginRequest,
+  totpRequest: TotpRequest,
 };
+
+// Every exported value of ../src/index.js that is itself a Zod schema (as
+// opposed to a helper function, a plain object such as MCP_TOOLS, or a type)
+// must have a SCHEMAS entry with fixtures on disk — this is what stops the
+// coverage gap from coming back.
+const INDEX_SCHEMAS = (Object.entries(schemaExports) as [string, unknown][]).filter(
+  (entry): entry is [string, ZodType] => entry[1] instanceof z.ZodType,
+);
+const SCHEMAS_BY_REFERENCE = new Set(Object.values(SCHEMAS));
 
 function loadFixture(path: string): unknown {
   const text = readFileSync(path, 'utf-8');
@@ -88,6 +134,23 @@ describe('fixtures', () => {
           expect(result.success).toBe(false);
         });
       }
+    });
+  }
+});
+
+describe('fixture completeness', () => {
+  it('covers every Zod schema exported from src/index.ts', () => {
+    for (const [exportName, schema] of INDEX_SCHEMAS) {
+      expect(SCHEMAS_BY_REFERENCE.has(schema), `no SCHEMAS entry references the export "${exportName}"`).toBe(true);
+    }
+  });
+
+  for (const [name] of Object.entries(SCHEMAS)) {
+    it(`${name} has at least one valid and two invalid fixture files on disk`, () => {
+      const validFiles = listFiles(join(fixturesRoot, name, 'valid'));
+      const invalidFiles = listFiles(join(fixturesRoot, name, 'invalid'));
+      expect(validFiles.length, `${name}/valid`).toBeGreaterThanOrEqual(1);
+      expect(invalidFiles.length, `${name}/invalid`).toBeGreaterThanOrEqual(2);
     });
   }
 });

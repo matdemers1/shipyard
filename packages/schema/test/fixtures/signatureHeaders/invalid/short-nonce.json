@@ -1,0 +1,6 @@
+{
+  "x-shipyard-key": "agent-1",
+  "x-shipyard-timestamp": "1700000000",
+  "x-shipyard-nonce": "short",
+  "x-shipyard-signature": "c2lnbmF0dXJlYnl0ZXM="
+}

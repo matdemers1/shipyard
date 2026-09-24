@@ -13,6 +13,7 @@ export default defineConfig({
           // A shared database makes these order-dependent; they run one file at a time.
           fileParallelism: false,
           hookTimeout: 30_000,
+          globalSetup: ['test/integration/global-setup.ts'],
         },
       },
     ],

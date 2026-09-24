@@ -3,15 +3,20 @@
   "repo": "matdemers1/bindery",
   "workflow": "ci.yml",
   "compose": {
-    "files": ["/DATA/apps/bindery/docker-compose.yml"],
+    "files": [
+      "/DATA/apps/bindery/docker-compose.yml"
+    ],
     "project": "bindery"
   },
   "services": {
-    "server": { "image": "ghcr.io/matdemers1/bindery/server" }
+    "server": {
+      "image": "ghcr.io/matdemers1/bindery/server"
+    }
   },
   "health": {
     "service": "server",
-    "path": "/health"
+    "path": "/health",
+    "port": 3000
   },
   "steps": {
     "migrate": {

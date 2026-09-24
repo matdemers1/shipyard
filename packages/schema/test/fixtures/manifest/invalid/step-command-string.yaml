@@ -10,8 +10,11 @@ services:
     image: ghcr.io/matdemers1/bindery/server
 health:
   service: server
+  port: 3000
   path: /health
 steps:
   backup:
     service: server
+    artifactsDir: /DATA/apps/x/backups
+    argv: ["pnpm", "backup"]
     command: "rm -rf /"

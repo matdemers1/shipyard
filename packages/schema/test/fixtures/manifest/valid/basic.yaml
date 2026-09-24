@@ -13,13 +13,14 @@ services:
     image: ghcr.io/matdemers1/bindery/web
 health:
   service: server
+  port: 8000
   path: /health
-  expectSchema: HealthResponse
 soakSeconds: 120
 approval: required
 steps:
   backup:
     service: server
+    artifactsDir: /DATA/apps/bindery/backups
     argv:
       - pnpm
       - run

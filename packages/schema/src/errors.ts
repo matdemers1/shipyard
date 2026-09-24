@@ -46,6 +46,21 @@ export const ErrorCode = z
     'agent_offline',
     'conflict',
     'too_many_attempts',
+    'insufficient_disk',
+    'manifest_invalid',
+    'unknown_app',
+    'health_failed',
+    'digest_mismatch',
+    'revision_mismatch',
+    'schema_mismatch',
+    'step_failed',
+    'backup_failed',
+    'migrate_failed',
+    'interrupted',
+    'not_enrolled',
+    'rollback_target_invalid',
+    'restore_limited',
+    'image_line_invalid',
   ])
   .meta({ id: 'ErrorCode', description: 'Machine-readable refusal reason' });
 export type ErrorCode = z.infer<typeof ErrorCode>;
@@ -80,6 +95,21 @@ export const CATALOGUE: Record<ErrorCode, CatalogueEntry> = {
     httpStatus: 429,
     defaultFix: 'Too many failed sign-in attempts. Wait for the cooling-off period, then try again.',
   },
+  insufficient_disk: { gate: 'none', httpStatus: 507, defaultFix: "Free space on the Docker root (prune old images) or lower the manifest's diskFloorGb." },
+  manifest_invalid: { gate: 'none', httpStatus: 422, defaultFix: "Fix the named field in the app's manifest on the host." },
+  unknown_app: { gate: 'none', httpStatus: 404, defaultFix: "Add a manifest for this app on the host; the agent reports it on its next poll." },
+  health_failed: { gate: 'none', httpStatus: 502, defaultFix: "Check the app's logs; Shipyard rolled back to the previous images." },
+  digest_mismatch: { gate: 'none', httpStatus: 502, defaultFix: "The running container is not the verified image; check the compose file's image line." },
+  revision_mismatch: { gate: 'none', httpStatus: 502, defaultFix: "The image's org.opencontainers.image.revision label does not match the SHA; check the app's CI labels." },
+  schema_mismatch: { gate: 'none', httpStatus: 502, defaultFix: "/health reported a different schema revision than the release carries; check the migration." },
+  step_failed: { gate: 'none', httpStatus: 502, defaultFix: "Read the step's journaled output and fix the step before retrying." },
+  backup_failed: { gate: 'none', httpStatus: 502, defaultFix: "The backup did not exit 0 with a new non-empty artifact; nothing was swapped." },
+  migrate_failed: { gate: 'none', httpStatus: 502, defaultFix: "The migration failed before the swap; the old release is still serving." },
+  interrupted: { gate: 'none', httpStatus: 409, defaultFix: "The agent restarted mid-deploy and restored the last verified-good compose; request the deploy again." },
+  not_enrolled: { gate: 'none', httpStatus: 403, defaultFix: "Confirm the agent's key fingerprint in the console." },
+  rollback_target_invalid: { gate: 'none', httpStatus: 409, defaultFix: "Choose one of the last five releases in the agent's own ledger." },
+  restore_limited: { gate: 'none', httpStatus: 409, defaultFix: "Only backups the agent took may be restored, at most once per app per 24 hours." },
+  image_line_invalid: { gate: 'none', httpStatus: 409, defaultFix: "Every mapped service needs exactly one literal image: line for its repository in the compose file." },
 };
 
 export const Refusal = z

@@ -10,13 +10,21 @@
         "repo": "matdemers1/bindery",
         "workflow": "ci.yml",
         "compose": {
-          "files": ["/DATA/apps/bindery/docker-compose.yml"],
+          "files": [
+            "/DATA/apps/bindery/docker-compose.yml"
+          ],
           "project": "bindery"
         },
         "services": {
-          "server": { "image": "ghcr.io/matdemers1/bindery/server" }
+          "server": {
+            "image": "ghcr.io/matdemers1/bindery/server"
+          }
         },
-        "health": { "service": "server", "path": "/health" }
+        "health": {
+          "service": "server",
+          "path": "/health",
+          "port": 3000
+        }
       },
       "manifestSha256": "5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd",
       "running": {

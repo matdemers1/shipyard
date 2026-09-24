@@ -3,7 +3,7 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { Logger } from 'pino';
 import type { Db } from './db.js';
 
-/** Who did it, for the audit trail (SHP-REQ-006). A later task (login/tokens) sets `req.actor`. */
+/** Who did it, for the audit trail (SHP-REQ-006). `authenticate` (src/auth) sets `req.actor`. */
 export interface Actor {
   type: 'user' | 'token' | 'agent' | 'system';
   id?: string;
@@ -16,6 +16,12 @@ export interface AuditEventInput {
   entityId?: string;
   before?: unknown;
   after?: unknown;
+  /**
+   * Who did it, when `req.actor` does not say. Unauthenticated routes (login) pass the account
+   * they just resolved, or `{ type: 'system', label: 'anonymous' }` explicitly for a failed
+   * attempt. Takes precedence over `req.actor`.
+   */
+  actor?: Actor;
 }
 
 declare global {
@@ -32,7 +38,17 @@ declare global {
 
 const REQUEST_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const ANONYMOUS_ACTOR: Actor = { type: 'system', label: 'anonymous' };
+
+/** The explicit actor for an unauthenticated attempt (a failed login). Never a silent fallback. */
+export const ANONYMOUS_ACTOR: Actor = { type: 'system', label: 'anonymous' };
+
+/** Thrown by `req.audit` when neither the event nor the request names an actor. */
+export class MissingActorError extends Error {
+  constructor(action: string) {
+    super(`req.audit("${action}") called with no actor: set req.actor or pass event.actor`);
+    this.name = 'MissingActorError';
+  }
+}
 
 export interface AuditContextOptions {
   onUnauditedMutation?: (info: { method: string; path: string; requestId: string }) => void;
@@ -54,7 +70,10 @@ export function auditContext(db: Db, logger: Logger, options: AuditContextOption
     let audited = false;
 
     req.audit = async (event: AuditEventInput): Promise<void> => {
-      const actor = req.actor ?? ANONYMOUS_ACTOR;
+      // No fallback: an authenticated mutation that forgot its actor must fail loudly rather than
+      // be attributed to "anonymous system".
+      const actor = event.actor ?? req.actor;
+      if (actor === undefined) throw new MissingActorError(event.action);
       await db.auditEvent.create({
         data: {
           actorType: actor.type,

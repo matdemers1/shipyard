@@ -5,7 +5,7 @@ import type { Config } from './config.js';
 import { auditContext, type AuditContextOptions } from './audit.js';
 import type { Db } from './db.js';
 import { errorHandler, sendRefusal } from './errors.js';
-import { authenticate, authRouter } from './auth/index.js';
+import { authenticate, authRouter, type OidcClient } from './auth/index.js';
 import { openapiRouter } from './openapi.js';
 import { healthRouter } from './routes/health.js';
 
@@ -14,6 +14,8 @@ export interface AppDeps {
   logger: Logger;
   config: Config;
   onUnauditedMutation?: AuditContextOptions['onUnauditedMutation'];
+  /** Sign in with D3 Auth, built at boot by `createOidcClient`; null or absent means password only. */
+  oidc?: OidcClient | null;
   /**
    * Test-only seam: a router mounted at `/api/_test` before the 404 handler, so integration
    * tests can exercise `req.audit`/`req.actor` and the unaudited-mutation guard without a real
@@ -25,6 +27,7 @@ export interface AppDeps {
 /** Builds the Express app (SHP-T-0.4). Later tasks mount routers in the section marked below. */
 export function createApp(deps: AppDeps): Express {
   const { db, logger, config, onUnauditedMutation, testRouter } = deps;
+  const authDeps = { db, logger, config, oidc: deps.oidc ?? null };
 
   const app = express();
   app.disable('x-powered-by');
@@ -45,13 +48,13 @@ export function createApp(deps: AppDeps): Express {
   app.use(auditContext(db, logger, onUnauditedMutation === undefined ? {} : { onUnauditedMutation }));
 
   // Before every route, so `req.actor` is set by the time any handler (or `req.audit`) runs.
-  app.use(authenticate({ db, logger, config }));
+  app.use(authenticate(authDeps));
 
   app.use('/api', healthRouter(db, config.SHIPYARD_VERSION));
 
   // ── Registration section ──────────────────────────────────────────────
   // Feature routers mount here, before the 404 handler below.
-  app.use('/api/auth', authRouter({ db, logger, config }));
+  app.use('/api/auth', authRouter(authDeps));
   app.use('/api', openapiRouter());
   // ─────────────────────────────────────────────────────────────────────
 

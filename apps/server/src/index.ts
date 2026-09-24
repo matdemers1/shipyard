@@ -1,4 +1,5 @@
 import { createApp } from './app.js';
+import { createOidcClient } from './auth/index.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db.js';
 import { createLogger } from './logger.js';
@@ -6,7 +7,9 @@ import { createLogger } from './logger.js';
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);
 const db = createDb(config.DATABASE_URL);
-const app = createApp({ db, logger, config });
+// Never throws: an unreachable D3 Auth leaves password login working (SHP-REQ-001).
+const oidc = await createOidcClient(config, logger);
+const app = createApp({ db, logger, config, oidc });
 
 const server = app.listen(config.PORT, () => {
   logger.info({ port: config.PORT }, 'listening');

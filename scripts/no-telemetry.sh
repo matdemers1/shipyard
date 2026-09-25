@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # Static check that runtime code sends no telemetry (SHP-REQ-097, SHP-T-6.6): no literal host
-# other than the allowed set appears in a `http://`/`https://` literal under runtime source, and
-# the built console bundle (apps/web/dist) references no third-party origin.
+# other than the allowed set appears in a `http://`/`https://`/`ws://`/`wss://` literal under
+# runtime source or the built console bundle (apps/web/dist), and every `WebSocket(`,
+# `sendBeacon(` and `EventSource(` call site in runtime source is listed for a human reviewer,
+# flagged if its argument is a non-relative URL literal outside the allowlist.
 #
 # Usage: scripts/no-telemetry.sh
 # Exits non-zero and lists every offending literal (file:line, host) when something outside the
-# allowlist is found. This is a static, best-effort check, not a network sandbox — it catches a
-# literal host string in source; a host built only from runtime concatenation would not be caught
-# by the URL scan (the fetch/http-call listing below exists so a reviewer can still see every call
-# site by eye).
+# allowlist is found.
+#
+# Known limits (static, best-effort — not a network sandbox):
+#   - catches a literal host string (http/https/ws/wss) in source or the built bundle; a host
+#     built only from runtime string concatenation, template interpolation of a variable, or
+#     decoded from base64/hex at runtime would not be caught by either the URL scan or the
+#     call-site check below.
+#   - the WebSocket/sendBeacon/EventSource call-site check only flags an argument that is *itself*
+#     a string literal; a call site whose URL comes from a variable, a config read, or any
+#     computed expression is listed (for a human to eyeball) but not auto-flagged, the same
+#     limitation the existing fetch/axios/http(s).request listing below has always had.
 
 set -euo pipefail
 
@@ -52,17 +61,47 @@ for dir in "${runtime_dirs[@]}"; do
     while IFS= read -r line; do
       lineno="${line%%:*}"
       rest="${line#*:}"
-      # Pull every http(s):// literal out of this line (there can be more than one).
-      while [[ "$rest" =~ https?://([A-Za-z0-9._-]+) ]]; do
-        host="${BASH_REMATCH[1]}"
+      # Pull every http(s)://  or ws(s):// literal out of this line (there can be more than one).
+      while [[ "$rest" =~ (https?|wss?)://([A-Za-z0-9._-]+) ]]; do
+        host="${BASH_REMATCH[2]}"
         rest="${rest#*"${BASH_REMATCH[0]}"}"
         if [[ ! "$host" =~ $allowed_hosts_regex ]]; then
           echo "$file:$lineno: disallowed host literal '$host'" >>"$findings_file"
           found_bad=1
         fi
       done
-    done < <(grep -n 'https\?://' "$file" || true)
+    done < <(grep -n -E 'https?://|wss?://' "$file" || true)
   done < <(find "$dir" -type f \( -name '*.ts' -o -name '*.tsx' \) -print0)
+done
+
+# WebSocket(...) / sendBeacon(...) / EventSource(...) call sites: listed for a human reviewer, and
+# auto-flagged when the argument is itself a non-relative URL string literal (a scheme, or `//`)
+# outside the allowed hosts — the same literal-only limit the URL scan above has.
+echo "--- WebSocket / sendBeacon / EventSource call sites in runtime source ---"
+for dir in "${runtime_dirs[@]}"; do
+  [ -d "$dir" ] || continue
+  while IFS= read -r line; do
+    echo "$line"
+    file="${line%%:*}"
+    rest="${line#*:}"
+    lineno="${rest%%:*}"
+    body="${rest#*:}"
+    if [[ "$body" =~ (WebSocket|sendBeacon|EventSource)\(\s*[\'\"\`]([^\'\"\`]+)[\'\"\`] ]]; then
+      call_name="${BASH_REMATCH[1]}"
+      arg="${BASH_REMATCH[2]}"
+      if [[ "$arg" =~ ^([a-zA-Z][a-zA-Z0-9+.-]*)://([A-Za-z0-9._-]+) ]]; then
+        host="${BASH_REMATCH[2]}"
+        if [[ ! "$host" =~ $allowed_hosts_regex ]]; then
+          echo "$file:$lineno: disallowed host literal '$host' in ${call_name}(...)" >>"$findings_file"
+          found_bad=1
+        fi
+      elif [[ "$arg" == //* ]]; then
+        echo "$file:$lineno: disallowed protocol-relative URL literal '$arg'" >>"$findings_file"
+        found_bad=1
+      fi
+    fi
+  done < <(grep -rn -E '\bWebSocket\(|\bsendBeacon\(|\bEventSource\(' "$dir" --include='*.ts' --include='*.tsx' 2>/dev/null \
+    | grep -v '/test/' | grep -v '\.test\.ts' | grep -v '/src/generated/' || true)
 done
 
 # Also list every fetch/axios/http(s).request call site under runtime source, for a human reviewer
@@ -86,8 +125,8 @@ echo "no-telemetry.sh: no disallowed host literal found under ${runtime_dirs[*]}
 # build apps/web first (`pnpm --filter shipyard-web build`), which CI's console job already does.
 web_dist="apps/web/dist"
 if [ -d "$web_dist" ]; then
-  third_party="$(grep -rohE 'https?://[A-Za-z0-9._-]+' "$web_dist" 2>/dev/null \
-    | sed -E 's#https?://##' \
+  third_party="$(grep -rohE '(https?|wss?)://[A-Za-z0-9._-]+' "$web_dist" 2>/dev/null \
+    | sed -E 's#(https?|wss?)://##' \
     | sort -u \
     | grep -vE "$allowed_hosts_regex" \
     | grep -vE "$bundle_only_hosts_regex" || true)"

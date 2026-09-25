@@ -26,6 +26,12 @@ full walkthrough (a tunnel, a real data root, backups, onboarding apps, issuing 
    authenticator app enrolled from the `otpauth://` URI. No `D3AUTH_*` variable was ever set —
    this is app-native login alone.
 
-`../../scripts/clean-install-check.sh` runs exactly this sequence, minus the two human acts (it
-drives them non-interactively), against a published image tag, and asserts sign-in works and no
-outbound network connection was attempted at boot.
+`../../scripts/clean-install-check.sh` runs this sequence — using these same four files, with the
+tag substituted the same way the Quick start's `sed` command does it, plus one small `-f` override
+(an internal Docker network and no published server port, so the whole exchange happens
+container-to-container and the network itself proves nothing dialed out) — minus the two human
+acts (it drives `bootstrap-admin` non-interactively instead), against a published image tag, and
+asserts sign-in works and no outbound network connection was attempted at boot. **It does not
+start the agent** — bringing it up would mount the calling machine's real Docker socket, which the
+check has no business touching; steps 5–7 above are exercised through `server` alone (the agent's
+own confirm step, step 6, is out of scope for the check).

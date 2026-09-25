@@ -58,15 +58,26 @@ with `https://` (`apps/server/src/auth/cookies.ts`), so a local, tunnel-free try
 `PUBLIC_URL=http://localhost:3466` (or whatever port you publish) — not `https://` — or the
 browser will never send the cookie back over plain HTTP.
 
-Then bring it up and pick a published image tag, `ghcr.io/matdemers1/shipyard/{server,agent}:sha-<40hex>`
-(see the Actions tab or GHCR package pages for the newest one on `main`):
+Pick a published image tag, `ghcr.io/matdemers1/shipyard/{server,agent}:sha-<40hex>` (see the
+Actions tab or GHCR package pages for the newest one on `main`), then set it into
+`docker-compose.yml` in place. The compose file pins **literal** tags on purpose, not `${...}`
+interpolation — some host dashboards (ZimaOS among them) refuse a compose file that interpolates,
+and a deploy through Shipyard itself always resolves to a literal digest, so the install should
+start the same way:
 
 ```bash
-SHIPYARD_TAG=sha-<40hex> docker compose --env-file server.env -p shipyard pull
-SHIPYARD_TAG=sha-<40hex> docker compose --env-file server.env -p shipyard up -d --wait postgres
-SHIPYARD_TAG=sha-<40hex> docker compose --env-file server.env -p shipyard \
+sed -i.bak "s/sha-<40hex>/sha-<the-40-hex-sha-you-picked>/g" docker-compose.yml && rm docker-compose.yml.bak
+```
+
+That one command rewrites the `server` and `agent` image lines (and the explanatory comments
+above them, harmlessly). Then bring it up:
+
+```bash
+docker compose -p shipyard pull
+docker compose -p shipyard up -d --wait postgres
+docker compose -p shipyard \
   run --rm --no-deps server node node_modules/prisma/build/index.js migrate deploy
-SHIPYARD_TAG=sha-<40hex> docker compose --env-file server.env -p shipyard up -d
+docker compose -p shipyard up -d
 curl -s http://localhost:3466/api/health   # {"status":"ok","schemaRevision":"…","version":"<sha>"}
 ```
 

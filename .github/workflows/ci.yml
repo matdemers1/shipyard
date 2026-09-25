@@ -218,3 +218,31 @@ jobs:
           echo "$labels" | jq -e --arg v "${{ steps.shipyard-labels.outputs.migration }}" '.["dev.d3cloud.shipyard.migration"] == $v' > /dev/null
           echo "$labels" | jq -e --arg v "${{ steps.shipyard-labels.outputs.schema }}" '.["dev.d3cloud.shipyard.schema"] == $v' > /dev/null
           echo "labels match: revision ${{ github.sha }}, migration ${{ steps.shipyard-labels.outputs.migration }}, schema ${{ steps.shipyard-labels.outputs.schema }}"
+
+  # SHP-REQ-096/097: no secrets in history, no telemetry in the code or the console bundle.
+  public-release-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @shipyard/schema build
+      - run: pnpm --filter shipyard-web build
+      - run: bash scripts/secret-scan.sh
+      - run: bash scripts/no-telemetry.sh
+
+  # SHP-T-6.6: the images just published install on a clean machine, from docs/install, and sign in
+  # app-natively (password + TOTP, no D3 Auth) with the server on a network that cannot reach out.
+  clean-install:
+    needs: images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: IMAGE_TAG=sha-${{ github.sha }} bash scripts/clean-install-check.sh

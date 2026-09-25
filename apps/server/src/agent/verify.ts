@@ -134,7 +134,14 @@ export function verifyAgentRequest(deps: ServiceDeps, opts: VerifyAgentOptions =
       return;
     }
 
-    // 4. The signature, over the bytes exactly as received.
+    // 4. The signature, over the bytes exactly as received. A body the JSON parser did not capture
+    // (another content type) is refused rather than verified as empty: the bytes signed must be
+    // the bytes a handler could ever read.
+    const declaredLength = Number(req.headers['content-length'] ?? '0');
+    if (req.rawBody === undefined && (declaredLength > 0 || req.headers['transfer-encoding'] !== undefined)) {
+      unauthenticated(res, 'Agent requests must send their body as application/json.');
+      return;
+    }
     const data = signingString({
       method: req.method,
       path: req.originalUrl,

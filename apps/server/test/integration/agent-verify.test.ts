@@ -131,6 +131,15 @@ describe('verifyAgentRequest', () => {
     expect(res.status).toBe(200);
   });
 
+  it('refuses a body the JSON parser did not capture, rather than verifying it as empty', async () => {
+    const key = makeKey();
+    await enrol(key);
+    const headers = signed(key, { method: 'POST', path: PATH, body: '' });
+    const res = await request(buildApp()).post(PATH).set(headers).set('content-type', 'text/plain').send('rm -rf /');
+    expect(res.status).toBe(401);
+    expect(b(res).error?.code).toBe('unauthenticated');
+  });
+
   it('rejects a tampered body', async () => {
     const key = makeKey();
     await enrol(key);

@@ -6,6 +6,8 @@ import { defineConfig } from 'vitest/config';
 // is repeated inside each project below.
 const schemaAlias = {
   '@shipyard/schema': resolve(import.meta.dirname, '../../packages/schema/src/index.ts'),
+  // The server reads GitHub through the engine's adapter (commits waiting); same reason.
+  '@shipyard/sequence': resolve(import.meta.dirname, '../../packages/sequence/src/index.ts'),
 };
 
 // Named projects, because CI gates in layers: lint → unit → integration → e2e.

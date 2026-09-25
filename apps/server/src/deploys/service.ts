@@ -14,6 +14,7 @@ import { assertCanActOn, type Role } from '../auth/scope.js';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { assertDeployable } from '../apps/drift.js';
+import { assertNotFrozen } from '../freeze/service.js';
 
 /**
  * Deploy requests, dry runs and status (SHP-T-2.5). The server pre-checks only G1 (authorisation),
@@ -135,6 +136,14 @@ export async function createDeploy(
 
   if (input.kind === 'restore') {
     return refusal('invalid_request', 'Restores are not requested through this endpoint.');
+  }
+
+  // A frozen app refuses new deploys — its dry run included, since a dry run reports what a real
+  // deploy would do — but a rollback (and a restore, refused above already) is still allowed
+  // (SHP-REQ-077, SHP-D-049, gate G2).
+  if (input.kind === 'deploy') {
+    const frozen = await assertNotFrozen(db, appName);
+    if (frozen !== null) return frozen;
   }
 
   // Who asked, for the lock refusal and the audit trail. A token (MCP) must say who it acts for.

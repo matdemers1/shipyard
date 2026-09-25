@@ -18,6 +18,7 @@ import {
   StepJournal,
   TargetResult,
   SignatureHeaders,
+  FreezeRequest,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -65,6 +66,7 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   StepJournal,
   TargetResult,
   SignatureHeaders,
+  FreezeRequest,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -84,6 +86,7 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   StepJournal: 'stepJournal',
   TargetResult: 'targetResult',
   SignatureHeaders: 'signatureHeaders',
+  FreezeRequest: 'freezeRequest',
 };
 
 describe('request schema coverage', () => {

@@ -6,6 +6,8 @@ import { sendRefusal } from '../errors.js';
 import { assertCanActOn } from '../auth/scope.js';
 import { callerFromRequest, createDeploy, isRefusal, lockRefusal, type DeployableCheck } from '../deploys/service.js';
 import { assertDeployable, clearDrifted, recordedRelease, type DigestMap } from './drift.js';
+import { activeFreezeInfo } from '../freeze/service.js';
+export type { FreezeInfo } from '@shipyard/schema';
 
 /**
  * App detail (SHP-T-3.5): the rollback targets the agent's ledger would accept (SHP-REQ-063,
@@ -120,6 +122,13 @@ export async function rollbackTargets(db: Db, appId: string): Promise<RollbackTa
   }
   return out;
 }
+
+/**
+ * The active freeze on the app, `{reason, by, from, until}`, for the app detail response
+ * (SHP-T-5.1, SHP-REQ-077) — null when it is not frozen. `apps/index.ts`'s `GET /:app` spreads
+ * `{ freeze: await activeFreeze(db, row.id) }` into its response.
+ */
+export const activeFreeze = activeFreezeInfo;
 
 /** The recorded release's schema revision, when the agent reported one. */
 export async function liveSchemaRevision(db: Db, targetId: string | undefined): Promise<string | null> {

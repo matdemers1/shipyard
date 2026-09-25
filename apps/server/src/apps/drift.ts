@@ -117,3 +117,12 @@ export async function assertDeployable(db: DbClient, appName: string): Promise<R
   }
   return null;
 }
+
+/**
+ * Clears `app.driftedAt` once a deployer has resolved the drift (SHP-REQ-066): adopt-live or
+ * redeploy-recorded, in `detail.ts`. The only app-row write outside the report, kept here so the
+ * report and drift remain the only writers (SHP-REQ-104).
+ */
+export async function clearDrifted(db: DbClient, appId: string): Promise<void> {
+  await db.app.update({ where: { id: appId }, data: { driftedAt: null } });
+}

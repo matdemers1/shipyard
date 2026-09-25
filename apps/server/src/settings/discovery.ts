@@ -71,13 +71,15 @@ export async function testDiscovery(
   if (Number(res.headers.get('content-length') ?? '0') > MAX_BYTES) {
     return blank(issuer, 'The discovery document is too large to be one.');
   }
-  let text: string;
+  // Read at most MAX_BYTES and stop: a response with no Content-Length (chunked) is capped while it
+  // streams, not after it has all been buffered.
+  let text: string | null;
   try {
-    text = await res.text();
+    text = await readCapped(res, MAX_BYTES);
   } catch (error) {
     return blank(issuer, describeFetchError(error, timeoutMs));
   }
-  if (text.length > MAX_BYTES) return blank(issuer, 'The discovery document is too large to be one.');
+  if (text === null) return blank(issuer, 'The discovery document is too large to be one.');
 
   let doc: unknown;
   try {
@@ -112,4 +114,24 @@ export async function testDiscovery(
     jwksUri,
     error,
   };
+}
+
+/** The body as text, or null once it passes `max` bytes (the stream is cancelled there). */
+async function readCapped(res: Response, max: number): Promise<string | null> {
+  if (res.body === null) return '';
+  const reader: ReadableStreamDefaultReader<Uint8Array> = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    const value: Uint8Array = next.value;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }

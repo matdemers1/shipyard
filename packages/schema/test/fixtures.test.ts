@@ -47,6 +47,7 @@ import {
   RestoreRequest,
   RestoreCandidate,
   RestoreCandidates,
+  ScheduleRequest,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -106,6 +107,7 @@ const SCHEMAS: Record<string, ZodType> = {
   restoreRequest: RestoreRequest,
   restoreCandidate: RestoreCandidate,
   restoreCandidates: RestoreCandidates,
+  scheduleRequest: ScheduleRequest,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

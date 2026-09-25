@@ -20,6 +20,10 @@ import { commitsRouter } from './apps/commits.js';
 import { deployEventsRouter } from './deploys/events.js';
 import { usersRouter } from './users/index.js';
 import { healthRouter } from './routes/health.js';
+import { freezeRouter } from './freeze/index.js';
+import { groupsRouter } from './groups/index.js';
+import { schedulesRouter } from './schedules/index.js';
+import { restoreRouter } from './restore/index.js';
 
 export interface AppDeps {
   db: Db;
@@ -82,6 +86,10 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api', openapiRouter());
   app.use('/api/agent', agentRouter(serviceDeps));
   app.use('/api/apps', commitsRouter(serviceDeps));
+  app.use('/api/apps', freezeRouter(serviceDeps));
+  app.use('/api/apps', restoreRouter(serviceDeps));
+  app.use('/api/groups', groupsRouter(serviceDeps));
+  app.use('/api/schedules', schedulesRouter(serviceDeps));
   app.use('/api/apps', appsRouter(serviceDeps));
   app.use('/api/deploys', deployEventsRouter(serviceDeps));
   app.use('/api/deploys', approvalsRouter(serviceDeps));

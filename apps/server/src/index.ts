@@ -6,6 +6,7 @@ import { Bus } from './events.js';
 import { createLogger } from './logger.js';
 import { startApprovalExpiry } from './approvals/index.js';
 import { startOutbox } from './outbox/index.js';
+import { startScheduler } from './schedules/runner.js';
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);
@@ -17,6 +18,8 @@ const app = createApp({ db, logger, config, oidc, bus });
 const outbox = startOutbox({ db, logger, config, bus });
 // Unanswered approvals expire after an hour (SHP-REQ-061).
 const approvalExpiry = startApprovalExpiry({ db, logger, config, bus });
+// Due schedules fire with every gate re-run (SHP-REQ-080).
+const scheduler = startScheduler({ db, logger, config, bus });
 
 const server = app.listen(config.PORT, () => {
   logger.info({ port: config.PORT }, 'listening');
@@ -25,7 +28,7 @@ const server = app.listen(config.PORT, () => {
 function shutdown(signal: string): void {
   logger.info({ signal }, 'shutting down');
   server.close(() => {
-    Promise.all([outbox.stop(), approvalExpiry.stop()])
+    Promise.all([outbox.stop(), approvalExpiry.stop(), scheduler.stop()])
       .then(() => db.$disconnect())
       .catch((err: unknown) => {
         logger.error({ err }, 'error disconnecting db');

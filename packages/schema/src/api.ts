@@ -30,11 +30,17 @@ export const DeployRequest = z
     kind: DeployKind,
     app: AppName.optional(),
     group: z.string().min(1).optional(),
-    sha: Sha40,
+    /** Required for a deploy; for a rollback the SHA comes from the target deploy's record. */
+    sha: Sha40.optional(),
+    /** A rollback's target: an earlier deploy of the same app (checked against the agent's ledger). */
+    toDeployId: z.uuid().optional(),
     dryRun: z.boolean().optional(),
     requester: Requester.optional(),
   })
   .refine((v) => (v.app === undefined) !== (v.group === undefined), 'exactly one of app or group is required')
+  .refine((v) => v.kind !== 'deploy' || v.sha !== undefined, 'a deploy needs a sha')
+  .refine((v) => v.kind !== 'rollback' || (v.toDeployId !== undefined && v.app !== undefined), 'a rollback needs an app and toDeployId')
+  .refine((v) => v.kind === 'rollback' || v.toDeployId === undefined, 'toDeployId is only for a rollback')
   .meta({ id: 'DeployRequest', description: 'A request to deploy a single app or a group (SHP-REQ-004); the only host-reaching data is an app name and a 40-hex SHA' });
 export type DeployRequest = z.infer<typeof DeployRequest>;
 

@@ -112,7 +112,16 @@ export function useDeployProgress(id: string, options: ProgressOptions = {}): De
     const applyStatus = (status: DeployStatus): void => {
       const done = isTerminal(status.state);
       setState((s) => ({ ...s, status, done }));
-      if (done) stopAll();
+      if (done && !stopped) {
+        stopAll();
+        // The stream sends `status` before `steps`, so closing on a terminal status would drop the
+        // last steps — every step, for a deploy opened after it finished. Read them once more.
+        request<StepsResponse>(`${base}/steps`, { signal: abort.signal })
+          .then((res) => {
+            applySteps(res.steps);
+          })
+          .catch(() => undefined);
+      }
     };
     const applySteps = (steps: DeployStep[]): void => {
       setState((s) => ({ ...s, steps }));

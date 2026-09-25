@@ -6,13 +6,15 @@ import type { SheetAction } from './DryRunSheet';
 
 export interface ApprovalsBannerProps {
   approvals: PendingApproval[];
+  /** False for a viewer: Review still opens the read-only sheet, but Deny is hidden (SHP-REQ-105). */
+  canDeny?: boolean;
   onReview: (action: SheetAction) => void;
   /** Called after a deny succeeds, to refresh the list. */
   onDenied: () => void;
 }
 
 /** The approvals banner at the top of home (SHP-D-071, SHP-REQ-060). */
-export function ApprovalsBanner({ approvals, onReview, onDenied }: ApprovalsBannerProps) {
+export function ApprovalsBanner({ approvals, canDeny = true, onReview, onDenied }: ApprovalsBannerProps) {
   const [denying, setDenying] = useState<PendingApproval | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<RefusalError | null>(null);
@@ -54,16 +56,18 @@ export function ApprovalsBanner({ approvals, onReview, onDenied }: ApprovalsBann
                 >
                   Review
                 </Button>
-                <Button
-                  type="button"
-                  variant="danger-ghost"
-                  size="sm"
-                  onClick={() => {
-                    setDenying(approval);
-                  }}
-                >
-                  Deny
-                </Button>
+                {canDeny ? (
+                  <Button
+                    type="button"
+                    variant="danger-ghost"
+                    size="sm"
+                    onClick={() => {
+                      setDenying(approval);
+                    }}
+                  >
+                    Deny
+                  </Button>
+                ) : null}
               </Cluster>
             </Cluster>
           ))}

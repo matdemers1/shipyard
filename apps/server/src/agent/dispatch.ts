@@ -35,7 +35,11 @@ export async function claimTarget(db: Db, agentId: string): Promise<string | nul
       join "app" a on a."id" = t."app_id"
       join "deploy" d on d."id" = t."deploy_id"
       where a."agent_id" = ${agentId}::uuid
-        and t."dispatched_at" is null
+        -- Never dispatched, or dispatched two minutes ago and never started: the poll response
+        -- was lost (a proxy drop, an agent restart), and the agent reports its first state within
+        -- seconds of starting. Without this, a lost response would hold the app's lock forever.
+        and (t."dispatched_at" is null
+             or (t."started_at" is null and t."dispatched_at" < now() - interval '2 minutes'))
         and (t."state" = 'locked' or (t."state" = 'queued' and d."dry_run"))
       order by t."created_at", t."id"
       for update of t skip locked

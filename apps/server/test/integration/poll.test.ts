@@ -161,6 +161,16 @@ describe('POST /api/agent/poll (SHP-REQ-040)', () => {
     expect(await poll(0)).toEqual({ target: null });
   });
 
+  it('re-dispatches a target whose poll response was lost (dispatched, never started, 2 min)', async () => {
+    await deploy('web');
+    const first = targetOf(await poll(1));
+    // The agent never saw it: nothing started. Fresh, it is not handed out again...
+    expect((await poll(0)).target).toBeNull();
+    // ...but two minutes on it is, so the app's lock cannot be held forever.
+    await db.deployTarget.update({ where: { id: first.targetId }, data: { dispatchedAt: new Date(Date.now() - 3 * 60_000) } });
+    expect(targetOf(await poll(1)).targetId).toBe(first.targetId);
+  });
+
   it('two concurrent polls never take the same target (SKIP LOCKED)', async () => {
     await deploy('web');
     await deploy('api');

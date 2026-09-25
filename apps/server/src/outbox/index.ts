@@ -58,6 +58,26 @@ const DRAIN_INTERVAL_MS = 10_000;
 const MAX_ERROR_LENGTH = 500;
 
 /**
+ * The SHA that was live when `target` succeeded: the newest other successful, non-dry-run target of
+ * the same app that ended before it (a deploy or a rollback — either way, what was running). Null
+ * for an app's first release, which cites nothing.
+ */
+async function previousReleaseSha(db: Db, target: { id: string; appId: string; endedAt: Date | null }): Promise<string | null> {
+  const previous = await db.deployTarget.findFirst({
+    where: {
+      appId: target.appId,
+      id: { not: target.id },
+      state: 'succeeded',
+      deploy: { dryRun: false },
+      ...(target.endedAt === null ? {} : { endedAt: { lt: target.endedAt } }),
+    },
+    orderBy: [{ endedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
+    select: { images: { select: { sha: true }, take: 1 } },
+  });
+  return previous?.images[0]?.sha ?? null;
+}
+
+/**
  * Inserts one outbox row per image on `targetId`'s deploy target, idempotent by
  * `<targetId>:<service>` (SHP-REQ-048). An app with no `foremanProject` gets no rows
  * (SHP-D-062). Returns the number of rows actually inserted (0 when they already existed, or
@@ -79,9 +99,10 @@ export async function enqueueDeployment(db: Db, targetId: string): Promise<numbe
   // A rollback or a restore ships nothing new — the code at HEAD does not change, so there is
   // nothing to cite (SHP-REQ-088 is about what shipped). Only a plain `deploy`, with a prior
   // release recorded and the app's repo known, gets a changelog reference at all.
+  const base = target.deploy.kind === 'deploy' ? (target.liveShaBefore ?? (await previousReleaseSha(db, target))) : null;
   const changelogRef: ChangelogRef | null =
-    target.deploy.kind === 'deploy' && target.app.repo !== null && target.app.defaultBranch !== null && target.liveShaBefore !== null
-      ? { repo: target.app.repo, defaultBranch: target.app.defaultBranch, base: target.liveShaBefore, head: target.deploy.requestedSha }
+    base !== null && target.app.repo !== null && target.app.defaultBranch !== null
+      ? { repo: target.app.repo, defaultBranch: target.app.defaultBranch, base, head: target.deploy.requestedSha }
       : null;
 
   const rows = target.images.map((image) => {

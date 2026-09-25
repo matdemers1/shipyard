@@ -394,9 +394,11 @@ describe('drainOnce', () => {
 class FakeGitHub implements GitHubPort {
   compareResult: Awaited<ReturnType<GitHubPort['compare']>> = null;
   calls = 0;
+  ranges: string[] = [];
 
-  compare(_repo: string, _base: string, _head: string): ReturnType<GitHubPort['compare']> {
+  compare(_repo: string, base: string, head: string): ReturnType<GitHubPort['compare']> {
     this.calls++;
+    this.ranges.push(`${base}..${head}`);
     return Promise.resolve(this.compareResult);
   }
 
@@ -471,6 +473,36 @@ describe('drainOnce — Foreman tasks cited (SHP-T-5.9, SHP-REQ-088)', () => {
     const body = fake.posts[0]?.body as { tasks?: string[] };
     expect(body.tasks).toBeUndefined();
     expect(github.calls).toBe(0);
+  });
+
+  it('a real deploy target (no liveShaBefore written) cites from the release that was live before it', async () => {
+    fake = new FakeForeman();
+    await fake.start();
+
+    const github = new FakeGitHub();
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 1,
+      behindBy: 0,
+      commits: [{ sha: 'c'.repeat(40), message: 'SHP-T-5.9: cite shipped tasks' }],
+    };
+
+    const agentId = await makeAgent();
+    const appId = await makeApp(agentId, { repo: 'matdemers1/shipyard', defaultBranch: 'main' });
+    // The earlier release, then this one — as createDeploy and the agent's report leave them.
+    await makeSucceededTarget(appId, await makeDeploy({ requestedSha: 'a'.repeat(40) }), [
+      { service: 'web', repo: 'ghcr.io/x/web', sha: 'a'.repeat(40), digest: 'sha256:aaa' },
+    ]);
+    await new Promise((r) => setTimeout(r, 5));
+    const targetId = await makeSucceededTarget(appId, await makeDeploy({ requestedSha: 'c'.repeat(40) }), [
+      { service: 'web', repo: 'ghcr.io/x/web', sha: 'c'.repeat(40), digest: 'sha256:ccc' },
+    ]);
+    await enqueueDeployment(db, targetId);
+    await drainOnce(deps(fake.url), { now: new Date(), github });
+
+    expect(github.ranges).toEqual([`${'a'.repeat(40)}..${'c'.repeat(40)}`]);
+    const post = fake.posts.find((p) => (p.body as { imageSha?: string }).imageSha === 'sha256:ccc');
+    expect((post?.body as { tasks?: string[] }).tasks).toEqual(['SHP-T-5.9']);
   });
 
   it('sends no tasks on a first deploy (no liveShaBefore)', async () => {

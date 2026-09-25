@@ -53,6 +53,7 @@ export async function changelog(github: GitHubPort, repo: string, base: string, 
     message: firstLine(c.message),
     taskIds: taskIdsIn(c.message),
   }));
-  const taskIds = [...new Set(commits.flatMap((c) => c.taskIds))].sort();
+  // Every commit in range counts toward the task list, including those past the listing cap.
+  const taskIds = [...new Set(all.flatMap((c) => taskIdsIn(c.message)))].sort();
   return { commits, taskIds, truncated };
 }

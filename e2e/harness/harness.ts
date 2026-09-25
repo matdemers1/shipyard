@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -156,7 +156,11 @@ export async function startHarness(): Promise<Harness> {
   let stopped = false;
 
   // Created before `up`, so dind mounts a directory the test owns and every container may write to.
-  const sharedDir = await realpath(await mkdtemp(join(tmpdir(), 'shp-e2e-shared-')));
+  // Not under the OS temp dir: on Linux, /tmp inside dind is its own tmpfs, which hides a host
+  // directory mounted there (CI saw an empty root-owned dir). Under the e2e package it is shared.
+  const sharedRoot = join(fileURLToPath(new URL('..', import.meta.url)), '.shared');
+  await mkdir(sharedRoot, { recursive: true });
+  const sharedDir = await realpath(await mkdtemp(join(sharedRoot, 'shp-e2e-shared-')));
   await chmod(sharedDir, 0o777);
   tempDirs.add(sharedDir);
   const composeEnv: NodeJS.ProcessEnv = { ...process.env, SHP_E2E_SHARED_DIR: sharedDir };

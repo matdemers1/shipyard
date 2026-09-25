@@ -264,6 +264,8 @@ export function describeRestore(app: string, plan: RestorePlan): string {
 export async function runRestore(ports: SequencePorts, ctx: MachineContext, request: RestoreRequest): Promise<DeployResult> {
   const dryRun = request.dryRun === true;
   const log = ports.log.child({ deployId: request.deployId, app: request.app, restoreOf: request.backupOf });
+  // Another process (the agent, or a host CLI) may have appended since this ledger was opened.
+  await ctx.ledger.refresh();
   const loaded = ctx.manifests.get(request.app);
   // For the lock holder and the result only; everything is re-read from the ledger under the lock.
   const backup = ctx.ledger.backupArtifacts(request.app).findLast((a) => a.deployId === request.backupOf);
@@ -374,6 +376,8 @@ async function restoreLocked(
   target: ComposeTarget,
   backupOf: string,
 ): Promise<Outcome> {
+  // Nothing else can change this app's releases while its lock is held; adopt what landed before it.
+  await ctx.ledger.refresh();
   const verifyRecord = await run.begin('verify', { detail: { backupOf } });
   const resolved = await resolveRestore(ports, ctx.ledger, manifest, backupOf, { dryRun: false });
   const plan = resolved.plan;

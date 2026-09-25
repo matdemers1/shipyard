@@ -177,6 +177,8 @@ export async function resolveRollbackTarget(
 export async function runRollback(ports: SequencePorts, ctx: MachineContext, request: RollbackRequest): Promise<DeployResult> {
   const dryRun = request.dryRun === true;
   const log = ports.log.child({ deployId: request.deployId, app: request.app, rollbackTo: request.toDeployId });
+  // Another process (the agent, or a host CLI) may have appended since this ledger was opened.
+  await ctx.ledger.refresh();
   const loaded = ctx.manifests.get(request.app);
   // For the lock holder and the result only; the target is re-read from the ledger under the lock.
   const named = ctx.ledger.entries(request.app).findLast((e) => e.deployId === request.toDeployId);
@@ -267,6 +269,8 @@ export async function runRollback(ports: SequencePorts, ctx: MachineContext, req
 }
 
 async function rollbackLocked(ports: SequencePorts, ctx: MachineContext, run: Run, manifest: Manifest, toDeployId: string): Promise<Outcome> {
+  // Nothing else can change this app's releases while its lock is held; adopt what landed before it.
+  await ctx.ledger.refresh();
   const verifyRecord = await run.begin('verify', { detail: { rollbackTo: toDeployId } });
   const resolved = await resolveRollbackTarget(ports, ctx.ledger, manifest, toDeployId, { dryRun: false });
   await run.end(verifyRecord, {

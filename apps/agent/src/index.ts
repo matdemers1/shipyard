@@ -121,19 +121,21 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     isLive,
   });
 
+  // Opened once: the ledger's hash chain is verified on open. Appends take a cross-process lock and
+  // chain onto the file's true tail, since the host CLI appends to the same file (SHP-T-6.11).
+  const ledger = await Ledger.open(ports.fs, paths.ledgerPath);
+
   const reporting = startReporting(
     client,
     () =>
       buildReport(
-        { fs: ports.fs, docker: ports.docker, engineApiVersion: () => engineApiVersion(config.dockerHost) },
+        { fs: ports.fs, docker: ports.docker, engineApiVersion: () => engineApiVersion(config.dockerHost), ledger, log: logger },
         config.dataRoot,
         { agentVersion: config.agentVersion, patExpiresAt: github.tokenExpiresAt()?.toISOString() ?? null },
       ),
     { currentHash: () => manifestsHash(ports.fs, config.dataRoot), log: logger },
   );
 
-  // Opened once: the ledger's hash chain is verified on open, and appends are serialised in it.
-  const ledger = await Ledger.open(ports.fs, paths.ledgerPath);
   const runTarget = createTargetRunner({
     client,
     engine: {

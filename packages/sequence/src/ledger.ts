@@ -9,6 +9,10 @@ import type { FsPort } from './ports.js';
  * what actually happened (SHP-REQ-051), a restore can be limited to backups the agent itself took
  * (SHP-REQ-085), and a compromised server can only ask for what this chain already allows
  * (SHP-D-080). The chain is verified in full on `open`; any break throws.
+ *
+ * One file, several processes (SHP-T-6.11): the agent and a host `shipyard-run` share it. Every
+ * append takes the FsPort's cross-process lock, re-reads and verifies the file, and chains onto its
+ * true tail; `refresh()` adopts other writers' lines for the synchronous readers.
  */
 
 const GENESIS_HASH = '0'.repeat(64);
@@ -177,6 +181,46 @@ function parseLine(raw: string, lineNumber: number, isFinal: boolean): LedgerLin
   return parsed as LedgerLine;
 }
 
+/** Reads and verifies the whole chain at `path`. A missing or empty file is an empty ledger. */
+async function readVerified(fs: FsPort, path: string): Promise<LedgerLine[]> {
+  if (!(await fs.exists(path))) return [];
+  const content = await fs.readFile(path);
+  if (content.length === 0) return [];
+
+  const endsWithNewline = content.endsWith('\n');
+  const rawLines = content.split('\n').filter((l, i, arr) => !(i === arr.length - 1 && l === ''));
+
+  const lines: LedgerLine[] = [];
+  let prevHash = GENESIS_HASH;
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const lineNumber = i + 1;
+    const isFinal = i === rawLines.length - 1;
+    const raw = rawLines[i] ?? '';
+
+    if (isFinal && !endsWithNewline) {
+      throw new LedgerTamperedError(lineNumber, 'torn final line: no trailing newline, ledger writes are append-then-fsync');
+    }
+
+    const line = parseLine(raw, lineNumber, isFinal);
+
+    if (line.seq !== lineNumber) {
+      throw new LedgerTamperedError(lineNumber, `seq ${line.seq} is not contiguous (expected ${lineNumber})`);
+    }
+    if (line.prev !== prevHash) {
+      throw new LedgerTamperedError(lineNumber, `prev ${line.prev} does not match the previous line's hash ${prevHash}`);
+    }
+    const expectedHash = computeHash(line.prev, line.seq, line.entry);
+    if (line.hash !== expectedHash) {
+      throw new LedgerTamperedError(lineNumber, `hash does not match its recomputed value (entry or seq/prev was edited)`);
+    }
+
+    lines.push(line);
+    prevHash = line.hash;
+  }
+  return lines;
+}
+
 /** Backup artifact recorded for a deploy, for restore-eligibility checks (SHP-REQ-085). */
 export interface BackupArtifactRecord {
   app: string;
@@ -204,57 +248,74 @@ export class Ledger {
   static async open(fs: FsPort, path: string): Promise<Ledger> {
     const dir = path.slice(0, Math.max(0, path.lastIndexOf('/')));
     if (dir.length > 0) await fs.mkdirp(dir);
-
-    if (!(await fs.exists(path))) {
-      return new Ledger(fs, path, []);
-    }
-
-    const content = await fs.readFile(path);
-    if (content.length === 0) return new Ledger(fs, path, []);
-
-    const endsWithNewline = content.endsWith('\n');
-    const rawLines = content.split('\n').filter((l, i, arr) => !(i === arr.length - 1 && l === ''));
-
-    const lines: LedgerLine[] = [];
-    let prevHash = GENESIS_HASH;
-
-    for (let i = 0; i < rawLines.length; i++) {
-      const lineNumber = i + 1;
-      const isFinal = i === rawLines.length - 1;
-      const raw = rawLines[i] ?? '';
-
-      if (isFinal && !endsWithNewline) {
-        throw new LedgerTamperedError(lineNumber, 'torn final line: no trailing newline, ledger writes are append-then-fsync');
-      }
-
-      const line = parseLine(raw, lineNumber, isFinal);
-
-      if (line.seq !== lineNumber) {
-        throw new LedgerTamperedError(lineNumber, `seq ${line.seq} is not contiguous (expected ${lineNumber})`);
-      }
-      if (line.prev !== prevHash) {
-        throw new LedgerTamperedError(lineNumber, `prev ${line.prev} does not match the previous line's hash ${prevHash}`);
-      }
-      const expectedHash = computeHash(line.prev, line.seq, line.entry);
-      if (line.hash !== expectedHash) {
-        throw new LedgerTamperedError(lineNumber, `hash does not match its recomputed value (entry or seq/prev was edited)`);
-      }
-
-      lines.push(line);
-      prevHash = line.hash;
-    }
-
-    return new Ledger(fs, path, lines);
+    const ledger = new Ledger(fs, path, []);
+    // Under the cross-process lock, so a line another process is appending is never read torn.
+    await ledger.locked(async () => {
+      ledger.lines = await readVerified(fs, path);
+    });
+    return ledger;
   }
 
-  /** Validates, chains and appends one entry; serialized against concurrent callers. */
+  /**
+   * Runs `fn` serialised within this process (the write queue) and, when the FsPort offers one,
+   * holding the cross-process lock on the ledger file (SHP-T-6.11).
+   */
+  private locked(fn: () => Promise<void>): Promise<void> {
+    const task = this.writeQueue.then(async () => {
+      const release = this.fs.lock === undefined ? null : await this.fs.lock(this.path);
+      try {
+        await fn();
+      } finally {
+        await release?.();
+      }
+    });
+    // Keep the queue alive even if this task fails, so later ones still serialize correctly, but
+    // let a failure of *this* task reject its own caller.
+    this.writeQueue = task.catch(() => undefined);
+    return task;
+  }
+
+  /**
+   * Re-reads the file and adopts lines another process appended since this instance last looked,
+   * after verifying the whole chain and that every line this instance already holds is still there,
+   * unchanged. Throws `LedgerTamperedError` otherwise, leaving what it held in place. Must run under
+   * the lock.
+   */
+  private async adoptTail(): Promise<void> {
+    const onDisk = await readVerified(this.fs, this.path);
+    if (onDisk.length < this.lines.length) {
+      throw new LedgerTamperedError(onDisk.length + 1, `the file holds ${onDisk.length} lines but ${this.lines.length} were read before: it was truncated`);
+    }
+    const tip = this.lines.at(-1);
+    if (tip !== undefined && onDisk[tip.seq - 1]?.hash !== tip.hash) {
+      throw new LedgerTamperedError(tip.seq, 'the line read before at this seq has changed on disk');
+    }
+    this.lines = onDisk;
+  }
+
+  /**
+   * Adopts what other processes (the agent and a host CLI share one ledger file) appended since
+   * this instance last read it. The engine calls it before every decision it takes from the ledger —
+   * at the start of a deploy, rollback or restore and again once the app lock is held — and the
+   * agent before it reports; the synchronous readers below answer from what was last adopted.
+   */
+  refresh(): Promise<void> {
+    return this.locked(() => this.adoptTail());
+  }
+
+  /**
+   * Validates, chains and appends one entry. Under the cross-process lock it first adopts any
+   * lines another process appended (refusing, and writing nothing, when they do not verify), so the
+   * new line always chains onto the file's true tail.
+   */
   append(entry: LedgerRecord): Promise<void> {
     try {
       validateRecord(entry);
     } catch (err) {
       return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }
-    const task = this.writeQueue.then(async () => {
+    return this.locked(async () => {
+      await this.adoptTail();
       const last = this.lines.at(-1);
       const seq = (last?.seq ?? 0) + 1;
       const prev = last?.hash ?? GENESIS_HASH;
@@ -263,10 +324,6 @@ export class Ledger {
       await this.fs.appendLine(this.path, JSON.stringify(line));
       this.lines.push(line);
     });
-    // Keep the queue alive even if this append fails, so later appends still serialize correctly,
-    // but let a failure of *this* append reject its own caller.
-    this.writeQueue = task.catch(() => undefined);
-    return task;
   }
 
   /** All release entries (deploys and rollbacks) for `app`, oldest first. Backups and restores are not releases. */

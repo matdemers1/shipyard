@@ -105,6 +105,11 @@ export interface DriftOutcome {
   opened: boolean;
   /** True when this report resolved a pending redeploy-recorded (the recorded release runs again). */
   resolved: boolean;
+  /**
+   * True when an open drift event was closed because the release this report imported from the
+   * agent ledger (SHP-REQ-111) is now the recorded one and is exactly what runs.
+   */
+  closedByImport?: boolean;
   services: string[];
 }
 
@@ -126,6 +131,8 @@ export async function detectDrift(
   app: { id: string },
   observed: Record<string, string | null>,
   mapped: readonly string[] = [],
+  /** Deploy IDs this report imported from the agent ledger. */
+  imported: ReadonlySet<string> = new Set(),
 ): Promise<DriftOutcome> {
   const active = await tx.deployTarget.count({ where: { appId: app.id, state: { in: [...ACTIVE_STATES] } } });
   if (active > 0) return { opened: false, resolved: false, services: [] };
@@ -141,6 +148,21 @@ export async function detectDrift(
   });
 
   if (services.length === 0) {
+    if (open !== null && imported.has(recorded.deployId) && matchesRecorded(recorded.digests, observed, mapped)) {
+      // What drifted was a verified release deployed outside the server (the host CLI): the agent's
+      // ledger vouches for it, it is now recorded, and it is exactly what runs. Nothing is left to
+      // resolve; close the event without claiming a human resolution.
+      await tx.driftEvent.update({
+        where: { id: open.id },
+        data: {
+          resolvedAt: new Date(),
+          resolution: null,
+          reason: `${open.reason === null ? '' : `${open.reason} — `}closed: release ${recorded.deployId} from the agent ledger, deployed outside the server, is what runs`.slice(0, 1000),
+        },
+      });
+      await tx.app.update({ where: { id: app.id }, data: { driftedAt: null } });
+      return { opened: false, resolved: false, closedByImport: true, services };
+    }
     if (open?.resolution === 'redeploy_recorded' && matchesRecorded(recorded.digests, observed, mapped)) {
       // Resolved as a redeploy only when the release now recorded is that redeploy's own rollback.
       // If something else shipped over the drift, what runs matches a record again, but the

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { Digest } from './primitives.js';
+import { AppName, Digest, Sha40 } from './primitives.js';
 import { Manifest } from './manifest.js';
 import { Refusal } from './errors.js';
 
@@ -62,6 +62,32 @@ const AgentApp = z
   })
   .meta({ id: 'AgentApp', description: 'One app as reported by the agent, with its running image digests' });
 
+/** How many of each app's newest ledger releases the agent reports (SHP-REQ-111). */
+export const REPORTED_RELEASES_PER_APP = 20;
+
+const AgentReleaseImage = z
+  .strictObject({
+    service: z.string().min(1).max(100),
+    repo: z.string().min(1).max(300),
+    digest: Digest,
+    /** The release's `dev.d3cloud.shipyard.migration` label as the ledger recorded it, if any. */
+    migration: z.string().max(100).nullable(),
+  })
+  .meta({ id: 'AgentReleaseImage', description: 'One image of a release in the agent ledger' });
+
+export const AgentRelease = z
+  .strictObject({
+    /** The ledger's deploy ID: the server's deploy ID when the server dispatched it, else the host CLI's own. */
+    deployId: z.string().min(1).max(100),
+    app: AppName,
+    kind: z.enum(['deploy', 'rollback']),
+    sha: Sha40,
+    images: z.array(AgentReleaseImage).min(1).max(50),
+    /** When the ledger recorded it: the release went live then. */
+    at: z.iso.datetime({ offset: true }),
+  })
+  .meta({ id: 'AgentRelease', description: 'A verified release (deploy or rollback) from the agent ledger' });
+
 export const AgentReport = z
   .strictObject({
     agentVersion: z.string().min(1),
@@ -69,6 +95,12 @@ export const AgentReport = z
     engineApiVersion: z.string().min(1),
     patExpiresAt: z.iso.datetime().nullable(),
     apps: z.array(AgentApp),
+    /**
+     * The agent ledger's releases, the newest `REPORTED_RELEASES_PER_APP` per reported app
+     * (SHP-REQ-111): the server records the ones it does not hold, so deploys made outside it (the
+     * host CLI) appear as the live release and as rollback targets. Absent from older agents.
+     */
+    releases: z.array(AgentRelease).max(5000).optional(),
   })
   .meta({ id: 'AgentReport', description: 'What the agent reports about itself and the apps it manages' });
 export type AgentReport = z.infer<typeof AgentReport>;

@@ -1,4 +1,12 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
+
+import { nodeFs } from '../src/adapters/node.js';
+import { acquireGuard, GuardTimeoutError } from '../src/guard.js';
 
 import { Ledger, LedgerEntryInvalidError, LedgerTamperedError } from '../src/ledger.js';
 import type { LedgerEntry } from '../src/types.js';
@@ -414,5 +422,160 @@ describe('Ledger concurrent appends', () => {
     expect(reopened.entries('bindery')).toHaveLength(10);
     const deployIds = new Set(reopened.entries('bindery').map((e) => e.deployId));
     expect(deployIds.size).toBe(10);
+  });
+});
+
+describe('Ledger across writers (SHP-T-6.11)', () => {
+  it('adopts lines another writer appended before chaining its own', async () => {
+    const { fs } = memoryFs();
+    const agent = await Ledger.open(fs, PATH);
+    const cli = await Ledger.open(fs, PATH);
+    await agent.append(entry({ deployId: 'dep-1' }));
+    // The CLI opened before dep-1 landed; it must chain onto it, not onto its own stale tail.
+    await cli.append(entry({ deployId: 'dep-2', sha: 'c'.repeat(40) }));
+    await agent.append(entry({ deployId: 'dep-3', sha: 'd'.repeat(40) }));
+
+    const reopened = await Ledger.open(fs, PATH);
+    expect(reopened.entries('bindery').map((e) => e.deployId)).toEqual(['dep-1', 'dep-2', 'dep-3']);
+    expect(agent.entries('bindery').map((e) => e.deployId)).toEqual(['dep-1', 'dep-2', 'dep-3']);
+  });
+
+  it('refresh() makes another writer\'s releases visible to the synchronous readers', async () => {
+    const { fs } = memoryFs();
+    const agent = await Ledger.open(fs, PATH);
+    const cli = await Ledger.open(fs, PATH);
+    await cli.append(entry({ deployId: 'cli-1' }));
+    expect(agent.last('bindery')).toBeNull();
+    await agent.refresh();
+    expect(agent.last('bindery')?.deployId).toBe('cli-1');
+  });
+
+  it('refuses, and writes nothing, when the foreign tail does not verify', async () => {
+    const { fs, files } = memoryFs();
+    const agent = await Ledger.open(fs, PATH);
+    await agent.append(entry({ deployId: 'dep-1' }));
+    // A second writer that chained from a stale tail: seq 1 again.
+    const forged = { seq: 1, prev: '0'.repeat(64), entry: entry({ deployId: 'fork' }), hash: 'f'.repeat(64) };
+    files.set(PATH, `${files.get(PATH) ?? ''}${JSON.stringify(forged)}\n`);
+    const before = files.get(PATH);
+
+    await expect(agent.append(entry({ deployId: 'dep-2' }))).rejects.toBeInstanceOf(LedgerTamperedError);
+    await expect(agent.refresh()).rejects.toBeInstanceOf(LedgerTamperedError);
+    expect(files.get(PATH)).toBe(before);
+    expect(agent.entries('bindery').map((e) => e.deployId)).toEqual(['dep-1']);
+  });
+
+  it('refuses a file that was truncated or rewritten under it', async () => {
+    const { fs, files } = memoryFs();
+    const agent = await Ledger.open(fs, PATH);
+    await agent.append(entry({ deployId: 'dep-1' }));
+    await agent.append(entry({ deployId: 'dep-2' }));
+    const firstLine = (files.get(PATH) ?? '').split('\n')[0] ?? '';
+    files.set(PATH, `${firstLine}\n`);
+    await expect(agent.append(entry({ deployId: 'dep-3' }))).rejects.toThrow(/truncated/);
+
+    // A different, self-consistent chain of the same length is still not the one it read.
+    const other = memoryFs();
+    const rewritten = await Ledger.open(other.fs, PATH);
+    await rewritten.append(entry({ deployId: 'x-1' }));
+    await rewritten.append(entry({ deployId: 'x-2' }));
+    files.set(PATH, other.files.get(PATH) ?? '');
+    await expect(agent.refresh()).rejects.toThrow(/changed on disk/);
+  });
+
+  it('holds the FsPort lock around every read-verify-append', async () => {
+    const { fs } = memoryFs();
+    const events: string[] = [];
+    const locking: FsPort = {
+      ...fs,
+      lock: () => {
+        events.push('lock');
+        return Promise.resolve(() => {
+          events.push('unlock');
+          return Promise.resolve();
+        });
+      },
+      appendLine: (path, line) => {
+        events.push('append');
+        return fs.appendLine(path, line);
+      },
+    };
+    const ledger = await Ledger.open(locking, PATH);
+    await ledger.append(entry());
+    expect(events).toEqual(['lock', 'unlock', 'lock', 'append', 'unlock']);
+  });
+});
+
+describe('Ledger across processes (SHP-T-6.11)', () => {
+  it('two processes appending concurrently produce one contiguous, verifying chain', async () => {
+
+    const dir = await mkdtemp(join(tmpdir(), 'shipyard-ledger-'));
+    const path = join(dir, 'agent', 'ledger.jsonl');
+    const script = join(import.meta.dirname, 'fixtures', 'ledger-writer.mjs');
+    const N = 40;
+    try {
+      // One line already there, as on the host: both writers open onto it.
+      const seed = await Ledger.open(nodeFs(), path);
+      await seed.append(entry({ deployId: 'seed' }));
+
+      const writers = ['agent', 'cli'].map((name) => {
+        const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', script, path, name, String(N)], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stderr = '';
+        child.stderr.on('data', (d: Buffer) => {
+          stderr += d.toString();
+        });
+        const ready = new Promise<void>((resolve) => {
+          child.stdout.on('data', (d: Buffer) => {
+            if (d.toString().includes('ready')) resolve();
+          });
+        });
+        const exited = new Promise<void>((resolve, reject) => {
+          child.on('exit', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`${name} exited ${String(code)}: ${stderr}`));
+          });
+        });
+        return { ready, exited };
+      });
+      await Promise.all(writers.map((w) => w.ready));
+      await writeFile(`${path}.go`, '');
+      await Promise.all(writers.map((w) => w.exited));
+
+      const reopened = await Ledger.open(nodeFs(), path);
+      const ids = reopened.entries('bindery').map((e) => e.deployId);
+      expect(ids).toHaveLength(2 * N + 1);
+      expect(ids[0]).toBe('seed');
+      for (const name of ['agent', 'cli']) {
+        // Each writer's own lines land in its own order, interleaved with the other's.
+        expect(ids.filter((id) => id.startsWith(`${name}-`))).toEqual(Array.from({ length: N }, (_, i) => `${name}-${String(i)}`));
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe('the ledger lock file (SHP-T-6.11)', () => {
+  it('recovers a lock left by a process that died holding it, and waits for a live one', async () => {
+
+    const dir = await mkdtemp(join(tmpdir(), 'shipyard-ledger-lock-'));
+    const path = join(dir, 'ledger.jsonl');
+    try {
+      await writeFile(`${path}.lock`, '{}');
+      const old = new Date(Date.now() - 120_000);
+      await utimes(`${path}.lock`, old, old);
+      const ledger = await Ledger.open(nodeFs(), path);
+      await ledger.append(entry());
+      expect(ledger.entries('bindery')).toHaveLength(1);
+      expect((await readdir(dir)).sort()).toEqual(['ledger.jsonl']);
+
+      const release = await acquireGuard(`${path}.lock`, { staleMs: 30_000, timeoutMs: 1_000 });
+      await expect(acquireGuard(`${path}.lock`, { staleMs: 30_000, timeoutMs: 50 })).rejects.toBeInstanceOf(GuardTimeoutError);
+      await release();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, open, readdir, readFile as fsReadFile, rename, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import { acquireGuard } from '../guard.js';
 import type { Clock, FsPort } from '../ports.js';
 
 /**
@@ -43,6 +44,11 @@ export function nodeFs(): FsPort {
       } finally {
         await dirHandle.close();
       }
+    },
+
+    /** A `<path>.lock` guard (see `guard.ts`); stale after 30 s, and a wait longer than 60 s throws. */
+    async lock(path) {
+      return await acquireGuard(`${path}.lock`, { staleMs: 30_000, timeoutMs: 60_000 });
     },
 
     async appendLine(path, line) {

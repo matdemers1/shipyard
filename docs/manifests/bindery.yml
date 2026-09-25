@@ -1,0 +1,42 @@
+# Bindery (SHP-T-4.6): the document archive holding the real corpus. Host-local and argv-only
+# (SHP-D-017): the copy that counts is <data root>/apps/bindery.yml.
+#
+# Bindery never migrates on boot (BND REQ-114), so the migration is the manifest's explicit
+# one-shot, run with the NEW image before the swap (SHP-D-028). The backup before it is the
+# database only (BND-T-002): blobs are immutable and content-addressed, so a blob written after
+# the dump is a harmless orphan to a restore. The nightly full backup is Bindery's own cron.
+name: bindery
+repo: matdemers1/bindery
+workflow: build.yml
+compose:
+  files:
+    - /DATA/AppData/bindery/docker-compose.yml
+  project: bindery
+services:
+  api:
+    image: ghcr.io/matdemers1/bindery/api
+  worker:
+    image: ghcr.io/matdemers1/bindery/worker
+  web:
+    image: ghcr.io/matdemers1/bindery/web
+# /api/health answers {status: ok, schema: <alembic_version>} (BND-T-001).
+health:
+  service: api
+  port: 8000
+  path: /api/health
+soakSeconds: 120
+steps:
+  backup:
+    service: api
+    argv: [python, -m, api.export.cli, dump]
+    artifactsDir: /media/Main-Storage/bindery/data/backups/predeploy
+  migrate:
+    service: api
+    argv: [alembic, upgrade, head]
+# The api/worker secrets move out of the compose file into this env file at onboarding, so step
+# output is redacted against them.
+envFiles:
+  - /DATA/AppData/bindery/bindery.env
+foreman:
+  project: BND
+  environment: production

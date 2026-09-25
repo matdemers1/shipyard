@@ -68,6 +68,9 @@ importers:
       '@shipyard/schema':
         specifier: workspace:*
         version: link:../../packages/schema
+      '@shipyard/sequence':
+        specifier: workspace:*
+        version: link:../../packages/sequence
       argon2:
         specifier: ^0.45.1
         version: 0.45.1

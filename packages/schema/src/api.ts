@@ -127,7 +127,7 @@ export const DeployStatus = z
     state: DeployTargetState,
     currentStep: z.string().nullable(),
     requester: z.strictObject({ label: z.string(), repo: z.string().nullable(), branch: z.string().nullable() }),
-    images: z.array(z.strictObject({ service: z.string(), sha: Sha40, digest: Digest })),
+    images: z.array(z.strictObject({ service: z.string(), sha: Sha40, digest: Digest, migration: z.string().nullable().optional() })),
     schemaRevision: z.string().nullable(),
     refusal: Refusal.nullable(),
     gates: z.array(z.strictObject({ gate: z.string(), pass: z.boolean(), reason: z.string() })),

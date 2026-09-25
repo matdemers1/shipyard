@@ -307,7 +307,7 @@ describe('rollbacks', () => {
     const { cookie } = await signIn('deployer');
     const first = await request(app).post('/api/deploys').set('Cookie', cookie).send({ kind: 'deploy', app: 'web', sha: SHA_B });
     const earlier = (first.body as DeployAccepted).deployId;
-    await db.deployTarget.updateMany({ where: { deployId: earlier }, data: { state: 'succeeded', endedAt: new Date() } });
+    await db.deployTarget.updateMany({ where: { deployId: earlier }, data: { state: 'succeeded', endedAt: new Date(), dispatchedAt: new Date() } });
 
     const res = await request(app).post('/api/deploys').set('Cookie', cookie).send({ kind: 'rollback', app: 'web', toDeployId: earlier });
     expect(res.status).toBe(201);

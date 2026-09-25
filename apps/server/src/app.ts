@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import express, { type Express, type Router } from 'express';
 import { refusal } from '@shipyard/schema';
 import type { Logger } from 'pino';
@@ -13,6 +15,10 @@ import { Bus } from './events.js';
 import { mcpRouter } from './mcp/index.js';
 import { openapiRouter } from './openapi.js';
 import { tokensRouter } from './tokens/index.js';
+import { approvalsRouter, pendingApprovalsRouter } from './approvals/index.js';
+import { commitsRouter } from './apps/commits.js';
+import { deployEventsRouter } from './deploys/events.js';
+import { usersRouter } from './users/index.js';
 import { healthRouter } from './routes/health.js';
 
 export interface AppDeps {
@@ -75,10 +81,26 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/auth', authRouter(authDeps));
   app.use('/api', openapiRouter());
   app.use('/api/agent', agentRouter(serviceDeps));
+  app.use('/api/apps', commitsRouter(serviceDeps));
   app.use('/api/apps', appsRouter(serviceDeps));
+  app.use('/api/deploys', deployEventsRouter(serviceDeps));
+  app.use('/api/deploys', approvalsRouter(serviceDeps));
   app.use('/api/deploys', deploysRouter(serviceDeps));
+  app.use('/api', usersRouter(serviceDeps));
+  app.use('/api', pendingApprovalsRouter(serviceDeps));
   app.use('/api/tokens', tokensRouter(serviceDeps));
   app.use('/mcp', mcpRouter(serviceDeps));
+
+  // The console is served by the server itself: one origin, one cookie, no CORS. In development
+  // Vite serves it and CONSOLE_DIST is unset. The SPA fallback never answers /api or /mcp: a
+  // mistyped endpoint must 404 as JSON, not return HTML.
+  const consoleDist = config.CONSOLE_DIST;
+  if (consoleDist !== undefined && existsSync(consoleDist)) {
+    app.use(express.static(consoleDist, { index: false, maxAge: '1h' }));
+    app.get(/^(?!\/(?:api|mcp)(?:\/|$)).*/, (_req, res) => {
+      res.sendFile(join(consoleDist, 'index.html'));
+    });
+  }
   // ─────────────────────────────────────────────────────────────────────
 
   if (testRouter !== undefined) {

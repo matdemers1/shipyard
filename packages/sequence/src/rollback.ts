@@ -1,3 +1,4 @@
+import { runningDigests } from './check.js';
 import { refusal } from '@shipyard/schema';
 import type { Digest, Manifest, Refusal } from '@shipyard/schema';
 
@@ -81,10 +82,17 @@ export async function resolveRollbackTarget(
   const refused = (r: Refusal, gates: GateResult[] = []): ResolvedRollback => ({ live, gates, refusal: r, images: [], entry: null });
 
   const live_ = ledger.last(app);
-  if (live_ !== null && live_.deployId === toDeployId) {
-    return refused(invalidTarget(ledger, app, toDeployId, 'is the release live now, not a rollback target'));
-  }
-  if (!ledger.isRollbackTarget(app, toDeployId)) {
+  // The live entry is a target only to repair drift (SHP-D-031, "redeploy recorded"): something
+  // other than the recorded digests is running, and putting the recorded release back is the fix.
+  // When the recorded digests are already what runs, there is nothing to do.
+  const repairingDrift = live_ !== null && live_.deployId === toDeployId;
+  if (repairingDrift) {
+    const running = await runningDigests(ports.docker, composeTargetOf(manifest), manifest.services);
+    const matches = live_.images.every((image) => running[image.service] === image.digest);
+    if (matches) {
+      return refused(invalidTarget(ledger, app, toDeployId, 'is the release live now, and it is what is running: nothing to repair'));
+    }
+  } else if (!ledger.isRollbackTarget(app, toDeployId)) {
     const known = ledger.entries(app).some((e) => e.deployId === toDeployId);
     return refused(invalidTarget(ledger, app, toDeployId, known ? `is older than the last five releases of ${app}` : `is not in this agent's ledger for ${app}`));
   }

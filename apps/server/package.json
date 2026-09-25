@@ -36,6 +36,7 @@
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "@shipyard/schema": "workspace:*",
+    "@shipyard/sequence": "workspace:*",
     "argon2": "^0.45.1",
     "express": "^5.2.1",
     "jose": "^6.2.12",

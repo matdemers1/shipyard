@@ -292,7 +292,7 @@ describe('progress, steps and result', () => {
       targetId: target.targetId,
       state: 'succeeded',
       images: [
-        { service: 'web', sha: SHA, digest: DIGEST_WEB },
+        { service: 'web', sha: SHA, digest: DIGEST_WEB, migration: 'contract' },
         { service: 'worker', sha: SHA, digest: DIGEST_WORKER },
       ],
       schemaRevision: '20260924_init',
@@ -315,6 +315,8 @@ describe('progress, steps and result', () => {
     expect(status?.endedAt).not.toBeNull();
     const images = await db.targetImage.findMany({ where: { targetId: target.targetId }, orderBy: { service: 'asc' } });
     expect(images.map((i) => i.repo)).toEqual(['ghcr.io/matdemers1/web', 'ghcr.io/matdemers1/web-worker']);
+    // The migration label read from the verified digest is recorded (SHP-D-057).
+    expect(images.map((i) => i.migrationLabel)).toEqual(['contract', null]);
     const backups = await db.backupArtifact.findMany({ where: { targetId: target.targetId } });
     expect(backups).toHaveLength(1);
     expect(backups[0]?.size).toBe(1234n);
@@ -352,7 +354,12 @@ describe('progress, steps and result', () => {
       gates: [{ gate: 'G8', pass: true, reason: 'digests present' }],
     });
     expect(ok.status).toBe(200);
-    expect(await getDeployStatus(db, dry.deployId)).toMatchObject({ state: 'succeeded', images: [], gates: [{ gate: 'G8', pass: true }] });
+    expect(await getDeployStatus(db, dry.deployId)).toMatchObject({
+      state: 'succeeded',
+      // A dry run never writes target_image (SHP-REQ-050); its images come from the stored result.
+      images: [{ service: 'web', sha: SHA, digest: DIGEST_WEB, migration: null }],
+      gates: [{ gate: 'G8', pass: true }],
+    });
     expect(await db.outbox.count()).toBe(0);
   });
 

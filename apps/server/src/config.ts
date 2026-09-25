@@ -27,6 +27,8 @@ export const Config = z
     FOREMAN_TOKEN: optionalString,
     // Read-only PAT for changelogs on the console (the agent holds its own, SHP-D-043).
     GITHUB_TOKEN_SERVER: optionalString,
+    // The built console (apps/web/dist), served at / with an SPA fallback. Unset in development.
+    CONSOLE_DIST: optionalString,
     // How many reverse-proxy hops sit in front of the server (a tunnel is one). Unset means none,
     // so `req.ip` is the socket peer. Behind a proxy with this unset, every client shares the
     // proxy's address, and the per-IP sign-in throttle becomes one bucket anyone can fill.

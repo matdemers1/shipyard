@@ -96,6 +96,7 @@ model User {
   schedulesCreated Schedule[]   @relation("ScheduleBy")
   deploysRequested Deploy[]     @relation("DeployRequesterUser")
   auditEvents      AuditEvent[] @relation("AuditActorUser")
+  invitesSent      Invite[]     @relation("InviteBy")
 
   @@map("user")
 }
@@ -448,4 +449,22 @@ model BackupArtifact {
 
   @@index([appId, createdAt])
   @@map("backup_artifact")
+}
+
+/// Users join only by invitation, with a role (SHP-REQ-067); no public signup (SHP-REQ-101).
+model Invite {
+  id          String    @id @default(uuid()) @db.Uuid
+  email       String
+  role        UserRole
+  tokenHash   String    @unique @map("token_hash")
+  invitedById String    @map("invited_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(3)
+  acceptedAt  DateTime? @map("accepted_at") @db.Timestamptz(3)
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  invitedBy User @relation("InviteBy", fields: [invitedById], references: [id])
+
+  @@index([email])
+  @@map("invite")
 }

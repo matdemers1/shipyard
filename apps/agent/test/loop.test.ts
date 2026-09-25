@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { refusal, type TargetResult } from '@shipyard/schema';
+import { refusal, TargetResult } from '@shipyard/schema';
 import { Journal, type Clock, type DeployResult, type FsPort, type Log, type MachineContext } from '@shipyard/sequence';
 import { AgentRequestError, type AgentClient } from '../src/client.js';
 import { AgentConfigError, loadAgentConfig } from '../src/config.js';
@@ -413,6 +413,24 @@ describe('toTargetResult', () => {
     const why = refusal('ci_not_green', 'CI is red.');
     const r = toTargetResult(target(), deployResult({ state: 'refused', refusal: why, images: [] }));
     expect(r).toMatchObject({ state: 'refused', refusal: why, images: [] });
+  });
+
+  it("carries each verified image's migration label, and omits it when the image has none (SHP-D-057)", () => {
+    const base = { repo: 'ghcr.io/matdemers1/web', sha: SHA, digest: DIGEST, reference: '', labels: {} };
+    const r = toTargetResult(
+      target(),
+      deployResult({
+        images: [
+          { ...base, service: 'web', migration: 'contract' },
+          { ...base, service: 'worker', migration: null },
+        ],
+      }),
+    );
+    expect(r.images).toEqual([
+      { service: 'web', sha: SHA, digest: DIGEST, migration: 'contract' },
+      { service: 'worker', sha: SHA, digest: DIGEST },
+    ]);
+    expect(TargetResult.safeParse(r).success).toBe(true);
   });
 });
 

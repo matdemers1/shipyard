@@ -133,6 +133,7 @@ async function seedSucceeded(app: string): Promise<string> {
         create: {
           appId: appIds.get(app) ?? '',
           state: 'succeeded',
+          dispatchedAt: new Date(),
           schemaRevision: '20260920_add_widgets',
           endedAt: new Date(),
           images: {
@@ -348,8 +349,8 @@ describe('shipyard_deploy_status', () => {
     expect(status.state).toBe('succeeded');
     expect(status.schemaRevision).toBe('20260920_add_widgets');
     expect(status.images).toEqual([
-      { service: 'api', sha: SHA_B, digest: `sha256:${'1'.repeat(64)}` },
-      { service: 'web', sha: SHA_B, digest: `sha256:${'2'.repeat(64)}` },
+      { service: 'api', sha: SHA_B, digest: `sha256:${'1'.repeat(64)}`, migration: null },
+      { service: 'web', sha: SHA_B, digest: `sha256:${'2'.repeat(64)}`, migration: null },
     ]);
 
     const live = okOf<{ apps: { live: { sha: string; digests: Record<string, string>; schemaRevision: string } }[] }>(

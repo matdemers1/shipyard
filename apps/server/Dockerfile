@@ -18,10 +18,12 @@ COPY . .
 
 # `--offline` proves the fetch above was complete; nothing new is resolved from the network here.
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm install --offline --frozen-lockfile --filter shipyard-server...
+    pnpm install --offline --frozen-lockfile --filter shipyard-server... --filter shipyard-web...
 
 RUN pnpm --filter @shipyard/schema build
 RUN pnpm --filter shipyard-server build
+# The console, served by the server from /app/public (one origin, one cookie).
+RUN pnpm --filter shipyard-web build
 
 # `minimum-release-age`/`trustPolicy` gate *resolving* new versions; this step only reproduces an
 # already-vetted lockfile onto disk, so the policy is switched off here and only here.
@@ -50,10 +52,12 @@ LABEL org.opencontainers.image.revision=$REVISION \
 
 ENV SHIPYARD_VERSION=$REVISION \
     NODE_ENV=production \
-    PORT=3300
+    PORT=3300 \
+    CONSOLE_DIST=/app/public
 
 WORKDIR /app
 COPY --from=build --chown=root:root /out ./
+COPY --from=build --chown=root:root /repo/apps/web/dist ./public
 
 USER node
 

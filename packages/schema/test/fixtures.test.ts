@@ -35,6 +35,11 @@ import {
   DeployAccepted,
   LoginRequest,
   TotpRequest,
+  EnrolRequest,
+  TokenCreate,
+  TokenCreated,
+  DeployStatus,
+  TargetProgress,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -82,6 +87,11 @@ const SCHEMAS: Record<string, ZodType> = {
   deployAccepted: DeployAccepted,
   loginRequest: LoginRequest,
   totpRequest: TotpRequest,
+  enrolRequest: EnrolRequest,
+  tokenCreate: TokenCreate,
+  tokenCreated: TokenCreated,
+  deployStatus: DeployStatus,
+  targetProgress: TargetProgress,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

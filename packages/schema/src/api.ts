@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import { AppName, Sha40 } from './primitives.js';
+import { AppName, Digest, Sha40 } from './primitives.js';
+import { Refusal } from './errors.js';
 import { DeployTargetState } from './agent.js';
 
 /**
@@ -8,11 +9,18 @@ import { DeployTargetState } from './agent.js';
  * where practical so z.toJSONSchema (SHP-T-0.7) can render them directly.
  */
 
+/** Short, printable text: it is echoed into lock refusals, logs and the console. */
+const RequesterText = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[^\p{Cc}]*$/u, 'no control characters');
+
 export const Requester = z
   .strictObject({
-    repo: z.string().min(1),
-    branch: z.string().min(1),
-    label: z.string().min(1),
+    repo: RequesterText,
+    branch: RequesterText,
+    label: RequesterText,
   })
   .meta({ id: 'Requester', description: 'Who or what asked for this deploy, for the audit trail' });
 export type Requester = z.infer<typeof Requester>;
@@ -29,11 +37,17 @@ export const DeployRequest = z
     kind: DeployKind,
     app: AppName.optional(),
     group: z.string().min(1).optional(),
-    sha: Sha40,
+    /** Required for a deploy; for a rollback the SHA comes from the target deploy's record. */
+    sha: Sha40.optional(),
+    /** A rollback's target: an earlier deploy of the same app (checked against the agent's ledger). */
+    toDeployId: z.uuid().optional(),
     dryRun: z.boolean().optional(),
     requester: Requester.optional(),
   })
   .refine((v) => (v.app === undefined) !== (v.group === undefined), 'exactly one of app or group is required')
+  .refine((v) => v.kind !== 'deploy' || v.sha !== undefined, 'a deploy needs a sha')
+  .refine((v) => v.kind !== 'rollback' || (v.toDeployId !== undefined && v.app !== undefined), 'a rollback needs an app and toDeployId')
+  .refine((v) => v.kind === 'rollback' || v.toDeployId === undefined, 'toDeployId is only for a rollback')
   .meta({ id: 'DeployRequest', description: 'A request to deploy a single app or a group (SHP-REQ-004); the only host-reaching data is an app name and a 40-hex SHA' });
 export type DeployRequest = z.infer<typeof DeployRequest>;
 
@@ -68,3 +82,57 @@ export const TotpRequest = z
   })
   .meta({ id: 'TotpRequest', description: 'A TOTP code submitted during login' });
 export type TotpRequest = z.infer<typeof TotpRequest>;
+
+// ─── Phase 2 (pre-flight, lead-owned) ─────────────────────────────────────────
+
+/** The agent's first contact: its public key, confirmed later in the console by fingerprint (SHP-D-064). */
+export const EnrolRequest = z
+  .strictObject({
+    /** Raw 32-byte Ed25519 public key, base64. */
+    publicKey: z.string().regex(/^[A-Za-z0-9+/]{43}=$/, 'a base64 32-byte Ed25519 public key'),
+    agentVersion: z.string().min(1).max(100),
+  })
+  .meta({ id: 'EnrolRequest', description: 'An agent presenting its public key for enrolment' });
+export type EnrolRequest = z.infer<typeof EnrolRequest>;
+
+export const TokenCreate = z
+  .strictObject({
+    label: z.string().min(1).max(100),
+    /** The apps this token may act on (SHP-REQ-046); at least one. */
+    apps: z.array(AppName).min(1),
+  })
+  .meta({ id: 'TokenCreate', description: 'Issue an API token scoped to named apps' });
+export type TokenCreate = z.infer<typeof TokenCreate>;
+
+export const TokenCreated = z
+  .strictObject({
+    id: z.string().min(1),
+    label: z.string(),
+    prefix: z.string(),
+    apps: z.array(AppName),
+    /** Shown exactly once; only its hash is stored. */
+    token: z.string().min(20),
+  })
+  .meta({ id: 'TokenCreated', description: 'A newly issued API token, shown once' });
+export type TokenCreated = z.infer<typeof TokenCreated>;
+
+/** One deploy target's state as REST and MCP report it (SHP-REQ-044). */
+export const DeployStatus = z
+  .strictObject({
+    deployId: z.string().min(1),
+    kind: DeployKind,
+    app: AppName,
+    sha: Sha40,
+    dryRun: z.boolean(),
+    state: DeployTargetState,
+    currentStep: z.string().nullable(),
+    requester: z.strictObject({ label: z.string(), repo: z.string().nullable(), branch: z.string().nullable() }),
+    images: z.array(z.strictObject({ service: z.string(), sha: Sha40, digest: Digest })),
+    schemaRevision: z.string().nullable(),
+    refusal: Refusal.nullable(),
+    gates: z.array(z.strictObject({ gate: z.string(), pass: z.boolean(), reason: z.string() })),
+    createdAt: z.string(),
+    endedAt: z.string().nullable(),
+  })
+  .meta({ id: 'DeployStatus', description: 'A deploy target and, when finished, what it shipped' });
+export type DeployStatus = z.infer<typeof DeployStatus>;

@@ -1,0 +1,18 @@
+# d3auth-demo, the first app under Shipyard (SHP-D-076). Host-local and argv-only (SHP-D-017).
+name: d3auth-demo
+repo: matdemers1/d3-auth
+workflow: ci.yml
+compose:
+  files:
+    - /DATA/d3auth-demo/docker-compose.yml
+  project: d3auth-demo
+services:
+  demo:
+    image: ghcr.io/matdemers1/d3-auth/demo
+health:
+  service: demo
+  port: 4000
+  path: /health
+soakSeconds: 60
+envFiles:
+  - /DATA/d3auth-demo/.env

@@ -22,6 +22,11 @@ export const Config = z
     D3AUTH_ISSUER: optionalString,
     D3AUTH_CLIENT_ID: optionalString,
     D3AUTH_CLIENT_SECRET: optionalString,
+    // Optional: record deploys in Foreman through the outbox (SHP-D-033, SHP-D-062).
+    FOREMAN_URL: optionalString,
+    FOREMAN_TOKEN: optionalString,
+    // Read-only PAT for changelogs on the console (the agent holds its own, SHP-D-043).
+    GITHUB_TOKEN_SERVER: optionalString,
     // How many reverse-proxy hops sit in front of the server (a tunnel is one). Unset means none,
     // so `req.ip` is the socket peer. Behind a proxy with this unset, every client shares the
     // proxy's address, and the per-IP sign-in throttle becomes one bucket anyone can fill.

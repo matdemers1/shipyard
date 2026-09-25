@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@d3cloudio/auth-client": "0.1.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "@shipyard/schema": "workspace:*",

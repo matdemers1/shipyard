@@ -18,6 +18,21 @@ import {
 import { loadConfig } from '../../src/config.js';
 import { createDb, type Db } from '../../src/db.js';
 
+/**
+ * A valid TOTP code for `secret` from a step not used yet in this test run. The replay guard
+ * (correctly) refuses a second sign-in with the same step's code, so two sign-ins by one user in
+ * the same 30 s would otherwise fail or pass depending on where the clock falls. Offsets stay
+ * inside the ±1-step window the server accepts.
+ */
+const usedTotpSteps = new Map<string, number>();
+function freshTotp(secret: string): string {
+  const n = usedTotpSteps.get(secret) ?? 0;
+  usedTotpSteps.set(secret, n + 1);
+  const offsets = [0, 30_000, -30_000];
+  return totpCode(secret, Date.now() + (offsets[n % offsets.length] ?? 0));
+}
+
+
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined) {
   throw new Error('DATABASE_URL must be set for integration tests');
@@ -105,7 +120,7 @@ async function passwordLogin(agent: ReturnType<typeof request.agent>, user: Seed
   const step1 = await agent.post('/api/auth/login').send({ email: user.email, password: PASSWORD });
   expect(step1.status).toBe(200);
   expect(step1.body).toEqual({ next: 'totp' });
-  const code = totpCode(user.totpSecret);
+  const code = freshTotp(user.totpSecret);
   const step2 = await agent.post('/api/auth/totp').send({ code });
   expect(step2.status).toBe(200);
   return code;
@@ -122,9 +137,10 @@ async function oidcRoundTrip(agent: ReturnType<typeof request.agent>): Promise<r
 
 function expectRefusal(res: request.Response, status: number, code: string): void {
   expect(res.status).toBe(status);
-  const body = res.body as { error: Record<string, unknown> };
-  expect(Object.keys(body.error).sort()).toEqual(['code', 'fix', 'gate', 'message']);
-  expect(body.error['code']).toBe(code);
+  const body = res.body as { error?: Record<string, unknown> };
+  expect(body.error, `no refusal body: ${res.status} ${String(res.headers['content-type'])} ${res.text}`).toBeDefined();
+  expect(Object.keys(body.error ?? {}).sort()).toEqual(['code', 'fix', 'gate', 'message']);
+  expect(body.error?.['code']).toBe(code);
 }
 
 beforeEach(async () => {
@@ -255,7 +271,7 @@ describe('password + TOTP refusals', () => {
 
   it('refuses the TOTP step without the password step cookie', async () => {
     const user = await seedUser();
-    const res = await request(app).post('/api/auth/totp').send({ code: totpCode(user.totpSecret) });
+    const res = await request(app).post('/api/auth/totp').send({ code: freshTotp(user.totpSecret) });
     expectRefusal(res, 401, 'unauthenticated');
     expect(await db.session.count()).toBe(0);
   });
@@ -290,7 +306,7 @@ describe('sessions', () => {
     const user = await seedUser();
     const browser = request.agent(app);
     await browser.post('/api/auth/login').send({ email: user.email, password: PASSWORD });
-    const res = await browser.post('/api/auth/totp').send({ code: totpCode(user.totpSecret) });
+    const res = await browser.post('/api/auth/totp').send({ code: freshTotp(user.totpSecret) });
     const cookies = res.headers['set-cookie'] as unknown as string[];
     const session = cookies.find((c) => c.startsWith(`${SESSION_COOKIE}=`)) ?? '';
     expect(session).toMatch(/HttpOnly/);

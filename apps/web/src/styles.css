@@ -1,0 +1,50 @@
+/* The console's own handful of rules. Everything else is @d3cloud/ui, and every value here is a
+   token — the usage gate refuses a hex, a shadow or an invented name. Kept in a layer so a
+   component's own rules are never overridden by accident. */
+@layer shipyard {
+  /* Who is signed in and the theme toggle, above every page. At 375 px a long address truncates
+     rather than pushing the page sideways. */
+  .shp-topline {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-8);
+    min-width: 0;
+    padding: var(--space-8) var(--page-pad) 0;
+  }
+  .shp-topline__who {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-13);
+  }
+
+  /* Read by a screen reader, not shown. */
+  .shp-visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* The theme toggle on the sign-in page, which has no shell. */
+  .shp-auth-corner {
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--space-8) var(--page-pad) 0;
+  }
+
+  .shp-center {
+    display: flex;
+    justify-content: center;
+    padding: var(--space-48) var(--page-pad);
+  }
+}

@@ -1,0 +1,67 @@
+# Shipyard — a complete, tunnel-free example for a stranger's first install.
+#
+# Replace every `sha-<40hex>` below with a literal 40-hex commit SHA from a published image —
+# `ghcr.io/matdemers1/shipyard/server:sha-<40hex>` and `.../agent:sha-<40hex>` are built from the
+# same commit on `main` by CI (see the repo's Actions tab or its GHCR package pages for the newest
+# tag). Never a floating tag: a deploy through Shipyard itself always pins to one, and the first
+# install should too.
+#
+# Copy this file to `docker-compose.yml` next to `postgres.env`, `server.env` and `agent.env`
+# (see the `*.env.example` files in this same directory), then:
+#
+#   docker compose -p shipyard pull
+#   docker compose -p shipyard up -d --wait postgres
+#   docker compose -p shipyard run --rm --no-deps server node node_modules/prisma/build/index.js migrate deploy
+#   docker compose -p shipyard up -d
+#
+# See ../../README.md's Quick start and docs/runbooks/install.md for the full walkthrough
+# (the latter also covers a tunnel and a real data root; the D3-specific notes at its end are not
+# needed for a stranger's install).
+name: shipyard
+
+services:
+  postgres:
+    image: postgres:16
+    env_file: postgres.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shipyard"]
+      interval: 5s
+      retries: 10
+
+  server:
+    # Replace sha-<40hex> with a real, published tag before running this.
+    image: ghcr.io/matdemers1/shipyard/server:sha-<40hex>
+    env_file: server.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Published for a tunnel-free quick start only; a real install puts a tunnel or reverse proxy
+    # in front instead and does not publish this port (docs/runbooks/install.md).
+    ports:
+      - "3466:3300"
+    volumes:
+      # The server's own nightly pg_dump + restore-drill artifacts (BACKUP_DIR in server.env).
+      - ./data/backups:/backups
+
+  agent:
+    # Replace sha-<40hex> with a real, published tag before running this.
+    image: ghcr.io/matdemers1/shipyard/agent:sha-<40hex>
+    env_file: agent.env
+    # No ports, ever: the agent only ever long-polls the server, signed. It touches the Docker
+    # socket instead — root-equivalent access, used only to run manifest-defined argv steps.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+      # Read-only, at the identical path the server writes to, so a manifest's backup step can
+      # see the dump the server just took.
+      - ./data/backups:/backups:ro
+      # Each managed stack's directory is added here at its identical host path when that app is
+      # onboarded (docs/runbooks/onboard-app.md) — not the whole data root, e.g.:
+      # - /path/to/some-app:/path/to/some-app
+    depends_on:
+      - server
+
+volumes:
+  postgres_data:

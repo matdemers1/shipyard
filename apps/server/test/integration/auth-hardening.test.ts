@@ -92,7 +92,7 @@ function mfaCookieFrom(res: request.Response): string {
  * distinct source addresses through X-Forwarded-For; the router itself reads `req.ip`, as it does
  * in production.
  */
-function throttledApp(clock: { now: number }): Express {
+function throttledApp(clock: { now: number }, accountGlobalMax = 6): Express {
   const deps: AuthDeps = {
     db,
     logger,
@@ -100,6 +100,7 @@ function throttledApp(clock: { now: number }): Express {
     oidc: null,
     throttle: {
       account: { maxFailures: 3, windowMs: 10 * MIN, coolOffMs: 15 * MIN },
+      accountGlobal: { maxFailures: accountGlobalMax, windowMs: 10 * MIN, coolOffMs: 15 * MIN },
       ip: { maxFailures: 5, windowMs: 10 * MIN, coolOffMs: 15 * MIN },
       now: () => clock.now,
     },
@@ -260,7 +261,8 @@ describe('failed sign-in attempts are throttled (SHP-REQ-108)', () => {
 
   it('gives an identical refusal for a known and an unknown email under throttle', async () => {
     const clock = { now: Date.now() };
-    const app = throttledApp(clock);
+    // Spread across addresses, so it is the per-account ceiling that trips here.
+    const app = throttledApp(clock, 3);
     const user = await seedUser();
     const unknown = 'nobody@example.com';
     for (const email of [user.email, unknown]) {
@@ -273,6 +275,34 @@ describe('failed sign-in attempts are throttled (SHP-REQ-108)', () => {
     expectRefusal(known, 429, 'too_many_attempts');
     expectRefusal(stranger, 429, 'too_many_attempts');
     expect(known.body).toEqual(stranger.body);
+  });
+
+  it("a stranger's wrong guesses lock out only the stranger, not the owner at another address", async () => {
+    const clock = { now: Date.now() };
+    const app = throttledApp(clock);
+    const user = await seedUser();
+    for (let i = 0; i < 3; i += 1) {
+      await request(app).post('/api/auth/login').set('X-Forwarded-For', '203.0.113.66').send({ email: user.email, password: 'nope' });
+    }
+    // The stranger is paused for this account…
+    const again = await request(app).post('/api/auth/login').set('X-Forwarded-For', '203.0.113.66').send({ email: user.email, password: PASSWORD });
+    expectRefusal(again, 429, 'too_many_attempts');
+    // …the owner, elsewhere, is not.
+    const owner = await request(app).post('/api/auth/login').set('X-Forwarded-For', '198.51.100.20').send({ email: user.email, password: PASSWORD });
+    expect(owner.status).toBe(200);
+  });
+
+  it('never stores the email of a failed sign-in, only a short hash', async () => {
+    const clock = { now: Date.now() };
+    const app = throttledApp(clock);
+    const user = await seedUser();
+    await request(app).post('/api/auth/login').set('X-Forwarded-For', '203.0.113.67').send({ email: user.email, password: 'nope' });
+    const rows = await db.auditEvent.findMany({ where: { action: 'auth.login.failed' } });
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(JSON.stringify(row)).not.toContain(user.email);
+      expect((row.after as { emailHash?: string }).emailHash).toMatch(/^[0-9a-f]{16}$/);
+    }
   });
 
   it('a completed sign-in resets the account counter', async () => {

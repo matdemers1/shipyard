@@ -21,7 +21,8 @@ import { OIDC_TX_TTL_MS, OidcError, type OidcClient } from './oidc.js';
 import { verifyAgainstDummy, verifyPassword } from './passwords.js';
 import { SESSION_TTL_MS, createSession, hashSessionToken, resolveSession } from './sessions.js';
 import { MfaTickets } from './tickets.js';
-import { DEFAULT_ACCOUNT_LIMITS, DEFAULT_IP_LIMITS, Throttle, type ThrottleLimits } from './throttle.js';
+import { DEFAULT_ACCOUNT_GLOBAL_LIMITS,
+  DEFAULT_ACCOUNT_LIMITS, DEFAULT_IP_LIMITS, Throttle, type ThrottleLimits } from './throttle.js';
 import { TotpReplayGuard } from './totp.js';
 import { resolveToken } from '../tokens/tokens.js';
 
@@ -43,6 +44,7 @@ export interface AuthDeps {
   /** Failed-attempt throttling (SHP-REQ-108). Defaults apply when absent; tests pass small limits and a clock. */
   throttle?: {
     account?: ThrottleLimits;
+    accountGlobal?: ThrottleLimits;
     ip?: ThrottleLimits;
     now?: () => number;
   };
@@ -169,6 +171,10 @@ export function authRouter(deps: AuthDeps): Router {
     limits: deps.throttle?.account ?? DEFAULT_ACCOUNT_LIMITS,
     ...(clock !== undefined ? { now: clock } : {}),
   });
+  const accountGlobalThrottle = new Throttle({
+    limits: deps.throttle?.accountGlobal ?? DEFAULT_ACCOUNT_GLOBAL_LIMITS,
+    ...(clock !== undefined ? { now: clock } : {}),
+  });
   const ipThrottle = new Throttle({
     limits: deps.throttle?.ip ?? DEFAULT_IP_LIMITS,
     ...(clock !== undefined ? { now: clock } : {}),
@@ -210,10 +216,14 @@ export function authRouter(deps: AuthDeps): Router {
   }
 
   const accountKey = (email: string): string => email.trim().toLowerCase();
+  const emailHashOf = (email: string): string => createHash('sha256').update(accountKey(email)).digest('hex').slice(0, 16);
   const ipKey = (req: Request): string => req.ip ?? 'unknown';
 
   function recordFailure(req: Request, email: string): void {
-    accountThrottle.recordFailure(accountKey(email));
+    // The tight limit is per account *and* address, so a stranger can only lock themselves out; the
+    // loose per-account ceiling still caps guesses spread across many addresses.
+    accountThrottle.recordFailure(`${accountKey(email)}|${ipKey(req)}`);
+    accountGlobalThrottle.recordFailure(accountKey(email));
     ipThrottle.recordFailure(ipKey(req));
   }
 
@@ -232,12 +242,13 @@ export function authRouter(deps: AuthDeps): Router {
     const scope =
       ipThrottle.blockedUntil(ipKey(req)) !== null
         ? 'ip'
-        : email !== undefined && accountThrottle.blockedUntil(accountKey(email)) !== null
+        : email !== undefined &&
+            (accountThrottle.blockedUntil(`${accountKey(email)}|${ipKey(req)}`) !== null ||
+              accountGlobalThrottle.blockedUntil(accountKey(email)) !== null)
           ? 'account'
           : null;
     if (scope === null) return false;
-    const emailHash =
-      email === undefined ? undefined : createHash('sha256').update(accountKey(email)).digest('hex').slice(0, 16);
+    const emailHash = email === undefined ? undefined : emailHashOf(email);
     logger.warn({ scope, step, ip: req.ip, emailHash }, 'sign-in throttled');
     await fail(req, res, THROTTLED, {
       action: 'auth.login.throttled',
@@ -275,7 +286,8 @@ export function authRouter(deps: AuthDeps): Router {
       await fail(req, res, BAD_CREDENTIALS, {
         reason: 'bad_credentials',
         ...(user !== null ? { entityId: user.id } : {}),
-        after: { method: 'password', email },
+        // A short hash, never the address: failed-login rows are read by anyone who reads the audit.
+        after: { method: 'password', emailHash: emailHashOf(email) },
       });
       return;
     }
@@ -370,7 +382,8 @@ export function authRouter(deps: AuthDeps): Router {
     }
 
     mfaAttempts.delete(ticket.nonce);
-    accountThrottle.reset(accountKey(user.email));
+    accountThrottle.reset(`${accountKey(user.email)}|${ipKey(req)}`);
+    accountGlobalThrottle.reset(accountKey(user.email));
     clearCookie(res, config, MFA_COOKIE, '/api/auth');
     await startSession(req, res, user, 'password');
     res.json({ id: user.id, email: user.email, displayName: user.displayName, role: user.role });

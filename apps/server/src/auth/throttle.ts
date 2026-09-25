@@ -13,9 +13,23 @@ export interface ThrottleLimits {
   coolOffMs: number;
 }
 
-/** Per account (lowercased email): five failures in fifteen minutes pause it for fifteen. */
+/**
+ * Per account *from one source address*: five failures in fifteen minutes pause that pair for
+ * fifteen. Keyed by address too, so a stranger's wrong guesses lock out only the stranger, never the
+ * account's owner signing in from elsewhere.
+ */
 export const DEFAULT_ACCOUNT_LIMITS: ThrottleLimits = {
   maxFailures: 5,
+  windowMs: 15 * 60 * 1000,
+  coolOffMs: 15 * 60 * 1000,
+};
+
+/**
+ * Per account from anywhere: a much looser ceiling, so guesses spread over many addresses are still
+ * capped. Reaching it takes fifty failures in fifteen minutes; the second factor stands behind it.
+ */
+export const DEFAULT_ACCOUNT_GLOBAL_LIMITS: ThrottleLimits = {
+  maxFailures: 50,
   windowMs: 15 * 60 * 1000,
   coolOffMs: 15 * 60 * 1000,
 };

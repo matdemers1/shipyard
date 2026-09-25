@@ -235,4 +235,32 @@ export class Ledger {
     }
     return digests;
   }
+
+  /**
+   * `repo@digest` strings — Docker's own RepoDigests format (SHP-T-5.7; see `disk.ts`, `check.ts`) —
+   * for the newest `n` distinct verified *releases* for `app` (SHP-REQ-086). A release is
+   * identified by its exact set of image digests, so a rollback entry that re-verifies an earlier
+   * release counts as that release being recent again rather than a new one; it does not push the
+   * retained count to `n + 1`. Always retains at least one release.
+   */
+  retainedDigests(app: string, n: number): Set<string> {
+    const keep = Math.max(1, n);
+    const entries = this.entries(app);
+    const repoDigests = new Set<string>();
+    const seenReleases: string[] = [];
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const candidate = entries[i];
+      if (!candidate) continue;
+      const key = candidate.images
+        .map((image) => image.digest)
+        .toSorted()
+        .join('\u0000');
+      if (!seenReleases.includes(key)) {
+        if (seenReleases.length >= keep) continue;
+        seenReleases.push(key);
+      }
+      for (const image of candidate.images) repoDigests.add(`${image.repo}@${image.digest}`);
+    }
+    return repoDigests;
+  }
 }

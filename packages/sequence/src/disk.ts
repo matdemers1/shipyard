@@ -9,6 +9,13 @@ import type { ComposeTarget, DockerPort, Log } from './ports.js';
  * touches a running image, a digest the ledger still needs, or another app's image. `evaluateGates`
  * (`gates.ts`) turns the resulting `freeBytes` into the `insufficient_disk` refusal; this module only
  * decides what may be pruned and does the pruning.
+ *
+ * `keepDigests` is the caller's job to compute — it must already be the exact set to retain (the
+ * newest N verified releases, per `Ledger.retainedDigests`, plus the digest just deployed). This
+ * module does no further "keep the newest few" trimming of its own beyond that: every local image
+ * of a mapped repo that carries a RepoDigest and is not running and is not in `keepDigests` is
+ * pruned, in full. An image with no RepoDigest at all — only a tag we cannot tie to a digest — is
+ * left alone; being unable to identify it is not license to guess.
  */
 
 export interface LocalImage {
@@ -20,26 +27,26 @@ export interface LocalImage {
 }
 
 export interface PruneCandidateOptions {
-  /** Digests the ledger still needs (recent releases) — never pruned. */
+  /** Digests to retain (the caller's already-computed retained-release set) — never pruned. */
   keepDigests: Set<string>;
   /** Image IDs currently backing a running container — never pruned. */
   runningImageIds: Set<string>;
-  /** How many of the newest (by `created`) otherwise-eligible images to keep. */
-  retain: number;
 }
 
 /**
  * Pure: from one repository's local images, the ones that are safe to prune — not running, not in
- * `keepDigests`, and beyond the newest `retain`. Returned oldest-first, the order pruning should
+ * `keepDigests`, and identifiable at all (it carries at least one RepoDigest; an image known only
+ * by an untied tag is left alone, conservatively). Returned oldest-first, the order pruning should
  * happen in so the newest surviving images are always the last ones touched.
  */
 export function pruneCandidates(images: LocalImage[], opts: PruneCandidateOptions): LocalImage[] {
   const eligible = images.filter(
-    (image) => !opts.runningImageIds.has(image.id) && !image.repoDigests.some((digest) => opts.keepDigests.has(digest)),
+    (image) =>
+      !opts.runningImageIds.has(image.id) &&
+      image.repoDigests.length > 0 &&
+      !image.repoDigests.some((digest) => opts.keepDigests.has(digest)),
   );
-  const newestFirst = [...eligible].sort((a, b) => b.created - a.created);
-  const beyondRetain = newestFirst.slice(opts.retain);
-  return beyondRetain.toReversed();
+  return [...eligible].sort((a, b) => a.created - b.created);
 }
 
 function errMessage(err: unknown): string {
@@ -66,9 +73,9 @@ async function runningDigestsFor(docker: DockerPort, target: ComposeTarget): Pro
 }
 
 /** Candidates for one repo, given the digests currently running anywhere in the target. */
-function candidatesForRepo(images: LocalImage[], runningDigests: Set<string>, keepDigests: Set<string>, retain: number): LocalImage[] {
+function candidatesForRepo(images: LocalImage[], runningDigests: Set<string>, keepDigests: Set<string>): LocalImage[] {
   const runningImageIds = new Set(images.filter((image) => image.repoDigests.some((digest) => runningDigests.has(digest))).map((image) => image.id));
-  return pruneCandidates(images, { keepDigests, runningImageIds, retain });
+  return pruneCandidates(images, { keepDigests, runningImageIds });
 }
 
 /**
@@ -76,7 +83,8 @@ function candidatesForRepo(images: LocalImage[], runningDigests: Set<string>, ke
  * images — oldest candidate first, per mapped repo — re-measuring after each removal and stopping
  * as soon as the floor is cleared. Never removes a running image, a `keepDigests` entry, or an
  * image outside the manifest's mapped repos (each repo is read from Docker one at a time, so a
- * foreign image is never even considered). A failed removal is logged and skipped.
+ * foreign image is never even considered). A failed removal is logged and skipped. `keepDigests`
+ * should be the caller's retained-release set (SHP-D-083) — see the module doc.
  */
 export async function ensureFreeSpace(
   ports: DiskPorts,
@@ -96,7 +104,7 @@ export async function ensureFreeSpace(
   for (const repo of mappedRepos(manifest)) {
     if (freeBytes >= floorBytes) break;
     const images = await ports.docker.images(repo);
-    const candidates = candidatesForRepo(images, runningDigests, keepDigests, manifest.retainImages);
+    const candidates = candidatesForRepo(images, runningDigests, keepDigests);
     for (const candidate of candidates) {
       if (freeBytes >= floorBytes) break;
       try {
@@ -116,7 +124,9 @@ export async function ensureFreeSpace(
 /**
  * SHP-REQ-086: after a successful deploy, removes each mapped repo's images beyond the manifest's
  * `retainImages`, never a running image or a `keepDigests` entry. Unlike `ensureFreeSpace` this is
- * not stopped early by free space — it always trims down to the retained count.
+ * not stopped early by free space — it always trims down to the retained count. The caller is
+ * expected to pass `ledger.retainedDigests(app, manifest.retainImages)` (which already includes the
+ * release just recorded) as `keepDigests`.
  */
 export async function pruneAfterSuccess(ports: DiskPorts, manifest: Manifest, target: ComposeTarget, keepDigests: Set<string>): Promise<{ pruned: string[] }> {
   const pruned: string[] = [];
@@ -124,7 +134,7 @@ export async function pruneAfterSuccess(ports: DiskPorts, manifest: Manifest, ta
 
   for (const repo of mappedRepos(manifest)) {
     const images = await ports.docker.images(repo);
-    const candidates = candidatesForRepo(images, runningDigests, keepDigests, manifest.retainImages);
+    const candidates = candidatesForRepo(images, runningDigests, keepDigests);
     for (const candidate of candidates) {
       try {
         await ports.docker.removeImage(candidate.id);

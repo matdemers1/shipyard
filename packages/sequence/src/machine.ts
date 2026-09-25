@@ -726,7 +726,7 @@ export async function executeTarget(
     at: ports.clock.now().toISOString(),
   });
   try {
-    await pruneAfterSuccess(ports, manifest, target, ctx.ledger.knownDigests(manifest.name));
+    await pruneAfterSuccess(ports, manifest, target, ctx.ledger.retainedDigests(manifest.name, manifest.retainImages));
   } catch (err) {
     run.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'pruning after a successful deploy failed');
   }

@@ -22,6 +22,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 
 import { nodeFs } from '../src/adapters/node.js';
+import type { LocalImage } from '../src/disk.js';
 import { Journal } from '../src/journal.js';
 import { Ledger } from '../src/ledger.js';
 import { AppLock, canTransition, IllegalTransitionError, LOCK_GUARD_STALE_MS, lockPath, runDeploy, transition, TRANSITIONS } from '../src/machine.js';
@@ -116,6 +117,9 @@ interface World {
   running: Map<string, string>;
   composeCalls: string[][];
   progress: string[];
+  /** Local Docker images `docker.images(repo)` returns, and the ids `removeImage` was called with — for prune tests. */
+  localImagesByRepo: Map<string, LocalImage[]>;
+  removedImageIds: string[];
   /** Knobs. */
   opts: {
     ciConclusion: string | null;
@@ -161,7 +165,19 @@ function makeClock(): Clock {
   };
 }
 
-async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSeconds?: number; expectSchema?: string; envFiles?: string[]; requiredEnv?: string[] } = {}): Promise<World> {
+async function makeWorld(
+  options: {
+    backup?: boolean;
+    migrate?: boolean;
+    soakSeconds?: number;
+    expectSchema?: string;
+    envFiles?: string[];
+    requiredEnv?: string[];
+    retainImages?: number;
+    /** Local Docker images `docker.images(repo)` should return, keyed by repo. */
+    localImages?: Record<string, LocalImage[]>;
+  } = {},
+): Promise<World> {
   const root = await mkdtemp(join(tmpdir(), 'shp-machine-'));
   roots.push(root);
   const dataRoot = join(root, 'data');
@@ -199,6 +215,8 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
   const starts = new Map<string, { startedAt: string; restartCount: number }>([['app', { startedAt: 'start-0', restartCount: 0 }]]);
   let startCounter = 0;
   let okProbes = 0;
+  const localImagesByRepo = new Map<string, LocalImage[]>(Object.entries(options.localImages ?? {}));
+  const removedImageIds: string[] = [];
 
   const realFs = nodeFs();
   const fs: FsPort = {
@@ -307,8 +325,11 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
       }
     },
     freeBytes: () => Promise.resolve(100 * 1024 ** 3),
-    images: () => Promise.resolve([]),
-    removeImage: () => Promise.resolve(),
+    images: (repo: string) => Promise.resolve(localImagesByRepo.get(repo) ?? []),
+    removeImage: (id: string) => {
+      removedImageIds.push(id);
+      return Promise.resolve();
+    },
   };
 
   const clock = makeClock();
@@ -329,6 +350,7 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
     },
     ...(options.envFiles === undefined ? {} : { envFiles: options.envFiles }),
     ...(options.requiredEnv === undefined ? {} : { requiredEnv: options.requiredEnv }),
+    ...(options.retainImages === undefined ? {} : { retainImages: options.retainImages }),
   });
   const manifests: LoadedManifests = new Map([['toy', { manifest, file: join(dataRoot, 'apps', 'toy.yml'), sha256: '0' }]]);
 
@@ -359,7 +381,24 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
     onProgress: (e) => progress.push(e.state),
   };
 
-  return { root, dataRoot, composePath, artifactsDir, ports, ctx, events, images, running, composeCalls, progress, opts, aliases, starts };
+  return {
+    root,
+    dataRoot,
+    composePath,
+    artifactsDir,
+    ports,
+    ctx,
+    events,
+    images,
+    running,
+    composeCalls,
+    progress,
+    opts,
+    aliases,
+    starts,
+    localImagesByRepo,
+    removedImageIds,
+  };
 }
 
 function request(overrides: Partial<DeployRequest> = {}): DeployRequest {
@@ -458,6 +497,44 @@ describe('runDeploy — success', () => {
     expect(result.steps.map((s) => s.name)).toEqual(['verify', 'pull', 'swap', 'check', 'soak']);
     expect(world.progress).toEqual(['verifying', 'pulling', 'swapping', 'checking', 'soaking', 'succeeded']);
     expect(result.backupArtifact).toBeNull();
+  });
+});
+
+// ─── Pruning after a successful deploy (SHP-T-5.7, SHP-REQ-086) ─────────────
+
+describe('runDeploy — pruning after success', () => {
+  it('a successful deploy removes local images of releases beyond retainImages, keeping the retained ones', async () => {
+    const OTHER_SHA = 'e'.repeat(40);
+    world = await makeWorld({
+      retainImages: 2,
+      localImages: {
+        [REPO]: [
+          { id: 'img-other', repoTags: [], repoDigests: [`${REPO}@${OTHER_DIGEST}`], created: 1, size: 10 },
+          { id: 'img-old', repoTags: [], repoDigests: [`${REPO}@${OLD_DIGEST}`], created: 2, size: 10 },
+          { id: 'img-new', repoTags: [], repoDigests: [`${REPO}@${NEW_DIGEST}`], created: 3, size: 10 },
+        ],
+      },
+    });
+    // A release older than the ledger-seeded "old" one, so retain-2 has something to prune.
+    await world.ctx.ledger.append({
+      app: 'toy',
+      deployId: 'dep-0',
+      kind: 'deploy',
+      sha: OTHER_SHA,
+      images: [{ service: 'app', repo: REPO, digest: OTHER_DIGEST, migration: null }],
+      backupArtifact: null,
+      at: new Date().toISOString(),
+    });
+
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('succeeded');
+
+    // Ledger order is: dep-old (OLD_DIGEST, seeded by makeWorld), dep-0 (OTHER_DIGEST, appended
+    // above), dep-new (NEW_DIGEST, this deploy). Retained (newest 2): dep-0 and dep-new. Pruned
+    // (oldest, beyond retainImages 2): dep-old.
+    expect(world.removedImageIds).toEqual(['img-old']);
+    expect(world.removedImageIds).not.toContain('img-other');
+    expect(world.removedImageIds).not.toContain('img-new');
   });
 });
 

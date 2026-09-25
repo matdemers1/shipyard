@@ -255,6 +255,52 @@ describe('Ledger queries', () => {
 
     expect(ledger.knownDigests('bindery')).toEqual(new Set([`sha256:${'1'.repeat(64)}`, `sha256:${'2'.repeat(64)}`, `sha256:${'3'.repeat(64)}`]));
   });
+
+  it('retainedDigests: with 5 verified releases and retain-3, only the newest 3 releases\' digests are retained', async () => {
+    const { fs } = memoryFs();
+    const ledger = await Ledger.open(fs, PATH);
+    const digest = (n: number): string => `sha256:${String(n).repeat(64).slice(0, 64)}`;
+    for (let i = 1; i <= 5; i++) {
+      await ledger.append(
+        entry({
+          deployId: `dep-${i}`,
+          images: [{ service: 'server', repo: 'r', digest: digest(i), migration: null }],
+        }),
+      );
+    }
+
+    const retained = ledger.retainedDigests('bindery', 3);
+    expect(retained).toEqual(new Set([`r@${digest(3)}`, `r@${digest(4)}`, `r@${digest(5)}`]));
+    expect(retained.has(`r@${digest(1)}`)).toBe(false);
+    expect(retained.has(`r@${digest(2)}`)).toBe(false);
+  });
+
+  it('retainedDigests: a rollback re-verifying an older release counts as that release being recent, not a new one', async () => {
+    const { fs } = memoryFs();
+    const ledger = await Ledger.open(fs, PATH);
+    const digest = (n: number): string => `sha256:${String(n).repeat(64).slice(0, 64)}`;
+    const images = (n: number): LedgerEntry['images'] => [{ service: 'server', repo: 'r', digest: digest(n), migration: null }];
+
+    // Releases 1..4, then a rollback back to release 2's images.
+    for (let i = 1; i <= 4; i++) {
+      await ledger.append(entry({ deployId: `dep-${i}`, kind: 'deploy', images: images(i) }));
+    }
+    await ledger.append(entry({ deployId: 'dep-rollback', kind: 'rollback', images: images(2) }));
+
+    // Newest-by-ledger-order distinct releases are: dep-rollback (= release 2), dep-4, dep-3.
+    // retain-2 must keep release-2's and release-4's digests, not release-3's or release-1's.
+    const retained = ledger.retainedDigests('bindery', 2);
+    expect(retained).toEqual(new Set([`r@${digest(2)}`, `r@${digest(4)}`]));
+  });
+
+  it('retainedDigests: never retains fewer than 1 release even when n is 0', async () => {
+    const { fs } = memoryFs();
+    const ledger = await Ledger.open(fs, PATH);
+    await ledger.append(entry({ deployId: 'dep-1' }));
+    await ledger.append(entry({ deployId: 'dep-2', sha: 'c'.repeat(40) }));
+
+    expect(ledger.retainedDigests('bindery', 0)).toEqual(ledger.retainedDigests('bindery', 1));
+  });
 });
 
 describe('Ledger.append validation', () => {

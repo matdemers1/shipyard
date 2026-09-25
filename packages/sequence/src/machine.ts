@@ -469,6 +469,8 @@ export async function runDeploy(ports: SequencePorts, ctx: MachineContext, reque
     const resolved = await resolveDeployTarget(ports, ctx.ledger, manifest, request.sha, {
       dryRun: true,
       envNamesProvider: ctx.envNamesProvider,
+      // A group promotion ships the canary's digests or nothing (SHP-D-047).
+      ...(request.expectDigests === undefined ? {} : { expectDigests: request.expectDigests }),
     });
     if (resolved.refusal !== null) {
       await run.move('refused');
@@ -537,6 +539,7 @@ async function deployLocked(ports: SequencePorts, ctx: MachineContext, run: Run,
     resolved = await resolveDeployTarget(ports, ctx.ledger, manifest, run.request.sha, {
       dryRun: false,
       envNamesProvider: ctx.envNamesProvider,
+      ...(run.request.expectDigests === undefined ? {} : { expectDigests: run.request.expectDigests }),
     });
   } catch (err) {
     const refused = asRefusal(err, 'step_failed', 'Verify failed');

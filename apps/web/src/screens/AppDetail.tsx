@@ -300,8 +300,20 @@ export function AppDetail() {
                 />
               ))}
             </DataList>
+            <Link asChild>
+              <RouterLink to={`/apps/${encodeURIComponent(detail.name)}/restore`}>Restore from a backup</RouterLink>
+            </Link>
           </Section>
         ) : null}
+
+        <Section
+          title="Backups"
+          description="Backups the agent took before a deploy. Restoring one discards every write made since it was taken."
+        >
+          <Link asChild>
+            <RouterLink to={`/apps/${encodeURIComponent(detail.name)}/restore`}>See backups and restore</RouterLink>
+          </Link>
+        </Section>
 
         <Section title="History" description="The last twenty deploys, rollbacks and dry runs.">
           <DataList

@@ -280,10 +280,10 @@ describe('shipyard_deploy and shipyard_rollback', () => {
     expect(await db.deploy.count()).toBe(0);
   });
 
-  it('refuses a group deploy', async () => {
+  it('refuses a deploy of an unknown group', async () => {
     const client = await connect(await tokenFor('a', ['web']));
     const r = refusalOf(await call(client, 'shipyard_deploy', { group: 'core', sha: SHA_A, requester: requester('x') }));
-    expect(r.code).toBe('invalid_request');
+    expect(r.code).toBe('not_found');
     expect(r.message).toMatch(/group/i);
   });
 

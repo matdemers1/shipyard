@@ -213,7 +213,8 @@ export function DeployProgressView({ id, options }: { id: string; options?: Prog
     );
   }
 
-  const title = status === null ? 'Deploy' : `${status.kind === 'rollback' ? 'Rollback' : 'Deploy'} ${status.app}`;
+  const kindTitle = { deploy: 'Deploy', rollback: 'Rollback', restore: 'Restore' } as const;
+  const title = status === null ? 'Deploy' : `${kindTitle[status.kind]} ${status.app}`;
   const finished = status !== null && isTerminal(status.state);
   // The step being worked on: the last one without an end, while the deploy is still running.
   let currentIndex = -1;

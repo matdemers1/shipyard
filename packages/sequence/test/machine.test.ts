@@ -1014,6 +1014,30 @@ describe('runDeploy — a failed release with no previous one is stopped, not le
   });
 });
 
+describe('runDeploy — a group promotion ships the canary\'s digests or nothing (SHP-D-047)', () => {
+  beforeEach(async () => {
+    world = await makeWorld();
+  });
+
+  it('refuses digest_mismatch before touching anything when GHCR resolves another digest', async () => {
+    const result = await runDeploy(world.ports, world.ctx, request({ expectDigests: { app: OTHER_DIGEST } }));
+    expect(result.state).toBe('refused');
+    expect(refusalOf(result).code).toBe('digest_mismatch');
+    expect(world.composeCalls).toEqual([]);
+    expect(world.running.get('app')).toBe(OLD_DIGEST);
+  });
+
+  it('a dry run reports the same refusal', async () => {
+    const result = await runDeploy(world.ports, world.ctx, request({ dryRun: true, expectDigests: { app: OTHER_DIGEST } }));
+    expect(refusalOf(result).code).toBe('digest_mismatch');
+  });
+
+  it('deploys when the digests match', async () => {
+    const result = await runDeploy(world.ports, world.ctx, request({ expectDigests: { app: NEW_DIGEST } }));
+    expect(result.state).toBe('succeeded');
+  });
+});
+
 describe('runDeploy — soak sees a restart between ticks (SHP-REQ-025)', () => {
   beforeEach(async () => {
     world = await makeWorld();

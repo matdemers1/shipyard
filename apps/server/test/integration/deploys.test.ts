@@ -269,14 +269,16 @@ describe('server-side pre-checks', () => {
     expect(err(res).code).toBe('forbidden');
   });
 
-  it('refuses anonymous callers, group deploys and malformed bodies', async () => {
+  it('refuses anonymous callers, unknown groups and malformed bodies', async () => {
     const anon = await request(app).post('/api/deploys').send({ kind: 'deploy', app: 'web', sha: SHA_A });
     expect(anon.status).toBe(401);
 
     const { cookie } = await signIn('deployer');
     const group = await request(app).post('/api/deploys').set('Cookie', cookie).send({ kind: 'deploy', group: 'core', sha: SHA_A });
-    expect(group.status).toBe(400);
-    expect(err(group).message).toContain('Phase 5');
+    // Group deploys exist since Phase 5; an unknown group is simply not found.
+    expect(group.status).toBe(404);
+    expect(err(group).code).toBe('not_found');
+    expect(err(group).message).toContain('group core');
 
     const bad = await request(app).post('/api/deploys').set('Cookie', cookie).send({ kind: 'deploy', app: 'web', sha: 'nope' });
     expect(bad.status).toBe(400);

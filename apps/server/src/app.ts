@@ -25,6 +25,7 @@ import { groupsRouter } from './groups/index.js';
 import { schedulesRouter } from './schedules/index.js';
 import { restoreRouter } from './restore/index.js';
 import { systemRouter } from './system/index.js';
+import { setupRouter, type SetupDeps } from './setup/index.js';
 
 export interface AppDeps {
   db: Db;
@@ -35,6 +36,8 @@ export interface AppDeps {
   oidc?: OidcClient | null;
   /** Long-poll wake-ups; one per process. Tests may pass their own to observe or trigger it. */
   bus?: Bus;
+  /** First-run setup's throttle limits and clock; tests pass small ones. */
+  setup?: Pick<SetupDeps, 'limits' | 'now'>;
   /**
    * Test-only seam: a router mounted at `/api/_test` before the 404 handler, so integration
    * tests can exercise `req.audit`/`req.actor` and the unaudited-mutation guard without a real
@@ -84,6 +87,8 @@ export function createApp(deps: AppDeps): Express {
   // ── Registration section ──────────────────────────────────────────────
   // Feature routers mount here, before the 404 handler below.
   app.use('/api/auth', authRouter(authDeps));
+  // Public: first-run setup is reachable only while no account exists (SHP-REQ-109).
+  app.use('/api/setup', setupRouter({ db, logger, config, ...deps.setup }));
   app.use('/api', openapiRouter());
   app.use('/api/agent', agentRouter(serviceDeps));
   app.use('/api/apps', commitsRouter(serviceDeps));

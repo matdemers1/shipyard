@@ -6,8 +6,9 @@ data root — nothing here assumes ZimaOS (SHP-D-037). The paths below use `/DAT
 root; substitute your own.
 
 > [!warning] Two things only a person does
-> Creating the first account (`bootstrap-admin`) and confirming the agent's fingerprint are
-> deliberate human acts. Nothing in this runbook signs in on your behalf.
+> Creating the first account (in the browser, or `bootstrap-admin` on a headless host) and
+> confirming the agent's fingerprint are deliberate human acts. Nothing in this runbook signs in on
+> your behalf.
 
 ## 1. Directory and secrets
 
@@ -58,14 +59,31 @@ docker compose -p shipyard up -d
 curl -s https://<host name>/api/health     # {"status":"ok","schemaRevision":"…","version":"<sha>"}
 ```
 
-## 4. The first account (a person runs this)
+## 4. The first account (a person does this, right after first start)
+
+Open `https://<host name>/` in a browser. While Shipyard has no account at all, the console shows a
+**Setup** screen instead of sign-in: email, display name and password (12+ characters), then an
+authenticator to add — a link that opens your authenticator app, and the base32 setup key to type —
+and one six-digit code to confirm it. Finishing creates an admin with TOTP enrolled, audits it
+(`auth.setup.completed`) and signs you in. From then on the server refuses setup (`GET /api/setup`
+answers `{"available":false}`, and both setup calls answer `409 conflict`); everyone else is
+invited from the Users screen.
+
+> [!warning] Claim it right after the first start
+> There is no setup code and no time window: until the first account exists, **whoever reaches
+> this URL can claim it**. Create the account before the address is reachable by anyone else —
+> before the tunnel's public hostname points at it, or with the tunnel down — and then check the
+> Users screen shows only you.
+
+**Headless alternative.** With no browser to hand, the CLI creates the same first admin:
 
 ```bash
 docker compose -p shipyard exec server node dist/cli/bootstrap-admin.js --email you@example.com --name "Your Name"
 ```
 
 It prompts for a password (12+ characters; never pass it as an argument) and prints an `otpauth://`
-URI once — add it to an authenticator. It refuses a second run. There is no signup.
+URI once — add it to an authenticator. It refuses once any account exists, and the CLI and the
+browser take the same database lock, so the two can never both create a first account.
 
 ## 5. Enrolling the agent (a person compares the fingerprint)
 

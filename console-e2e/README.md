@@ -32,6 +32,10 @@ pnpm --filter console-e2e test
   sessions; build what you need with `createApp`, `createDeploy`, `sha(n)`, `digest(label)`, and
   put the baseline back with `withDb(reseedWorld)` in `afterAll`. Commit SHAs the stub knows are
   listed in `harness/github-stub.mjs`.
+- **A server with no account (first-run setup):** `const snap = await withDb(enterZeroUserWorld)`
+  copies the accounts and sessions out and empties everything; `withDb((db) => restoreAccounts(db,
+  snap))` writes them back verbatim (same session token hashes, so every `storageState` stays
+  valid) and reseeds the world. See `tests/setup.spec.ts`.
 - **Error and loading states:** `page.route('**/api/…', …)` to fail or stall one call.
 - **Signing in inside a test:** `signIn(page, USERS.viewer, { waitForFreshStep: true })` — a TOTP
   step is spent once per user.

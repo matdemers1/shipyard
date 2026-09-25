@@ -15,9 +15,10 @@ const MIN_PASSWORD_LENGTH = 12;
 
 /**
  * A fixed key for `pg_advisory_xact_lock`, held for the life of the bootstrap transaction so two
- * concurrent runs cannot both observe an empty `user` table and both insert.
+ * concurrent runs cannot both observe an empty `user` table and both insert. First-run setup in
+ * the console (src/setup) takes the same lock, so the CLI and the browser serialise with each other.
  */
-const BOOTSTRAP_LOCK_KEY = 847_291_003_771n;
+export const BOOTSTRAP_LOCK_KEY = 847_291_003_771n;
 
 /** Thrown when an account already exists; bootstrap-admin only ever creates the first one. */
 export class AlreadyBootstrapped extends Error {

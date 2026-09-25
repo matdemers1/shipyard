@@ -1,0 +1,70 @@
+{
+  "agentVersion": "0.1.0",
+  "composeVersion": "v5.2.1",
+  "engineApiVersion": "1.47",
+  "patExpiresAt": "2027-01-01T00:00:00.000Z",
+  "apps": [
+    {
+      "manifest": {
+        "name": "bindery",
+        "repo": "matdemers1/bindery",
+        "defaultBranch": "main",
+        "workflow": "ci.yml",
+        "compose": {
+          "files": [
+            "/DATA/apps/bindery/docker-compose.yml"
+          ],
+          "project": "bindery"
+        },
+        "services": {
+          "server": {
+            "image": "ghcr.io/matdemers1/bindery/server"
+          }
+        },
+        "health": {
+          "service": "server",
+          "path": "/health",
+          "port": 3000
+        },
+        "soakSeconds": 60,
+        "approval": "none"
+      },
+      "manifestSha256": "5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd",
+      "running": {
+        "server": "sha256:5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd"
+      }
+    }
+  ],
+  "releases": [
+    {
+      "deployId": "501e72fb-3c1d-4f0e-9a51-6d2f8c0b7e11",
+      "app": "bindery",
+      "kind": "deploy",
+      "sha": "8f7da9f0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+      "images": [
+        {
+          "service": "server",
+          "repo": "ghcr.io/matdemers1/bindery/server",
+          "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "migration": "none"
+        }
+      ],
+      "at": "2026-09-25T14:03:11.402Z"
+    },
+    {
+      "deployId": "cli-not-a-uuid",
+      "app": "bindery",
+      "kind": "rollback",
+      "sha": "8f7da9f0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+      "images": [
+        {
+          "service": "server",
+          "repo": "ghcr.io/matdemers1/bindery/server",
+          "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "migration": null
+        }
+      ],
+      "at": "2026-09-25T14:03:11.402Z"
+    }
+  ]
+}

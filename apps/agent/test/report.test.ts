@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentReport } from '@shipyard/schema';
-import type { ComposeTarget, DockerPort, FsPort, RunningContainer } from '@shipyard/sequence';
+import { Ledger, type ComposeTarget, type DockerPort, type FsPort, type LedgerEntry, type RunningContainer } from '@shipyard/sequence';
 import type { AgentClient } from '../src/client.js';
 import { buildReport, manifestsHash, reportHash, startReporting } from '../src/report.js';
 
@@ -123,6 +123,90 @@ describe('buildReport', () => {
     expect(await manifestsHash(fs, ROOT)).toBe(reportHash(report));
     files.set(`${ROOT}/apps/web.yml`, manifestYaml('web', 90));
     expect(await manifestsHash(fs, ROOT)).not.toBe(reportHash(report));
+  });
+});
+
+/** A shared in-memory ledger file, as the agent and a host CLI process would share one on disk. */
+function ledgerFs(): FsPort {
+  const files = new Map<string, string>();
+  return {
+    readFile: (path) => Promise.resolve(files.get(path) ?? ''),
+    writeFileAtomic: (path, content) => {
+      files.set(path, content);
+      return Promise.resolve();
+    },
+    appendLine: (path, line) => {
+      files.set(path, `${files.get(path) ?? ''}${line}\n`);
+      return Promise.resolve();
+    },
+    exists: (path) => Promise.resolve(files.has(path)),
+    mkdirp: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+  };
+}
+
+function release(n: number, overrides: Partial<LedgerEntry> = {}): LedgerEntry {
+  return {
+    app: 'web',
+    deployId: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+    kind: 'deploy',
+    sha: String(n % 10).repeat(40),
+    images: [{ service: 'web', repo: 'ghcr.io/matdemers1/web', digest: DIGEST_WEB, migration: 'none' }],
+    backupArtifact: null,
+    at: new Date(Date.UTC(2026, 8, 25, 0, n)).toISOString(),
+    ...overrides,
+  };
+}
+
+describe('buildReport releases (SHP-REQ-111)', () => {
+  it('carries the newest 20 ledger releases per reported app, including what another process appended', async () => {
+    const files = new Map([
+      [`${ROOT}/apps/web.yml`, manifestYaml('web')],
+      [`${ROOT}/apps/api.yml`, manifestYaml('api')],
+    ]);
+    const fs = ledgerFs();
+    const path = `${ROOT}/agent/ledger.jsonl`;
+    const agentLedger = await Ledger.open(fs, path);
+    // The host CLI: its own Ledger on the same file, appended after the agent opened it.
+    const cli = await Ledger.open(fs, path);
+    for (let n = 1; n <= 22; n++) await cli.append(release(n));
+    await cli.append(release(23, { app: 'api', kind: 'rollback', images: [{ service: 'web', repo: 'ghcr.io/matdemers1/api', digest: DIGEST_OTHER, migration: null }] }));
+    await cli.append({ kind: 'backup', app: 'web', deployId: 'b-1', backupArtifact: '/data/backups/web/1.dump', release: null, at: new Date().toISOString() });
+    // An app the ledger knows but no manifest names is not reported.
+    await cli.append(release(24, { app: 'gone' }));
+
+    const report = await buildReport(
+      { fs: fakeFs(files), docker: fakeDocker({}), engineApiVersion: () => Promise.resolve('1.51'), ledger: agentLedger },
+      ROOT,
+      { agentVersion: '0', patExpiresAt: null },
+    );
+
+    expect(AgentReport.parse(report)).toEqual(report);
+    const releases = report.releases ?? [];
+    expect(releases.filter((r) => r.app === 'web').map((r) => r.deployId)).toEqual(
+      Array.from({ length: 20 }, (_, i) => release(i + 3).deployId),
+    );
+    expect(releases.filter((r) => r.app === 'api')).toEqual([
+      { deployId: release(23).deployId, app: 'api', kind: 'rollback', sha: '3'.repeat(40), images: [{ service: 'web', repo: 'ghcr.io/matdemers1/api', digest: DIGEST_OTHER, migration: null }], at: release(23).at },
+    ]);
+    expect(releases.some((r) => r.app === 'gone')).toBe(false);
+  });
+
+  it('reports without releases when the ledger no longer verifies', async () => {
+    const warn = vi.fn();
+    const report = await buildReport(
+      {
+        fs: fakeFs(new Map()),
+        docker: fakeDocker({}),
+        engineApiVersion: () => Promise.resolve('1.51'),
+        ledger: { refresh: () => Promise.reject(new Error('ledger tampered')), recent: () => [] },
+        log: { info: vi.fn(), warn },
+      },
+      ROOT,
+      { agentVersion: '0', patExpiresAt: null },
+    );
+    expect(report.releases).toBeUndefined();
+    expect(warn).toHaveBeenCalledOnce();
   });
 });
 

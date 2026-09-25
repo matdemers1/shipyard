@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { Digest, type AgentReport } from '@shipyard/schema';
-import { loadManifests, type DockerPort, type FsPort, type LoadedManifest } from '@shipyard/sequence';
+import { Digest, REPORTED_RELEASES_PER_APP, type AgentReport } from '@shipyard/schema';
+import { loadManifests, type DockerPort, type FsPort, type LedgerEntry, type LoadedManifest } from '@shipyard/sequence';
 import type { AgentClient } from './client.js';
 
 /**
@@ -8,6 +8,10 @@ import type { AgentClient } from './client.js';
  * digest each mapped service is running. Sent on start, on an interval, and whenever the manifests
  * change — the periodic report is what turns an SSH change into drift on the next poll
  * (SHP-REQ-054). The server mirrors it; it never tells the agent what its manifests say.
+ *
+ * It also carries the ledger's verified releases, the newest `REPORTED_RELEASES_PER_APP` per app
+ * (SHP-REQ-111), so a deploy made on the host with the CLI shows up on the server as the live
+ * release and as a rollback target.
  */
 
 export interface ReportPorts {
@@ -15,6 +19,12 @@ export interface ReportPorts {
   docker: DockerPort;
   /** The Docker Engine API version (`GET /version` → `ApiVersion`). */
   engineApiVersion(): Promise<string>;
+  /**
+   * The agent's ledger, shared with the engine. `refresh` adopts what another process (the host
+   * CLI) appended; `recent` is newest first. Absent: the report carries no releases.
+   */
+  ledger?: { refresh(): Promise<void>; recent(app: string, n?: number): LedgerEntry[] };
+  log?: ReportLog;
 }
 
 export interface ReportVersions {
@@ -83,13 +93,44 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
   }
 
   const engine = (await ports.engineApiVersion()).trim();
+  const releases = await ledgerReleases(ports, loaded);
   return {
     agentVersion: versions.agentVersion,
     composeVersion: await composeVersion(ports.docker, loaded),
     engineApiVersion: engine.length > 0 ? engine : UNKNOWN,
     patExpiresAt: versions.patExpiresAt,
     apps,
+    ...(releases === undefined ? {} : { releases }),
   };
+}
+
+/**
+ * The newest `REPORTED_RELEASES_PER_APP` ledger releases of each reported app, oldest first. A
+ * ledger that fails to refresh (a chain that no longer verifies) is logged and left out, so the
+ * report — the agent's heartbeat — still goes.
+ */
+async function ledgerReleases(ports: ReportPorts, loaded: LoadedManifest[]): Promise<AgentReport['releases']> {
+  const ledger = ports.ledger;
+  if (ledger === undefined) return undefined;
+  try {
+    await ledger.refresh();
+  } catch (err) {
+    ports.log?.warn({ err: err instanceof Error ? err.message : String(err) }, 'ledger refresh failed; reporting without releases');
+    return undefined;
+  }
+  return loaded.flatMap((m) =>
+    ledger
+      .recent(m.manifest.name, REPORTED_RELEASES_PER_APP)
+      .reverse()
+      .map((e) => ({
+        deployId: e.deployId,
+        app: e.app,
+        kind: e.kind,
+        sha: e.sha,
+        images: e.images.map((i) => ({ service: i.service, repo: i.repo, digest: i.digest, migration: i.migration ?? null })),
+        at: e.at,
+      })),
+  );
 }
 
 export interface ReportLog {

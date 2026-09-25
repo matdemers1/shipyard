@@ -24,6 +24,7 @@ import { freezeRouter } from './freeze/index.js';
 import { groupsRouter } from './groups/index.js';
 import { schedulesRouter } from './schedules/index.js';
 import { restoreRouter } from './restore/index.js';
+import { systemRouter } from './system/index.js';
 
 export interface AppDeps {
   db: Db;
@@ -90,6 +91,7 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/apps', restoreRouter(serviceDeps));
   app.use('/api/groups', groupsRouter(serviceDeps));
   app.use('/api/schedules', schedulesRouter(serviceDeps));
+  app.use('/api/system', systemRouter(serviceDeps));
   app.use('/api/apps', appsRouter(serviceDeps));
   app.use('/api/deploys', deployEventsRouter(serviceDeps));
   app.use('/api/deploys', approvalsRouter(serviceDeps));

@@ -267,6 +267,8 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
             repo: repoOf(target.app.services, image.service),
             sha: image.sha,
             digest: image.digest,
+            // Read from the verified digest (SHP-D-057); rollback targets read it (SHP-REQ-052).
+            migrationLabel: image.migration ?? null,
           })),
         });
       }

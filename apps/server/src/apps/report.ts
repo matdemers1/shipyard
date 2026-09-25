@@ -56,6 +56,8 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     const created: string[] = [];
     const drifted: { app: string; services: string[] }[] = [];
     const refusedApps: string[] = [];
+    // Apps whose pending redeploy-recorded this report resolved: the recorded release runs again.
+    const redeployed: string[] = [];
 
     await db.$transaction(async (tx) => {
       for (const entry of report.apps) {
@@ -92,8 +94,9 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
           update: fields,
           select: { id: true },
         });
-        const outcome = await detectDrift(tx, row, entry.running);
+        const outcome = await detectDrift(tx, row, entry.running, Object.keys(m.services));
         if (outcome.opened) drifted.push({ app: m.name, services: outcome.services });
+        if (outcome.resolved) redeployed.push(m.name);
       }
       await tx.agent.update({
         where: { id: agentId },
@@ -110,8 +113,12 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       logger.warn({ app: d.app, services: d.services }, 'drift detected: running digests differ from the recorded release');
     }
 
+    for (const name of redeployed) {
+      logger.info({ app: name }, 'drift resolved: the recorded release is running again after a redeploy');
+    }
+
     // A periodic report that changed nothing is a heartbeat, not an event.
-    if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0) {
+    if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0 && redeployed.length === 0) {
       req.noAuditNeeded('unchanged report');
     } else {
       await req.audit({
@@ -123,6 +130,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
           created,
           changed,
           drifted,
+          redeployed,
           refused: refusedApps,
         },
       });

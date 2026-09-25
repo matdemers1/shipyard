@@ -177,6 +177,9 @@ model Agent {
   agentVersion      String?   @map("agent_version")
   composeVersion    String?   @map("compose_version")
   engineApiVersion  String?   @map("engine_api_version")
+  /// The GitHub token's expiry, as the agent reports it (SHP-REQ-094, SHP-T-6.5). Null when the
+  /// agent has no token configured.
+  patExpiresAt      DateTime? @map("pat_expires_at") @db.Timestamptz(3)
 
   confirmedByUser User?        @relation("AgentConfirmedByUser", fields: [confirmedByUserId], references: [id])
   apps            App[]

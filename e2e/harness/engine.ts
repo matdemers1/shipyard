@@ -131,6 +131,10 @@ export interface ToyDataRootOptions {
    * written beside `compose.yml` and listed in the manifest's `compose.files`.
    */
   extraComposeFiles?: Record<string, string>;
+  /** The manifest's app name (and `apps/<name>.yml`). Default `toy`. */
+  app?: string;
+  /** The compose service the toy app runs as, named in the manifest's services/health/migrate. Default `app`. */
+  service?: string;
 }
 
 export async function prepareToyDataRoot(options: ToyDataRootOptions = {}): Promise<ToyDataRoot> {
@@ -143,7 +147,10 @@ export async function prepareToyDataRoot(options: ToyDataRootOptions = {}): Prom
   const composePath = join(stackDir, 'compose.yml');
   // The toy stack's own compose file, with its image line naming the alias the manifest uses.
   const toyCompose = await readFile(join(TOY_APP_DIR, 'compose.yml'), 'utf8');
-  await writeFile(composePath, toyCompose.replaceAll(`${INTERNAL_REGISTRY}/toy/app`, `${MANIFEST_REGISTRY}/toy/app`), 'utf8');
+  const app = options.app ?? 'toy';
+  const service = options.service ?? 'app';
+  const renamed = toyCompose.replace(/^ {2}app:$/m, `  ${service}:`);
+  await writeFile(composePath, renamed.replaceAll(`${INTERNAL_REGISTRY}/toy/app`, `${MANIFEST_REGISTRY}/toy/app`), 'utf8');
   const project = `toy-${randomBytes(3).toString('hex')}`;
   const composeFiles = [composePath];
   for (const [name, content] of Object.entries(options.extraComposeFiles ?? {})) {
@@ -153,18 +160,18 @@ export async function prepareToyDataRoot(options: ToyDataRootOptions = {}): Prom
   }
 
   const manifest = {
-    name: 'toy',
+    name: app,
     repo: 'example/toy',
     defaultBranch: 'main',
     workflow: 'ci.yml',
     compose: { files: composeFiles, project },
-    services: { app: { image: `${MANIFEST_REGISTRY}/toy/app` } },
-    health: { service: 'app', port: 3000, path: '/health' },
+    services: { [service]: { image: `${MANIFEST_REGISTRY}/toy/app` } },
+    health: { service, port: 3000, path: '/health' },
     soakSeconds: options.soakSeconds ?? 3,
     diskFloorGb: 0.1,
-    steps: { migrate: { service: 'app', argv: ['node', 'migrate.mjs'] } },
+    steps: { migrate: { service, argv: ['node', 'migrate.mjs'] } },
   };
-  await writeFile(join(dataRoot, 'apps', 'toy.yml'), stringify(manifest), 'utf8');
+  await writeFile(join(dataRoot, 'apps', `${app}.yml`), stringify(manifest), 'utf8');
 
   return {
     root,

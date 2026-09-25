@@ -19,16 +19,19 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
 import { AdoptLiveButton, DriftBanner } from '../components/DriftBanner';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
+import { FreezeSheet, UnfreezeButton } from '../components/FreezeSheet';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { useCan } from '../lib/auth';
 import {
   age,
   appDetail,
+  freeze,
   sha7,
   shortDigest,
   when,
   type AppDetail as Detail,
   type DriftState,
+  type FreezeInfo,
 } from '../lib/appdetail';
 
 /**
@@ -41,7 +44,7 @@ import {
 type Load =
   | { status: 'loading' }
   | { status: 'error'; error: RefusalError }
-  | { status: 'ready'; detail: Detail; drift: DriftState };
+  | { status: 'ready'; detail: Detail; drift: DriftState; freeze: FreezeInfo | null };
 
 function stateTone(state: string): 'neutral' | 'attention' | 'danger' {
   if (state === 'failed' || state === 'rolled_back' || state === 'refused') return 'danger';
@@ -76,9 +79,9 @@ export function AppDetail() {
 
   useEffect(() => {
     const controller = new AbortController();
-    Promise.all([appDetail.get(app, controller.signal), appDetail.drift(app, controller.signal)])
-      .then(([detail, drift]) => {
-        setLoad({ status: 'ready', detail, drift });
+    Promise.all([appDetail.get(app, controller.signal), appDetail.drift(app, controller.signal), freeze.get(app, controller.signal)])
+      .then(([detail, drift, freezeStatus]) => {
+        setLoad({ status: 'ready', detail, drift, freeze: freezeStatus.freeze });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -120,7 +123,7 @@ export function AppDetail() {
     );
   }
 
-  const { detail, drift } = load;
+  const { detail, drift, freeze: activeFreeze } = load;
   const neverDeployed = detail.liveSha === null;
   const running = Object.entries(detail.running ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const history = detail.targets;
@@ -136,7 +139,25 @@ export function AppDetail() {
               ? 'Never deployed through Shipyard.'
               : `Live ${sha7(detail.liveSha)}, deployed ${age(detail.liveEndedAt)}.`
           }
+          {...(can
+            ? {
+                actions:
+                  activeFreeze !== null ? (
+                    <UnfreezeButton app={detail.name} onCleared={reload} />
+                  ) : (
+                    <FreezeSheet app={detail.name} onFrozen={reload} />
+                  ),
+              }
+            : {})}
         />
+
+        {activeFreeze !== null ? (
+          <Alert tone="danger" title={`${detail.name} is frozen`}>
+            {activeFreeze.reason} — since {when(activeFreeze.from)}, by {activeFreeze.by}
+            {activeFreeze.until !== null ? `, until ${when(activeFreeze.until)}` : ''}. New deploys are refused;
+            rollbacks and restores are still allowed.
+          </Alert>
+        ) : null}
 
         {drift.open !== null ? (
           <DriftBanner
@@ -279,8 +300,26 @@ export function AppDetail() {
                 />
               ))}
             </DataList>
+            <Link asChild>
+              <RouterLink to={`/apps/${encodeURIComponent(detail.name)}/restore`}>Restore from a backup</RouterLink>
+            </Link>
           </Section>
         ) : null}
+
+        <Section
+          title="Backups"
+          description="Backups the agent took before a deploy. Restoring one discards every write made since it was taken."
+        >
+          <Link asChild>
+            <RouterLink to={`/apps/${encodeURIComponent(detail.name)}/restore`}>See backups and restore</RouterLink>
+          </Link>
+        </Section>
+
+        <Section title="Schedules" description="Deploy a named SHA at a set time; every gate re-runs when it fires.">
+          <Link asChild>
+            <RouterLink to="/schedules">See and schedule deploys</RouterLink>
+          </Link>
+        </Section>
 
         <Section title="History" description="The last twenty deploys, rollbacks and dry runs.">
           <DataList

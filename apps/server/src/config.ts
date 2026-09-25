@@ -36,6 +36,16 @@ export const Config = z
       (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
       z.coerce.number().int().min(0).max(5).optional(),
     ),
+    // Alert email through an HTTP mail relay (D3 Auth's Worker on the D3 host). All optional:
+    // unset means alerts are logged, never sent — a stranger's install still runs (SHP-T-6.4).
+    MAIL_RELAY_URL: optionalString,
+    MAIL_RELAY_TOKEN: optionalString,
+    ALERT_TO: optionalString,
+    // The agent is stale after this long without a report or a poll (SHP-REQ-093: five minutes).
+    HEARTBEAT_STALE_MINUTES: z.coerce.number().int().min(1).max(1440).default(5),
+    // Shipyard's own nightly pg_dump and restore drill (SHP-D-035, SHP-T-6.3).
+    BACKUP_DIR: z.string().min(1).default('./backups'),
+    BACKUP_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(14),
   })
   .transform((c) => ({
     ...c,

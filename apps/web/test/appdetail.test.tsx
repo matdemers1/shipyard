@@ -98,6 +98,7 @@ function routes(role: 'deployer' | 'viewer', body: AppDetail, drift: DriftState,
     'GET /api/auth/me': meReply(role),
     'GET /api/apps/web': { status: 200, body },
     'GET /api/apps/web/drift': { status: 200, body: drift },
+    'GET /api/apps/web/freeze': { status: 200, body: { freeze: null } },
     ...extra,
   });
 }
@@ -252,6 +253,7 @@ describe('states', () => {
         body: { error: { code: 'not_found', gate: 'none', message: 'No app named nope.', fix: 'List the apps and use one of their names.' } },
       },
       'GET /api/apps/nope/drift': { status: 404, body: { error: { code: 'not_found', gate: 'none', message: 'No app named nope.', fix: 'x' } } },
+      'GET /api/apps/nope/freeze': { status: 404, body: { error: { code: 'not_found', gate: 'none', message: 'No app named nope.', fix: 'x' } } },
     });
     renderAt('/apps/nope');
     expect(await screen.findByText('No app named nope.')).toBeInTheDocument();

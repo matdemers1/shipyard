@@ -3,6 +3,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import pino from 'pino';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { GitHubPort } from '@shipyard/sequence/github';
 import { Bus } from '../../src/events.js';
 import { loadConfig } from '../../src/config.js';
 import { createDb, type Db } from '../../src/db.js';
@@ -32,7 +33,13 @@ async function makeAgent(): Promise<string> {
 
 async function makeApp(
   agentId: string,
-  overrides: { name?: string; foremanProject?: string | null; foremanEnvironment?: string | null } = {},
+  overrides: {
+    name?: string;
+    foremanProject?: string | null;
+    foremanEnvironment?: string | null;
+    repo?: string | null;
+    defaultBranch?: string | null;
+  } = {},
 ): Promise<string> {
   const app = await db.app.create({
     data: {
@@ -42,14 +49,16 @@ async function makeApp(
       manifestSha256: 'a'.repeat(64),
       foremanProject: 'foremanProject' in overrides ? overrides.foremanProject : 'SHP',
       foremanEnvironment: 'foremanEnvironment' in overrides ? overrides.foremanEnvironment : null,
+      repo: overrides.repo ?? null,
+      defaultBranch: overrides.defaultBranch ?? null,
     },
   });
   return app.id;
 }
 
-async function makeDeploy(): Promise<string> {
+async function makeDeploy(overrides: { requestedSha?: string; kind?: 'deploy' | 'rollback' | 'restore' } = {}): Promise<string> {
   const deploy = await db.deploy.create({
-    data: { requestedSha: 'a'.repeat(40), requesterLabel: 'test' },
+    data: { requestedSha: overrides.requestedSha ?? 'a'.repeat(40), requesterLabel: 'test', kind: overrides.kind ?? 'deploy' },
   });
   return deploy.id;
 }
@@ -58,6 +67,7 @@ async function makeSucceededTarget(
   appId: string,
   deployId: string,
   images: { service: string; repo: string; sha: string; digest: string }[],
+  overrides: { liveShaBefore?: string | null } = {},
 ): Promise<string> {
   const target = await db.deployTarget.create({
     data: {
@@ -65,6 +75,7 @@ async function makeSucceededTarget(
       appId,
       state: 'succeeded',
       endedAt: new Date(),
+      liveShaBefore: overrides.liveShaBefore ?? null,
     },
   });
   if (images.length > 0) {
@@ -375,6 +386,193 @@ describe('drainOnce', () => {
     const row = await db.outbox.findFirstOrThrow({ where: { targetId } });
     expect(row.deliveredAt).toBeNull();
     expect(row.attempts).toBe(0);
+  });
+});
+
+// ─── A fake GitHubPort ──────────────────────────────────────────────────────
+
+class FakeGitHub implements GitHubPort {
+  compareResult: Awaited<ReturnType<GitHubPort['compare']>> = null;
+  calls = 0;
+  ranges: string[] = [];
+
+  compare(_repo: string, base: string, head: string): ReturnType<GitHubPort['compare']> {
+    this.calls++;
+    this.ranges.push(`${base}..${head}`);
+    return Promise.resolve(this.compareResult);
+  }
+
+  workflowRuns(): ReturnType<GitHubPort['workflowRuns']> {
+    return Promise.resolve([]);
+  }
+}
+
+describe('drainOnce — Foreman tasks cited (SHP-T-5.9, SHP-REQ-088)', () => {
+  it('POSTs the cited task IDs, filtered to the app\'s own Foreman project', async () => {
+    fake = new FakeForeman();
+    await fake.start();
+
+    const github = new FakeGitHub();
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 2,
+      behindBy: 0,
+      commits: [
+        { sha: 'b'.repeat(40), message: 'SHP-T-5.8: changelog helper' },
+        { sha: 'c'.repeat(40), message: 'FRM-T-006: deployments accept tasks\n\nAlso SHP-T-5.9.' },
+      ],
+    };
+
+    const agentId = await makeAgent();
+    const appId = await makeApp(agentId, { repo: 'matdemers1/shipyard', defaultBranch: 'main' });
+    const deployId = await makeDeploy({ requestedSha: 'c'.repeat(40) });
+    const targetId = await makeSucceededTarget(
+      appId,
+      deployId,
+      [{ service: 'web', repo: 'ghcr.io/x/web', sha: 'c'.repeat(40), digest: 'sha256:ccc' }],
+      { liveShaBefore: 'a'.repeat(40) },
+    );
+    await enqueueDeployment(db, targetId);
+
+    const d = deps(fake.url);
+    await drainOnce(d, { now: new Date(), github });
+
+    expect(fake.posts).toHaveLength(1);
+    const body = fake.posts[0]?.body as { tasks?: string[] };
+    expect(body.tasks).toEqual(['SHP-T-5.8', 'SHP-T-5.9']);
+    expect(github.calls).toBe(1);
+  });
+
+  it('sends no tasks for a rollback — a rollback ships nothing new', async () => {
+    fake = new FakeForeman();
+    await fake.start();
+
+    const github = new FakeGitHub();
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 1,
+      behindBy: 0,
+      commits: [{ sha: 'b'.repeat(40), message: 'SHP-T-5.8: changelog helper' }],
+    };
+
+    const agentId = await makeAgent();
+    const appId = await makeApp(agentId, { repo: 'matdemers1/shipyard', defaultBranch: 'main' });
+    const deployId = await makeDeploy({ requestedSha: 'a'.repeat(40), kind: 'rollback' });
+    const targetId = await makeSucceededTarget(
+      appId,
+      deployId,
+      [{ service: 'web', repo: 'ghcr.io/x/web', sha: 'a'.repeat(40), digest: 'sha256:aaa' }],
+      { liveShaBefore: 'c'.repeat(40) },
+    );
+    await enqueueDeployment(db, targetId);
+
+    const d = deps(fake.url);
+    await drainOnce(d, { now: new Date(), github });
+
+    expect(fake.posts).toHaveLength(1);
+    const body = fake.posts[0]?.body as { tasks?: string[] };
+    expect(body.tasks).toBeUndefined();
+    expect(github.calls).toBe(0);
+  });
+
+  it('a real deploy target (no liveShaBefore written) cites from the release that was live before it', async () => {
+    fake = new FakeForeman();
+    await fake.start();
+
+    const github = new FakeGitHub();
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 1,
+      behindBy: 0,
+      commits: [{ sha: 'c'.repeat(40), message: 'SHP-T-5.9: cite shipped tasks' }],
+    };
+
+    const agentId = await makeAgent();
+    const appId = await makeApp(agentId, { repo: 'matdemers1/shipyard', defaultBranch: 'main' });
+    // The earlier release, then this one — as createDeploy and the agent's report leave them.
+    await makeSucceededTarget(appId, await makeDeploy({ requestedSha: 'a'.repeat(40) }), [
+      { service: 'web', repo: 'ghcr.io/x/web', sha: 'a'.repeat(40), digest: 'sha256:aaa' },
+    ]);
+    await new Promise((r) => setTimeout(r, 5));
+    const targetId = await makeSucceededTarget(appId, await makeDeploy({ requestedSha: 'c'.repeat(40) }), [
+      { service: 'web', repo: 'ghcr.io/x/web', sha: 'c'.repeat(40), digest: 'sha256:ccc' },
+    ]);
+    await enqueueDeployment(db, targetId);
+    await drainOnce(deps(fake.url), { now: new Date(), github });
+
+    expect(github.ranges).toEqual([`${'a'.repeat(40)}..${'c'.repeat(40)}`]);
+    const post = fake.posts.find((p) => (p.body as { imageSha?: string }).imageSha === 'sha256:ccc');
+    expect((post?.body as { tasks?: string[] }).tasks).toEqual(['SHP-T-5.9']);
+  });
+
+  it('sends no tasks on a first deploy (no liveShaBefore)', async () => {
+    fake = new FakeForeman();
+    await fake.start();
+
+    const github = new FakeGitHub();
+    const agentId = await makeAgent();
+    const appId = await makeApp(agentId, { repo: 'matdemers1/shipyard', defaultBranch: 'main' });
+    const deployId = await makeDeploy({ requestedSha: 'a'.repeat(40) });
+    const targetId = await makeSucceededTarget(
+      appId,
+      deployId,
+      [{ service: 'web', repo: 'ghcr.io/x/web', sha: 'a'.repeat(40), digest: 'sha256:aaa' }],
+      { liveShaBefore: null },
+    );
+    await enqueueDeployment(db, targetId);
+
+    const d = deps(fake.url);
+    await drainOnce(d, { now: new Date(), github });
+
+    expect(fake.posts).toHaveLength(1);
+    const body = fake.posts[0]?.body as { tasks?: string[] };
+    expect(body.tasks).toBeUndefined();
+    expect(github.calls).toBe(0);
+  });
+
+  it('computes tasks once per range and reuses it across a retry, without a second GitHub call', async () => {
+    fake = new FakeForeman();
+    await fake.start();
+    fake.postStatusQueue = [503];
+
+    const github = new FakeGitHub();
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 1,
+      behindBy: 0,
+      commits: [{ sha: 'b'.repeat(40), message: 'SHP-T-5.8: changelog helper' }],
+    };
+
+    const agentId = await makeAgent();
+    const appId = await makeApp(agentId, { repo: 'matdemers1/shipyard', defaultBranch: 'main' });
+    const deployId = await makeDeploy({ requestedSha: 'c'.repeat(40) });
+    const targetId = await makeSucceededTarget(
+      appId,
+      deployId,
+      [{ service: 'web', repo: 'ghcr.io/x/web', sha: 'c'.repeat(40), digest: 'sha256:ccc' }],
+      { liveShaBefore: 'a'.repeat(40) },
+    );
+    await enqueueDeployment(db, targetId);
+
+    const d = deps(fake.url);
+    let now = new Date();
+
+    // First attempt: computes tasks (one GitHub call), then 503s and persists them.
+    await drainOnce(d, { now, github });
+    expect(github.calls).toBe(1);
+    let row = await db.outbox.findFirstOrThrow({ where: { targetId } });
+    expect(row.deliveredAt).toBeNull();
+    expect((row.payload as { tasks?: string[] }).tasks).toEqual(['SHP-T-5.8']);
+
+    // Retry: succeeds, and does not call GitHub again — the payload already carries `tasks`.
+    now = new Date(row.nextAt.getTime() + 1);
+    await drainOnce(d, { now, github });
+    expect(github.calls).toBe(1);
+    row = await db.outbox.findFirstOrThrow({ where: { targetId } });
+    expect(row.deliveredAt).not.toBeNull();
+
+    const body = fake.posts[fake.posts.length - 1]?.body as { tasks?: string[] };
+    expect(body.tasks).toEqual(['SHP-T-5.8']);
   });
 });
 

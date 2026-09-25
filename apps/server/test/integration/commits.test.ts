@@ -234,6 +234,34 @@ describe('GET /api/apps/:app/commits', () => {
     expect(res.body).toMatchObject({ source: 'unavailable', commits: [] });
   });
 
+  it('with ?to=, ranges live..to instead of live..HEAD (SHP-REQ-087)', async () => {
+    await recordRelease('web', SHA_LIVE);
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 1,
+      behindBy: 0,
+      commits: [{ sha: SHA_MID, message: 'SHP-T-5.8: changelog helper' }],
+    };
+    github.runsByHeadSha.set(SHA_MID, [run(1, SHA_MID, 'success')]);
+
+    const { cookie } = await signIn();
+    const res = await request(app).get(`/api/apps/web/commits?to=${SHA_MID}`).set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      live: SHA_LIVE,
+      head: SHA_MID,
+      source: 'github',
+      commits: [{ sha: SHA_MID, taskIds: ['SHP-T-5.8'] }],
+    });
+  });
+
+  it('refuses a malformed ?to=', async () => {
+    await recordRelease('web', SHA_LIVE);
+    const { cookie } = await signIn();
+    const res = await request(app).get('/api/apps/web/commits?to=not-a-sha').set('Cookie', cookie);
+    expect(res.status).toBe(400);
+  });
+
   it('refuses a token outside its scope', async () => {
     const { userId } = await signIn();
     await db.app.create({

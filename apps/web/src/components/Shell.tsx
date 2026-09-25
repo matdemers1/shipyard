@@ -11,10 +11,11 @@ import {
   useTheme,
 } from '@d3cloud/ui';
 import { Moon, Ship, Sun } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth, useCan, useMe } from '../lib/auth';
 import { NAV_ITEMS } from '../nav';
+import { system } from '../lib/system';
 
 /**
  * The signed-in frame: the design system's AppShell. At `lg` and up a sidebar; below it (every
@@ -42,6 +43,36 @@ export function ThemeToggle() {
   );
 }
 
+/**
+ * What the System screen would warn about, counted for the nav, so a deployer sees it without
+ * going there: deploys unsent to Foreman for over an hour (SHP-REQ-095), a GitHub token expiring
+ * within 30 days or expired (SHP-REQ-106), and a stale agent. Read once per sign-in and every
+ * five minutes; a failed read counts nothing rather than inventing a warning.
+ */
+function useSystemWarnings(enabled: boolean): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    const read = () => {
+      system
+        .status()
+        .then((s) => {
+          if (!live) return;
+          setCount((s.outbox.unsentOverHour > 0 ? 1 : 0) + (s.agent !== null && s.agent.patWarning !== 'none' ? 1 : 0) + (s.agent?.stale === true ? 1 : 0));
+        })
+        .catch(() => undefined);
+    };
+    read();
+    const timer = setInterval(read, 5 * 60 * 1000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [enabled]);
+  return count;
+}
+
 export function Shell({ children }: { children?: ReactNode }) {
   const me = useMe();
   const can = useCan();
@@ -50,6 +81,7 @@ export function Shell({ children }: { children?: ReactNode }) {
   const navigate = useNavigate();
 
   const items = NAV_ITEMS.filter((item) => !item.needsStateChange || can);
+  const systemWarnings = useSystemWarnings(can);
   const email = me?.email ?? '';
 
   return (
@@ -64,7 +96,14 @@ export function Shell({ children }: { children?: ReactNode }) {
       nav={
         <SideNav aria-label="Main">
           {items.map(({ to, label, Icon }) => (
-            <SideNavItem key={to} asChild icon={<Icon />} label={label} current={isCurrent(pathname, to)}>
+            <SideNavItem
+              key={to}
+              asChild
+              icon={<Icon />}
+              label={label}
+              current={isCurrent(pathname, to)}
+              {...(to === '/system' && systemWarnings > 0 ? { count: systemWarnings, countLabel: `${String(systemWarnings)} needing attention` } : {})}
+            >
               <RouterLink to={to} />
             </SideNavItem>
           ))}

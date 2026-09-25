@@ -213,7 +213,8 @@ export function DeployProgressView({ id, options }: { id: string; options?: Prog
     );
   }
 
-  const title = status === null ? 'Deploy' : `${status.kind === 'rollback' ? 'Rollback' : 'Deploy'} ${status.app}`;
+  const kindTitle = { deploy: 'Deploy', rollback: 'Rollback', restore: 'Restore' } as const;
+  const title = status === null ? 'Deploy' : `${kindTitle[status.kind]} ${status.app}`;
   const finished = status !== null && isTerminal(status.state);
   // The step being worked on: the last one without an end, while the deploy is still running.
   let currentIndex = -1;
@@ -248,6 +249,23 @@ export function DeployProgressView({ id, options }: { id: string; options?: Prog
           {recordLink}
         </Cluster>
         {status !== null && finished ? <Outcome status={status} /> : null}
+        {status?.group !== undefined ? (
+          <Section title="Group" description={`${status.group.name} — deployed in order, canary first`} surface="plain">
+            <DescriptionList>
+              {status.group.members.map((member) => (
+                <DescriptionItem key={member.targetId} term={member.app}>
+                  <Cluster gap="8">
+                    <Badge tone={member.state === 'succeeded' ? 'neutral' : isTerminal(member.state) ? 'danger' : 'attention'}>
+                      {STATE_LABEL[member.state]}
+                    </Badge>
+                    {member.canary ? <Badge tone="attention">Canary</Badge> : null}
+                    {member.refusal !== null ? <span style={MUTED_STYLE}>{member.refusal.message}</span> : null}
+                  </Cluster>
+                </DescriptionItem>
+              ))}
+            </DescriptionList>
+          </Section>
+        ) : null}
         <Section title="Steps" surface="plain">
           {status === null ? (
             <Skeleton variant="text" lines={3} />

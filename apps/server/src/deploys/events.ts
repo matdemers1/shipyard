@@ -3,7 +3,7 @@ import { refusal, type DeployStatus, type Refusal } from '@shipyard/schema';
 import type { Db } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
-import { getDeployStatus, isTerminal } from './service.js';
+import { appsOf, getDeployStatus, isTerminal } from './service.js';
 
 /**
  * Live deploy progress (SHP-T-3.4, SHP-REQ-058, SHP-D-070). Mounted at `/api/deploys` before the
@@ -85,7 +85,10 @@ async function readableStatus(db: Db, req: Request, res: Response): Promise<Depl
     sendRefusal(res, NO_SUCH_DEPLOY);
     return null;
   }
-  const scoped = readRefusal(req, status.app);
+  // Every app the status names, so a group's members are never read through one member's scope.
+  const scoped = appsOf(status)
+    .map((app) => readRefusal(req, app))
+    .find((r) => r !== null) ?? null;
   if (scoped !== null) {
     sendRefusal(res, scoped);
     return null;

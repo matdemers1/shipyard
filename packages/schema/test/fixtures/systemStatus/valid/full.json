@@ -1,0 +1,12 @@
+{
+  "versions": { "server": "1.4.0", "agent": "1.4.0", "compose": "5.0.1", "engineApi": "1.44" },
+  "agent": {
+    "fingerprint": "SHA256:abc123",
+    "lastHeartbeatAt": "2026-09-25T00:00:00.000Z",
+    "stale": false,
+    "patExpiresAt": "2026-10-10T00:00:00.000Z",
+    "patWarning": "none"
+  },
+  "outbox": { "unsent": 0, "unsentOverHour": 0, "oldestUnsentAt": null, "lastError": null },
+  "backups": { "lastBackup": null, "lastDrill": null }
+}

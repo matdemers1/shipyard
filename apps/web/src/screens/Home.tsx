@@ -1,10 +1,13 @@
-import { Alert, EmptyState, Grid, Link, Page, PageHeader, Skeleton, Stack } from '@d3cloud/ui';
-import { useState } from 'react';
+import { Alert, Badge, Button, Card, CardBody, CardTitle, Cluster, EmptyState, Grid, Link, Page, PageHeader, Skeleton, Stack } from '@d3cloud/ui';
+import type { GroupSummary } from '@shipyard/schema';
+import { useEffect, useState } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { AppCard } from '../components/AppCard';
 import { ApprovalsBanner } from '../components/ApprovalsBanner';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
+import { GroupDeploySheet } from '../components/GroupDeploySheet';
 import { useCan } from '../lib/auth';
+import { fetchGroups } from '../lib/groups';
 import { useHomeData } from '../lib/home';
 
 /** S2 Home: the approvals banner, the stale-agent banner, then one card per app (SHP-D-023). */
@@ -14,10 +17,33 @@ export function Home() {
   const navigate = useNavigate();
   const [action, setAction] = useState<SheetAction | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [selectedGroup, setSelectedGroup] = useState<GroupSummary | null>(null);
+  const [groupSheetOpen, setGroupSheetOpen] = useState(false);
 
   const openSheet = (next: SheetAction) => {
     setAction(next);
     setSheetOpen(true);
+  };
+
+  useEffect(() => {
+    if (status !== 'ready') return;
+    let cancelled = false;
+    void fetchGroups()
+      .then((rows) => {
+        if (!cancelled) setGroups(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setGroups([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
+
+  const openGroupSheet = (group: GroupSummary) => {
+    setSelectedGroup(group);
+    setGroupSheetOpen(true);
   };
 
   return (
@@ -69,6 +95,50 @@ export function Home() {
             ))}
           </Grid>
         ) : null}
+
+        {status === 'ready' && groups.length > 0 ? (
+          <Grid as="ul" minItemWidth="sm">
+            {groups.map((group) => (
+              <Card key={group.name} as="li" padding="md">
+                <CardBody>
+                  <Stack gap="8">
+                    <CardTitle as="h3">{group.name}</CardTitle>
+                    <Cluster gap="4">
+                      {group.members.map((member) => (
+                        <Badge key={member} tone={member === group.canary ? 'attention' : 'neutral'}>
+                          {member}
+                          {member === group.canary ? ' · canary' : ''}
+                        </Badge>
+                      ))}
+                    </Cluster>
+                    {canDeploy ? (
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        onClick={() => {
+                          openGroupSheet(group);
+                        }}
+                      >
+                        Deploy group
+                      </Button>
+                    ) : null}
+                  </Stack>
+                </CardBody>
+              </Card>
+            ))}
+          </Grid>
+        ) : null}
+
+        <GroupDeploySheet
+          open={groupSheetOpen}
+          onOpenChange={setGroupSheetOpen}
+          group={selectedGroup}
+          onStarted={(deployId) => {
+            setGroupSheetOpen(false);
+            void navigate(`/deploys/${deployId}/live`);
+          }}
+        />
 
         <DryRunSheet
           open={sheetOpen}

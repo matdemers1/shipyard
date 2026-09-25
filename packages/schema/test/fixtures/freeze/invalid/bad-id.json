@@ -1,0 +1,9 @@
+{
+  "id": "not-a-uuid",
+  "app": "bindery",
+  "reason": "Host maintenance window",
+  "by": "matthew@example.com",
+  "from": "2026-09-25T00:00:00.000Z",
+  "until": null,
+  "clearedAt": null
+}

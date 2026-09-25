@@ -65,5 +65,56 @@
       { "gate": "G8", "pass": true },
       { "gate": "G9", "pass": false, "code": "env_missing" }
     ]
+  },
+  {
+    "name": "is skipped when neither the manifest nor any image requires an env name",
+    "facts": { "envNamesPresent": [], "declaredEnv": { "server": [] } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when an image-declared env name is present with no manifest requiredEnv",
+    "facts": { "envNamesPresent": ["SMTP_HOST"], "declaredEnv": { "server": ["SMTP_HOST"] } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G9", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses naming an env variable an image declares that is absent",
+    "facts": { "envNamesPresent": [], "declaredEnv": { "server": ["SMTP_HOST"] } },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G9", "pass": false, "code": "env_missing" }
+    ]
+  },
+  {
+    "name": "refuses on the union of manifest requiredEnv and image-declared names",
+    "facts": {
+      "manifest": { "requiredEnv": ["API_KEY"] },
+      "envNamesPresent": ["API_KEY"],
+      "declaredEnv": { "server": ["SMTP_HOST"] }
+    },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true },
+      { "gate": "G9", "pass": false, "code": "env_missing" }
+    ]
   }
 ]

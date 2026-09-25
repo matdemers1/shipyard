@@ -85,7 +85,7 @@ function fakeDocker(opts: {
 }
 
 describe('pruneCandidates', () => {
-  it('excludes running images, keepDigests, and everything within the retained newest count', () => {
+  it('excludes running images and keepDigests, returning everything else oldest first', () => {
     const images = [
       image('img-1', 4, ['repo@sha256:1']),
       image('img-2', 3, ['repo@sha256:2']),
@@ -95,22 +95,22 @@ describe('pruneCandidates', () => {
     const result = pruneCandidates(images, {
       keepDigests: new Set(['repo@sha256:2']),
       runningImageIds: new Set(['img-1']),
-      retain: 1,
     });
-    // Eligible after excluding running (img-1) and keepDigests (img-2): img-3, img-4.
-    // Newest of those (img-3) is retained; img-4 is the only candidate, oldest-first.
-    expect(result.map((i) => i.id)).toEqual(['img-4']);
+    // Eligible after excluding running (img-1) and keepDigests (img-2): img-3, img-4 — both
+    // pruned, oldest first. keepDigests already encodes the retained count; there is no further
+    // "keep a few more of what's left" trim.
+    expect(result.map((i) => i.id)).toEqual(['img-4', 'img-3']);
   });
 
-  it('applies the retain count over eligible images, oldest first', () => {
-    const images = [image('a', 4), image('b', 3), image('c', 2), image('d', 1)];
-    const result = pruneCandidates(images, { keepDigests: new Set(), runningImageIds: new Set(), retain: 2 });
-    expect(result.map((i) => i.id)).toEqual(['d', 'c']);
+  it('leaves an image with no RepoDigest at all alone, conservatively', () => {
+    const images = [image('tagged-only', 1, [])];
+    const result = pruneCandidates(images, { keepDigests: new Set(), runningImageIds: new Set() });
+    expect(result).toEqual([]);
   });
 
   it('never returns an image outside what it was given (no foreign-repo leakage)', () => {
     const images = [image('own-1', 1, ['acme/demo/web@sha256:1'])];
-    const result = pruneCandidates(images, { keepDigests: new Set(), runningImageIds: new Set(), retain: 0 });
+    const result = pruneCandidates(images, { keepDigests: new Set(), runningImageIds: new Set() });
     expect(result).toHaveLength(1);
     expect(result[0]?.id).toBe('own-1');
   });
@@ -126,9 +126,9 @@ describe('ensureFreeSpace', () => {
 
   it('prunes Shipyard-known images oldest first, stopping as soon as the floor clears', async () => {
     const images = [
-      image('new', 3, [], ['ghcr.io/acme/demo/web:sha-new']),
-      image('mid', 2, [], ['ghcr.io/acme/demo/web:sha-mid']),
-      image('old', 1, [], ['ghcr.io/acme/demo/web:sha-old']),
+      image('new', 3, ['ghcr.io/acme/demo/web@sha256:new'], ['ghcr.io/acme/demo/web:sha-new']),
+      image('mid', 2, ['ghcr.io/acme/demo/web@sha256:mid'], ['ghcr.io/acme/demo/web:sha-mid']),
+      image('old', 1, ['ghcr.io/acme/demo/web@sha256:old'], ['ghcr.io/acme/demo/web:sha-old']),
     ];
     // 3 GB free, floor 5 GB: below floor. Each removal frees 2 GB; after removing "old" alone we
     // clear the floor and must stop there, not touch "mid" or "new".
@@ -140,7 +140,7 @@ describe('ensureFreeSpace', () => {
       { docker, log: noopLog() },
       manifest({ diskFloorGb: 5, retainImages: 0 }),
       target(),
-      new Set(),
+      new Set(['ghcr.io/acme/demo/web@sha256:new', 'ghcr.io/acme/demo/web@sha256:mid']),
     );
     expect(result.pruned).toEqual(['old']);
     expect(result.freeBytes).toBe(5.5 * GB);
@@ -203,13 +203,49 @@ describe('ensureFreeSpace', () => {
 });
 
 describe('pruneAfterSuccess', () => {
-  it('trims to the retained count regardless of free space', async () => {
-    const images = [image('a', 4), image('b', 3), image('c', 2), image('d', 1)];
+  it('trims to the retained (keepDigests) set regardless of free space', async () => {
+    const images = [
+      image('a', 4, ['ghcr.io/acme/demo/web@sha256:a']),
+      image('b', 3, ['ghcr.io/acme/demo/web@sha256:b']),
+      image('c', 2, ['ghcr.io/acme/demo/web@sha256:c']),
+      image('d', 1, ['ghcr.io/acme/demo/web@sha256:d']),
+    ];
     const docker = fakeDocker({
       freeBytesSequence: [100 * GB],
       imagesByRepo: { 'ghcr.io/acme/demo/web': images },
     });
-    const result = await pruneAfterSuccess({ docker, log: noopLog() }, manifest({ retainImages: 2 }), target(), new Set());
+    const keepDigests = new Set(['ghcr.io/acme/demo/web@sha256:a', 'ghcr.io/acme/demo/web@sha256:b']);
+    const result = await pruneAfterSuccess({ docker, log: noopLog() }, manifest({ retainImages: 2 }), target(), keepDigests);
     expect(result.pruned.sort()).toEqual(['c', 'd']);
+  });
+
+  it('never prunes a running image even when it is the oldest local one', async () => {
+    const running: RunningContainer[] = [
+      { id: 'c1', service: 'web', repoDigests: ['ghcr.io/acme/demo/web@sha256:old-but-running'], labels: {}, state: 'running', networks: [] },
+    ];
+    const images = [
+      image('old-running', 1, ['ghcr.io/acme/demo/web@sha256:old-but-running']),
+      image('newer', 2, ['ghcr.io/acme/demo/web@sha256:newer']),
+    ];
+    const docker = fakeDocker({
+      freeBytesSequence: [100 * GB],
+      imagesByRepo: { 'ghcr.io/acme/demo/web': images },
+      running,
+    });
+    const keepDigests = new Set(['ghcr.io/acme/demo/web@sha256:newer']);
+    const result = await pruneAfterSuccess({ docker, log: noopLog() }, manifest({ retainImages: 1 }), target(), keepDigests);
+    // "newer" is retained via keepDigests; "old-running" is never a candidate at all — it is
+    // running, regardless of what keepDigests says.
+    expect(result.pruned).toEqual([]);
+  });
+
+  it('leaves other repositories untouched', async () => {
+    const images = [image('own', 1, ['ghcr.io/acme/demo/web@sha256:own'])];
+    const docker = fakeDocker({
+      freeBytesSequence: [100 * GB],
+      imagesByRepo: { 'ghcr.io/acme/demo/web': images },
+    });
+    const result = await pruneAfterSuccess({ docker, log: noopLog() }, manifest({ retainImages: 0 }), target(), new Set());
+    expect(result.pruned).toEqual(['own']);
   });
 });

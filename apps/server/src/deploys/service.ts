@@ -14,6 +14,8 @@ import { assertCanActOn, type Role } from '../auth/scope.js';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { assertDeployable } from '../apps/drift.js';
+import { assertNotFrozen } from '../freeze/service.js';
+import { createGroupDeploy, readGroupMeta } from '../groups/service.js';
 
 /**
  * Deploy requests, dry runs and status (SHP-T-2.5). The server pre-checks only G1 (authorisation),
@@ -123,8 +125,10 @@ export async function createDeploy(
   const { db, bus } = deps;
   const check = options.check ?? defaultDeployableCheck;
 
-  if (input.group !== undefined || input.app === undefined) {
-    return refusal('invalid_request', 'Group deploys arrive in Phase 5.', 'Deploy each app on its own for now.');
+  // A group deploy locks every member in one transaction and ships them in order (SHP-REQ-078).
+  if (input.group !== undefined) return createGroupDeploy(deps, caller, input, options);
+  if (input.app === undefined) {
+    return refusal('invalid_request', 'A deploy names an app or a group.');
   }
   const appName = input.app;
 
@@ -135,6 +139,14 @@ export async function createDeploy(
 
   if (input.kind === 'restore') {
     return refusal('invalid_request', 'Restores are not requested through this endpoint.');
+  }
+
+  // A frozen app refuses new deploys — its dry run included, since a dry run reports what a real
+  // deploy would do — but a rollback (and a restore, refused above already) is still allowed
+  // (SHP-REQ-077, SHP-D-049, gate G2).
+  if (input.kind === 'deploy') {
+    const frozen = await assertNotFrozen(db, appName);
+    if (frozen !== null) return frozen;
   }
 
   // Who asked, for the lock refusal and the audit trail. A token (MCP) must say who it acts for.
@@ -246,6 +258,7 @@ export async function createDeploy(
 }
 
 const STATUS_SELECT = {
+  id: true,
   state: true,
   currentStep: true,
   schemaRevision: true,
@@ -264,6 +277,7 @@ const STATUS_SELECT = {
       requesterRepo: true,
       requesterBranch: true,
       createdAt: true,
+      groupName: true,
     },
   },
 } satisfies Prisma.DeployTargetSelect;
@@ -350,14 +364,69 @@ function toStatus(row: StatusRow): DeployStatus {
   };
 }
 
-/** A deploy's status (its single target, for a single-app deploy), or null if there is none. */
+/**
+ * Which member's own fields (state, step, images, refusal, gates…) a group deploy's top-level
+ * `DeployStatus` describes: the first member not yet terminal, or — once every member is —
+ * the last one that actually ran, skipping the members `stopGroupAfter` cancelled without ever
+ * dispatching them (SHP-REQ-078). A single-app deploy has exactly one row, so this is a no-op then.
+ */
+function currentMember(rows: readonly StatusRow[]): StatusRow {
+  const active = rows.find((r) => !isTerminal(r.state));
+  if (active !== undefined) return active;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (row === undefined) continue;
+    const parsedRefusal = RefusalSchema.safeParse(row.refusal);
+    if (!(parsedRefusal.success && parsedRefusal.data.code === 'group_stopped')) return row;
+  }
+  return rows[rows.length - 1] as StatusRow;
+}
+
+/** The `group` field of a group deploy's status: every member in deploy order (SHP-REQ-079). */
+function toGroupField(groupName: string, rows: readonly StatusRow[]): NonNullable<DeployStatus['group']> {
+  return {
+    name: groupName,
+    members: rows.map((row, i) => {
+      const meta = readGroupMeta(row.result);
+      const parsedRefusal = RefusalSchema.safeParse(row.refusal);
+      return {
+        app: row.app.name,
+        state: row.state,
+        refusal: parsedRefusal.success ? parsedRefusal.data : null,
+        canary: meta?.canary ?? false,
+        position: meta?.position ?? i,
+        targetId: row.id,
+      };
+    }),
+  };
+}
+
+/**
+ * A deploy's status: its single target for a single-app deploy, or — for a group deploy — the
+ * current member's own fields plus every member's status under `group` (SHP-REQ-078,
+ * SHP-REQ-079). Null if there is no such deploy.
+ */
 export async function getDeployStatus(db: Db, deployId: string): Promise<DeployStatus | null> {
-  const row = await db.deployTarget.findFirst({
+  const rows = await db.deployTarget.findMany({
     where: { deployId },
     select: STATUS_SELECT,
-    orderBy: { createdAt: 'asc' },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
-  return row === null ? null : toStatus(row);
+  const first = rows[0];
+  if (first === undefined) return null;
+  const status = toStatus(currentMember(rows));
+  if (first.deploy.groupName === null) return status;
+  return { ...status, group: toGroupField(first.deploy.groupName, rows) };
+}
+
+/** Every target of a deploy, in deploy order (a group's members; a single app's one target). */
+export async function getDeployStatuses(db: Db, deployId: string): Promise<DeployStatus[]> {
+  const rows = await db.deployTarget.findMany({
+    where: { deployId },
+    select: STATUS_SELECT,
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  return rows.map(toStatus);
 }
 
 export interface ListDeploysOptions {
@@ -377,7 +446,11 @@ export async function listDeploys(db: Db, options: ListDeploysOptions): Promise<
         : [options.app]
       : [...options.apps].filter((n) => options.app === undefined || n === options.app);
   const rows = await db.deployTarget.findMany({
-    where: names === undefined ? {} : { app: { name: { in: names } } },
+    where: {
+      ...(names === undefined ? {} : { app: { name: { in: names } } }),
+      // A scheduled deploy that has not fired is not history yet; it lives on the Schedules screen.
+      deploy: { OR: [{ schedule: { is: null } }, { schedule: { is: { firedAt: { not: null } } } }] },
+    },
     select: STATUS_SELECT,
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: options.limit,
@@ -416,4 +489,14 @@ export async function waitForChange(
     stop.abort();
     await woken;
   }
+}
+
+/**
+ * The apps a deploy's status names: every member of a group deploy, else its one app. A token may
+ * read a deploy only when it is scoped to all of them (SHP-REQ-047) — a group's status carries
+ * every member's state and refusal, and creating a group deploy already needs scope over every
+ * member, so the token that asked can always read it.
+ */
+export function appsOf(status: DeployStatus): string[] {
+  return status.group === undefined ? [status.app] : status.group.members.map((m) => m.app);
 }

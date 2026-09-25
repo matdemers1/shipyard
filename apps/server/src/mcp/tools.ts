@@ -21,6 +21,7 @@ import {
   waitForChange,
   type DeployCaller,
 } from '../deploys/service.js';
+import { getGroupDeployStatus, waitForGroupChange } from '../groups/service.js';
 import { appStatuses } from './status.js';
 
 /**
@@ -184,15 +185,19 @@ export function buildMcpServer(
         'waiting for it to finish; follow it with shipyard_deploy_status. `requester` (repo, branch, label) is ' +
         'required and recorded; the label is shown to anyone this deploy locks out, so make it say who you are ' +
         '(e.g. "claude: <session>"). If another deploy holds the app, the call is refused at once naming the holder — ' +
-        'Shipyard never queues. Group deploys are not available yet.',
+        'Shipyard never queues. Pass `group` instead of `app` to deploy every member of a group at `sha`: every ' +
+        'member is locked at once (or the call is refused naming the holder), the canary — if the group declares one — ' +
+        'is deployed and soaked first, the rest follow in order with the canary\'s exact digests, and the first ' +
+        'member that fails stops the group before the rest are touched.',
       inputSchema: toolInput(ShipyardDeployInput),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ app, group, sha, requester }) => {
-      if (group !== undefined || app === undefined) {
-        return refused(refusal('invalid_request', 'Group deploys are not available yet.', 'Deploy each app on its own.'));
+      if ((app === undefined) === (group === undefined)) {
+        return refused(refusal('invalid_request', 'Name exactly one of app or group.'));
       }
-      const result = await createDeploy(deps, caller, { kind: 'deploy', app, sha, requester });
+      const target = group !== undefined ? { group } : { app };
+      const result = await createDeploy(deps, caller, { kind: 'deploy', ...target, sha, requester });
       return isRefusal(result) ? refused(result) : ok(result);
     },
   );
@@ -205,7 +210,8 @@ export function buildMcpServer(
         "Returns a deploy's status: state, current step, requester, gate results and any refusal. Once it has " +
         'succeeded, also the SHA and digest of every image and the schema revision. With `wait` (seconds, at most ' +
         '90) it returns on the next state change or when the wait runs out, whichever is first; a finished deploy ' +
-        'returns at once. Poll again with wait to keep following it.',
+        'returns at once. Poll again with wait to keep following it. For a group deploy it returns { group, canary, ' +
+        'state, members }, every member\'s status in deploy order.',
       inputSchema: toolInput(ShipyardDeployStatusInput),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -217,6 +223,15 @@ export function buildMcpServer(
       const denied = outOfScope(caller, first.app);
       if (denied !== null) return refused(denied);
       const seconds = Math.min(wait ?? 0, MAX_WAIT_SECONDS);
+      const group = await getGroupDeployStatus(deps.db, deployId);
+      if (group !== null) {
+        for (const member of group.members) {
+          const memberDenied = outOfScope(caller, member.app);
+          if (memberDenied !== null) return refused(memberDenied);
+        }
+        const groupStatus = seconds === 0 ? group : await waitForGroupChange(deps, deployId, seconds, signal);
+        return groupStatus === null ? refused(NO_SUCH_DEPLOY) : ok(groupStatus);
+      }
       const status = seconds === 0 ? first : await waitForChange(deps, deployId, seconds, signal);
       return status === null ? refused(NO_SUCH_DEPLOY) : ok(status);
     },

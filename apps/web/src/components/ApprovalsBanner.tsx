@@ -41,6 +41,7 @@ export function ApprovalsBanner({ approvals, onReview, onDenied }: ApprovalsBann
             <Cluster key={approval.deployId} justify="between" align="center">
               <div>
                 {approval.app} · {approval.sha.slice(0, 7)} · {approval.requester.label}
+                {approval.fireAt !== undefined && approval.fireAt !== null ? ` · fires ${new Date(approval.fireAt).toLocaleString()}` : ''}
               </div>
               <Cluster gap="8">
                 <Button

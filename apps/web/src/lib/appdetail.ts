@@ -43,6 +43,20 @@ export interface HistoryTarget {
   endedAt: string | null;
 }
 
+/** The app's active freeze (SHP-T-5.1, SHP-REQ-077), or null when it is not frozen. */
+export interface FreezeInfo {
+  reason: string;
+  by: string;
+  from: string;
+  until: string | null;
+}
+
+export interface Freeze extends FreezeInfo {
+  id: string;
+  app: string;
+  clearedAt: string | null;
+}
+
 export interface AppDetail {
   name: string;
   repo: string | null;
@@ -126,6 +140,24 @@ export const appDetail = {
   redeploy: (app: string, driftEventId: string): Promise<DeployAccepted> =>
     request<DeployAccepted>(`${path(app)}/drift/redeploy`, { method: 'POST', body: { driftEventId } }),
 };
+
+/** Freeze and unfreeze (SHP-T-5.1, SHP-REQ-077, SHP-D-049). */
+export const freeze = {
+  get: (app: string, signal?: AbortSignal): Promise<{ freeze: FreezeInfo | null }> =>
+    request<{ freeze: FreezeInfo | null }>(`${path(app)}/freeze`, signal !== undefined ? { signal } : {}),
+  set: (app: string, reason: string, until?: string): Promise<Freeze> =>
+    request<Freeze>(`${path(app)}/freeze`, { method: 'POST', body: until !== undefined ? { reason, until } : { reason } }),
+  clear: (app: string): Promise<Freeze> => request<Freeze>(`${path(app)}/freeze`, { method: 'DELETE' }),
+};
+
+/** The server's limit on a freeze reason (SHP-REQ-077). */
+export const FREEZE_REASON_MAX = 500;
+
+/** A freeze reason the server will accept: one line, 1–500 printable characters once trimmed. */
+export function freezeReasonIsValid(reason: string): boolean {
+  const trimmed = reason.trim();
+  return trimmed.length > 0 && trimmed.length <= FREEZE_REASON_MAX && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(trimmed);
+}
 
 /** The server's limit on an adopt-live reason (SHP-D-085). */
 export const REASON_MAX = 200;

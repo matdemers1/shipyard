@@ -105,6 +105,8 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
           composeVersion: report.composeVersion,
           engineApiVersion: report.engineApiVersion,
           lastHeartbeatAt: now,
+          // The GitHub token's own expiry, as the agent reports it (SHP-REQ-094).
+          patExpiresAt: report.patExpiresAt === null ? null : new Date(report.patExpiresAt),
         },
       });
     });

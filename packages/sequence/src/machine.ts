@@ -469,6 +469,8 @@ export async function runDeploy(ports: SequencePorts, ctx: MachineContext, reque
     const resolved = await resolveDeployTarget(ports, ctx.ledger, manifest, request.sha, {
       dryRun: true,
       envNamesProvider: ctx.envNamesProvider,
+      // A group promotion ships the canary's digests or nothing (SHP-D-047).
+      ...(request.expectDigests === undefined ? {} : { expectDigests: request.expectDigests }),
     });
     if (resolved.refusal !== null) {
       await run.move('refused');
@@ -537,6 +539,7 @@ async function deployLocked(ports: SequencePorts, ctx: MachineContext, run: Run,
     resolved = await resolveDeployTarget(ports, ctx.ledger, manifest, run.request.sha, {
       dryRun: false,
       envNamesProvider: ctx.envNamesProvider,
+      ...(run.request.expectDigests === undefined ? {} : { expectDigests: run.request.expectDigests }),
     });
   } catch (err) {
     const refused = asRefusal(err, 'step_failed', 'Verify failed');
@@ -610,6 +613,15 @@ export async function executeTarget(
     try {
       const backup = await runBackup(ports, target, backupStep);
       backupArtifact = backup.artifact.path;
+      // Into the ledger now, not only with a success: a contract release that fails its check
+      // keeps this backup, and a guided restore takes artifacts from the ledger only (SHP-REQ-085).
+      await ctx.ledger.recordBackup({
+        app: manifest.name,
+        deployId,
+        backupArtifact: backup.artifact.path,
+        release: ctx.ledger.releaseRunning(manifest.name, live.running),
+        at: ports.clock.now().toISOString(),
+      });
       await run.end(record, { exitCode: backup.exitCode, detail: { artifact: backup.artifact.path, size: backup.artifact.size } });
     } catch (err) {
       const refused = asRefusal(err, 'backup_failed', 'Backup failed');
@@ -726,7 +738,7 @@ export async function executeTarget(
     at: ports.clock.now().toISOString(),
   });
   try {
-    await pruneAfterSuccess(ports, manifest, target, ctx.ledger.knownDigests(manifest.name));
+    await pruneAfterSuccess(ports, manifest, target, ctx.ledger.retainedDigests(manifest.name, manifest.retainImages));
   } catch (err) {
     run.log.warn({ err: err instanceof Error ? err.message : String(err) }, 'pruning after a successful deploy failed');
   }
@@ -734,7 +746,8 @@ export async function executeTarget(
   return { ...base, state: 'succeeded', schemaRevision, refusal: null, backupArtifact };
 }
 
-async function pollCheck(
+/** Polls the post-swap check until it passes, is definitive, or times out. Shared with restore. */
+export async function pollCheck(
   ports: SequencePorts,
   ctx: MachineContext,
   manifest: Manifest,
@@ -807,7 +820,7 @@ async function restartDuringSoak(
  * tick also compares every container against the one that started the soak, so a crash and a
  * restart between two ticks is a failure too, not a blind spot.
  */
-async function soak(
+export async function soak(
   ports: SequencePorts,
   ctx: MachineContext,
   manifest: Manifest,

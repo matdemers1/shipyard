@@ -2,7 +2,7 @@ import { Router, type Request } from 'express';
 import { AppName, DeployKind, DeployRequest, refusal, type Refusal } from '@shipyard/schema';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
-import { MAX_WAIT_SECONDS, callerFromRequest, createDeploy, isRefusal, listDeploys, waitForChange } from './service.js';
+import { MAX_WAIT_SECONDS, appsOf, callerFromRequest, createDeploy, isRefusal, listDeploys, waitForChange } from './service.js';
 import { foremanStatus, isTimelineOutcome, listTimeline } from './timeline.js';
 
 export * from './service.js';
@@ -189,8 +189,10 @@ export function deploysRouter(deps: ServiceDeps): Router {
       sendRefusal(res, NO_SUCH_DEPLOY);
       return;
     }
-    const scoped = outOfScope(req, status.app);
-    if (scoped !== null) {
+    const scoped = appsOf(status)
+      .map((app) => outOfScope(req, app))
+      .find((r): r is Refusal => r !== null);
+    if (scoped !== undefined) {
       sendRefusal(res, scoped);
       return;
     }
@@ -226,8 +228,11 @@ export function deploysRouter(deps: ServiceDeps): Router {
       sendRefusal(res, NO_SUCH_DEPLOY);
       return;
     }
-    const scoped = outOfScope(req, first.app);
-    if (scoped !== null) {
+    // Every app the status names: a group's members are never read through one member's scope.
+    const scoped = appsOf(first)
+      .map((app) => outOfScope(req, app))
+      .find((r): r is Refusal => r !== null);
+    if (scoped !== undefined) {
       sendRefusal(res, scoped);
       return;
     }

@@ -11,6 +11,8 @@ export const LABEL_REVISION = 'org.opencontainers.image.revision';
 export const LABEL_MIGRATION = 'dev.d3cloud.shipyard.migration';
 /** The schema revision the release expects /health to report (optional). */
 export const LABEL_SCHEMA = 'dev.d3cloud.shipyard.schema';
+/** Comma-separated env variable names an image requires at runtime, read for G9 (SHP-REQ-082). */
+export const LABEL_ENV = 'dev.d3cloud.shipyard.env';
 
 export type DeployKind = 'deploy' | 'rollback';
 
@@ -23,6 +25,8 @@ export interface DeployRequest {
   dryRun: boolean;
   /** Free-text requester label, for logs and lock refusals only. */
   requesterLabel: string;
+  /** A group promotion's expected digests per service (SHP-D-047); a mismatch refuses. */
+  expectDigests?: Record<string, Digest>;
 }
 
 /** One service's image as verified. */
@@ -79,6 +83,12 @@ export interface GateFacts {
   digests: Record<string, Digest | null>;
   /** Env names present on the host (names only, never values). Undefined = not checked. */
   envNamesPresent?: string[];
+  /**
+   * Required env names declared per mapped service by its image's `dev.d3cloud.shipyard.env`
+   * label (G9, SHP-REQ-082). service -> valid declared names. Undefined = not gathered (e.g. a
+   * rollback, which never re-derives this from the deploy path).
+   */
+  declaredEnv?: Record<string, string[]>;
   /** Migration labels of ledger releases *after* the rollback target (rollback only, G10). */
   laterMigrationLabels?: (string | null)[];
   freeBytes: number;

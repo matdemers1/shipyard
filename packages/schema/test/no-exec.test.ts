@@ -18,6 +18,9 @@ import {
   StepJournal,
   TargetResult,
   SignatureHeaders,
+  FreezeRequest,
+  RestoreRequest,
+  ScheduleRequest,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -65,6 +68,9 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   StepJournal,
   TargetResult,
   SignatureHeaders,
+  FreezeRequest,
+  RestoreRequest,
+  ScheduleRequest,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -84,6 +90,9 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   StepJournal: 'stepJournal',
   TargetResult: 'targetResult',
   SignatureHeaders: 'signatureHeaders',
+  FreezeRequest: 'freezeRequest',
+  RestoreRequest: 'restoreRequest',
+  ScheduleRequest: 'scheduleRequest',
 };
 
 describe('request schema coverage', () => {
@@ -144,6 +153,7 @@ const COMMAND_LIKE = /(^|_)(cmd|command|commands|exec|execute|shell|script|scrip
 const ALLOWED_COMMAND_LIKE_PATHS = new Set([
   'Manifest.steps.backup.argv',
   'Manifest.steps.migrate.argv',
+  'Manifest.steps.restore.argv',
   'StepJournal.argv',
   // The manifest's step primitive itself (host-local; see Manifest.steps above).
   'Step.argv',

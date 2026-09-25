@@ -7,8 +7,9 @@ import { evaluateGates, firstRefusal } from './gates.js';
 import type { Ledger } from './ledger.js';
 import { RefusalError } from './ports.js';
 import type { ComposeTarget, SequencePorts } from './ports.js';
+import { declaredEnv } from './preflight.js';
 import { loadSecrets } from './redact.js';
-import { LABEL_MIGRATION } from './types.js';
+import { LABEL_ENV, LABEL_MIGRATION } from './types.js';
 import type { GateFacts, GateResult, LiveState, VerifiedImage } from './types.js';
 
 /**
@@ -23,6 +24,35 @@ export interface ResolveOptions {
   dryRun: boolean;
   /** Overrides how env names present on the host are found. Default: the manifest's env files. */
   envNamesProvider?: ((manifest: Manifest) => Promise<string[]>) | undefined;
+  /**
+   * A group promotion's expected digests per service (SHP-D-047, SHP-REQ-079): the digests the
+   * canary soaked. Any service whose resolved digest differs is refused `digest_mismatch`, dry runs
+   * included. A service named here that the manifest does not map is ignored; a mapped service
+   * not named here carries no expectation.
+   */
+  expectDigests?: Record<string, string> | undefined;
+}
+
+/** The first service whose resolved digest differs from the expected one, as a refusal; else null. */
+export function expectedDigestRefusal(
+  expect: Record<string, string> | undefined,
+  resolved: Record<string, string | null>,
+): Refusal | null {
+  if (expect === undefined) return null;
+  for (const service of Object.keys(expect).sort()) {
+    if (!(service in resolved)) continue;
+    const expected = expect[service];
+    const got = resolved[service];
+    if (expected === undefined || got === undefined) continue;
+    if (got !== expected) {
+      return refusal(
+        'digest_mismatch',
+        `Service "${service}" resolves to ${got ?? 'no image'} for this SHA, not ${expected}, the digest the group's canary soaked.`,
+        'The image for this SHA changed after the canary shipped; deploy the group again so the canary soaks what the rest will get.',
+      );
+    }
+  }
+  return null;
 }
 
 export interface ResolvedTarget {
@@ -48,9 +78,14 @@ export function normalizeMigration(label: string | undefined | null): string | n
   return trimmed.length === 0 ? null : trimmed;
 }
 
-async function envNames(ports: SequencePorts, manifest: Manifest, options: ResolveOptions): Promise<string[] | undefined> {
+async function envNames(
+  ports: SequencePorts,
+  manifest: Manifest,
+  options: ResolveOptions,
+  anyRequired: boolean,
+): Promise<string[] | undefined> {
   if (options.envNamesProvider !== undefined) return options.envNamesProvider(manifest);
-  if (manifest.envFiles === undefined && (manifest.requiredEnv ?? []).length === 0) return undefined;
+  if (manifest.envFiles === undefined && !anyRequired) return undefined;
   try {
     // Only the names leave this function; the values are dropped here.
     return [...(await loadSecrets(ports.fs, manifest.envFiles)).keys()];
@@ -94,11 +129,31 @@ export async function resolveDeployTarget(
       digests[service] = await ports.registry.resolveDigest(config.image, `sha-${sha}`);
     }
 
-    const envNamesPresent = await envNames(ports, manifest, options);
+    // Every mapped image's labels are fetched here — not only for G9's declared env names, but so
+    // the same fetch is reused below for VerifiedImage.labels/migration. A digest G8 will refuse on
+    // (null) has no config to fetch; that service's declaredEnv is simply absent.
+    const configs = new Map<string, { labels: Record<string, string> }>();
+    const declaredEnvByService: Record<string, string[]> = {};
+    for (const [service, config] of Object.entries(manifest.services)) {
+      const digest = digests[service];
+      if (digest === null || digest === undefined) continue;
+      const config_ = await ports.registry.imageConfig(config.image, digest);
+      configs.set(service, config_);
+      const { names, invalid } = declaredEnv(config_.labels);
+      if (invalid.length > 0) {
+        const message = `${config.image} declares an invalid env name in its ${LABEL_ENV} label: ${invalid.join(', ')}`;
+        throw new RefusalError(refusal('env_missing', message));
+      }
+      declaredEnvByService[service] = names;
+    }
+
+    const anyRequired =
+      (manifest.requiredEnv ?? []).length > 0 || Object.values(declaredEnvByService).some((names) => names.length > 0);
+    const envNamesPresent = await envNames(ports, manifest, options, anyRequired);
 
     const freeBytes = options.dryRun
       ? await ports.docker.freeBytes()
-      : (await ensureFreeSpace(ports, manifest, target, ledger.knownDigests(manifest.name))).freeBytes;
+      : (await ensureFreeSpace(ports, manifest, target, ledger.retainedDigests(manifest.name, manifest.retainImages))).freeBytes;
 
     const facts: GateFacts = {
       kind: 'deploy',
@@ -110,12 +165,16 @@ export async function resolveDeployTarget(
       aheadOfLive: aheadOfLive === null ? null : { status: aheadOfLive.status },
       digests,
       freeBytes,
+      declaredEnv: declaredEnvByService,
     };
     if (envNamesPresent !== undefined) facts.envNamesPresent = envNamesPresent;
 
     gates = evaluateGates(facts);
     const refused = firstRefusal(gates);
     if (refused !== null) return { live, gates, refusal: refused, images: [] };
+    // A group promotion ships exactly the canary's digests, or nothing (SHP-REQ-079).
+    const mismatch = expectedDigestRefusal(options.expectDigests, digests);
+    if (mismatch !== null) return { live, gates, refusal: mismatch, images: [] };
 
     const images: VerifiedImage[] = [];
     for (const [service, config] of Object.entries(manifest.services)) {
@@ -124,7 +183,7 @@ export async function resolveDeployTarget(
         // G8 passed, so this cannot happen; fail closed rather than trust it.
         return { live, gates, refusal: refusal('image_missing', `no digest for ${service}`), images: [] };
       }
-      const config_ = await ports.registry.imageConfig(config.image, digest);
+      const config_ = configs.get(service) ?? (await ports.registry.imageConfig(config.image, digest));
       images.push({
         service,
         repo: config.image,

@@ -6,6 +6,7 @@ import type {
   JournalEntry,
   MachineContext,
   ProgressListener,
+  RestoreRequest,
   RollbackRequest,
 } from '@shipyard/sequence';
 import { AgentRequestError, type AgentClient } from './client.js';
@@ -288,6 +289,8 @@ function failedResult(targetId: string, why: Refusal, state: TargetResult['state
 export interface Engine {
   deploy(ctx: MachineContext, request: DeployRequest): Promise<DeployResult>;
   rollback(ctx: MachineContext, request: RollbackRequest): Promise<DeployResult>;
+  /** Guided restore (SHP-T-5.6); an engine without it refuses restore targets. */
+  restore?(ctx: MachineContext, request: RestoreRequest): Promise<DeployResult>;
 }
 
 export interface TargetRunnerOptions {
@@ -377,6 +380,15 @@ export function createTargetRunner(opts: TargetRunnerOptions): (target: PollTarg
           sha: target.sha,
           dryRun: target.dryRun,
           requesterLabel: target.requesterLabel ?? 'shipyard server',
+          ...(target.expectDigests === undefined ? {} : { expectDigests: target.expectDigests }),
+        });
+      } else if (target.kind === 'restore' && target.toDeployId !== undefined && engine.restore !== undefined) {
+        deployResult = await engine.restore(machine, {
+          deployId: target.deployId,
+          app: target.app,
+          backupOf: target.toDeployId,
+          requesterLabel: target.requesterLabel ?? 'shipyard server',
+          dryRun: target.dryRun,
         });
       } else if (target.kind === 'rollback' && target.toDeployId !== undefined) {
         deployResult = await engine.rollback(machine, {

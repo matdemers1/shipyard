@@ -1,3 +1,5 @@
 *
 !server.mjs
 !migrate.mjs
+!backup.mjs
+!restore.mjs

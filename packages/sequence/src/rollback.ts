@@ -132,7 +132,15 @@ export async function resolveRollbackTarget(
     const target = composeTargetOf(manifest);
     const freeBytes = options.dryRun
       ? await ports.docker.freeBytes()
-      : (await ensureFreeSpace(ports, manifest, target, ledger.knownDigests(app))).freeBytes;
+      : (
+          await ensureFreeSpace(
+            ports,
+            manifest,
+            target,
+            // The retained releases, and the release being rolled back to even when it is older.
+            new Set([...ledger.retainedDigests(app, manifest.retainImages), ...entry.images.map((image) => `${image.repo}@${image.digest}`)]),
+          )
+        ).freeBytes;
 
     const facts: GateFacts = { kind: 'rollback', sha: entry.sha, manifest, live, digests, laterMigrationLabels, freeBytes };
     const gates = evaluateGates(facts).map((gate): GateResult => {

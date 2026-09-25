@@ -244,6 +244,22 @@ describe('recoverInterrupted', () => {
     expect(await journal.unfinished()).toEqual([]);
   });
 
+  it('leaves alone a deploy whose app lock is still live: it is running, not interrupted', async () => {
+    const fs = makeMemoryFs({ '/opt/demo/compose.yaml': 'services:\n  app:\n    image: repo:new\n' });
+    const journal = new Journal(fs, 'journal.jsonl', makeClock(), makeLog().log);
+    const detail = { historyDeployId: 'dep-1', composeFiles: ['/opt/demo/compose.yaml'], project: 'demo' };
+    await primeInterrupted(fs, journal, 'dep-1', 'demo', detail);
+
+    const { docker, compose } = makeDocker();
+    const ports: RecoverPorts = { fs, docker, log: makeLog().log, clock: makeClock() };
+
+    const results = await recoverInterrupted(ports, journal, { historyDir: '/history', isLive: (app) => Promise.resolve(app === 'demo') });
+
+    expect(results).toEqual([]);
+    expect(compose).not.toHaveBeenCalled();
+    expect(await journal.unfinished()).toHaveLength(1);
+  });
+
   it('ends the deploy cleanly when there is no history (compose files were never rewritten)', async () => {
     const fs = makeMemoryFs({ '/opt/demo/compose.yaml': 'services:\n  app:\n    image: repo:new\n' });
     const journal = new Journal(fs, 'journal.jsonl', makeClock(), makeLog().log);

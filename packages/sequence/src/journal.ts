@@ -202,12 +202,23 @@ function historyDeployIdFromDetail(detail: Record<string, unknown> | undefined, 
 export async function recoverInterrupted(
   ports: RecoverPorts,
   journal: Journal,
-  opts: { historyDir: string },
+  opts: {
+    historyDir: string;
+    /**
+     * True when the app's deploy lock is still held by a live process. That deploy is running, not
+     * interrupted — another process on the host (a second CLI, the agent) must never roll it back.
+     */
+    isLive?: (app: string) => Promise<boolean>;
+  },
 ): Promise<RecoveryResult[]> {
   const unfinished = await journal.unfinished();
   const results: RecoveryResult[] = [];
 
   for (const deploy of unfinished) {
+    if (opts.isLive !== undefined && (await opts.isLive(deploy.app))) {
+      ports.log.info({ deployId: deploy.deployId, app: deploy.app }, 'deploy still running under a live lock; not recovering it');
+      continue;
+    }
     try {
       results.push(await recoverOne(ports, journal, opts.historyDir, deploy));
     } catch (err) {

@@ -169,6 +169,12 @@ function parseLock(raw: string): Partial<LockContent> {
   }
 }
 
+/** True when `app`'s deploy lock is held by a process whose heartbeat is still fresh. */
+export async function isAppLockLive(dataRoot: string, app: string, staleMs: number = LOCK_STALE_MS): Promise<boolean> {
+  const raw = await readRaw(lockPath(dataRoot, app));
+  return raw !== null && !isStale(parseLock(raw), Date.now(), staleMs);
+}
+
 function isStale(holder: Partial<LockContent>, now: number, staleMs: number): boolean {
   const beat = Date.parse(typeof holder.heartbeatAt === 'string' ? holder.heartbeatAt : '');
   return !Number.isFinite(beat) || now - beat > staleMs;
@@ -797,7 +803,14 @@ async function soak(
   const intervalMs = ctx.soakIntervalMs ?? DEFAULT_SOAK_INTERVAL_MS;
   const probeTimeoutMs = ctx.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const end = ports.clock.now().getTime() + manifest.soakSeconds * 1000;
-  const baseline = await identities(ports.docker, target, images).catch(() => new Map<string, ContainerIdentity[]>());
+  // Fail closed: without a baseline, soak cannot see a restart, so it cannot vouch for the release.
+  let baseline: Map<string, ContainerIdentity[]>;
+  try {
+    baseline = await identities(ports.docker, target, images);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, definitive: true, refusal: refusal('health_failed', `Could not list containers when soak began: ${message}`) };
+  }
   for (const [service, running] of baseline) {
     // Checked a moment ago, so this is a crash in between: soak has nothing to watch.
     if (running.length === 0) {
@@ -807,7 +820,9 @@ async function soak(
   let last: CheckOutcome | null = null;
   while (ports.clock.now().getTime() < end) {
     await ports.clock.sleep(Math.min(intervalMs, Math.max(0, end - ports.clock.now().getTime())));
-    const restarted = await restartDuringSoak(ports.docker, target, baseline).catch(() => null);
+    const restarted = await restartDuringSoak(ports.docker, target, baseline).catch((err: unknown) =>
+      refusal('health_failed', `Could not list containers during soak: ${err instanceof Error ? err.message : String(err)}`),
+    );
     if (restarted !== null) return { ok: false, definitive: true, refusal: restarted };
     last = await checkOnce(ports.docker, target, manifest, images, { probeTimeoutMs });
     if (!last.ok) return last;

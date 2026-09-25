@@ -3,6 +3,7 @@ import {
   Ledger,
   ManifestLoadError,
   loadManifests,
+  isAppLockLive,
   recoverInterrupted,
   runDeploy,
   type DeployRequest,
@@ -42,6 +43,8 @@ export async function runDeployCommand(ports: SequencePorts, dataRoot: string, c
   // back to its last verified-good compose file before this one starts (SHP-REQ-022).
   const recovered = await recoverInterrupted({ fs: ports.fs, docker: ports.docker, log: ports.log, clock: ports.clock }, journal, {
     historyDir: paths.historyDir,
+    // A deploy another process is still running (its lock heartbeat is fresh) is not interrupted.
+    isLive: (app) => isAppLockLive(dataRoot, app),
   });
   for (const r of recovered) deps.stdout.write(formatRecovery(r));
 

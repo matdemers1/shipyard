@@ -13,6 +13,7 @@ import type { Actor, AuditEventInput } from '../audit.js';
 import { assertCanActOn, type Role } from '../auth/scope.js';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
+import { assertDeployable } from '../apps/drift.js';
 
 /**
  * Deploy requests, dry runs and status (SHP-T-2.5). The server pre-checks only G1 (authorisation),
@@ -38,21 +39,8 @@ export const MAX_WAIT_SECONDS = 90;
  */
 export type DeployableCheck = (db: Db, appName: string) => Promise<Refusal | null>;
 
-/** Minimal stand-in for `assertDeployable`: the App row exists and is not drifted. */
-export const defaultDeployableCheck: DeployableCheck = async (db, appName) => {
-  const app = await db.app.findUnique({ where: { name: appName }, select: { driftedAt: true } });
-  if (app === null) {
-    return refusal('unknown_app', `No app named ${appName} has been reported by the agent.`);
-  }
-  if (app.driftedAt !== null) {
-    return refusal(
-      'drift_unresolved',
-      `${appName} has unresolved drift since ${app.driftedAt.toISOString()}.`,
-      'Adopt the live images or redeploy the recorded release, then retry.',
-    );
-  }
-  return null;
-};
+/** The agent's report is the only source of apps; drift blocks forward deploys (SHP-T-2.3). */
+export const defaultDeployableCheck: DeployableCheck = (db, appName) => assertDeployable(db, appName);
 
 /** Who is asking: what `authenticate` put on the request, plus the request's audit writer. */
 export interface DeployCaller {

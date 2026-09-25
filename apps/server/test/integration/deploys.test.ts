@@ -52,7 +52,8 @@ async function seedApps(...names: string[]): Promise<Map<string, string>> {
   const ids = new Map<string, string>();
   for (const name of names) {
     const row = await db.app.create({
-      data: { name, agentId: agent.id, manifestYaml: `name: ${name}\n`, manifestSha256: '0'.repeat(64) },
+      // As the agent's report writes it (SHP-T-2.3): reported, so deployable.
+      data: { name, agentId: agent.id, manifestYaml: `name: ${name}\n`, manifestSha256: '0'.repeat(64), reportedAt: new Date() },
     });
     ids.set(name, row.id);
   }
@@ -232,7 +233,9 @@ describe('server-side pre-checks', () => {
   });
 
   it('refuses a drifted app (G3)', async () => {
-    await db.app.update({ where: { name: 'web' }, data: { driftedAt: new Date() } });
+    // As the report records drift: the app flagged, with an open event.
+    const drifted = await db.app.update({ where: { name: 'web' }, data: { driftedAt: new Date() } });
+    await db.driftEvent.create({ data: { appId: drifted.id, observed: { web: 'sha256:b' }, recorded: { web: 'sha256:a' } } });
     const { cookie } = await signIn('deployer');
     const res = await request(app).post('/api/deploys').set('Cookie', cookie).send({ kind: 'deploy', app: 'web', sha: SHA_A });
     expect(res.status).toBe(409);

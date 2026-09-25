@@ -1,0 +1,5 @@
+{
+  "agent": null,
+  "outbox": { "unsent": 0, "unsentOverHour": 0, "oldestUnsentAt": null, "lastError": null },
+  "backups": { "lastBackup": null, "lastDrill": null }
+}

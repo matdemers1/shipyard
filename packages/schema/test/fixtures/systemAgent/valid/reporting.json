@@ -1,0 +1,7 @@
+{
+  "fingerprint": "SHA256:abc123",
+  "lastHeartbeatAt": "2026-09-25T00:00:00.000Z",
+  "stale": false,
+  "patExpiresAt": "2026-10-10T00:00:00.000Z",
+  "patWarning": "none"
+}

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,6 +80,11 @@ export interface Harness {
   registryHostPort: number;
   /** tcp://127.0.0.1:<port> — the dind daemon. */
   dockerHost: string;
+  /**
+   * A host directory (mode 0777) mounted into dind at the same path: a stack in dind may bind-mount
+   * under it and the test process reads what the containers write there (backups, data).
+   */
+  sharedDir: string;
   /** Fake GitHub as the host reaches it. */
   fakeGithubUrl: string;
   /** Environment for a `docker` CLI aimed at the dind daemon. */
@@ -150,11 +155,18 @@ export async function startHarness(): Promise<Harness> {
   const tempDirs = new Set<string>();
   let stopped = false;
 
+  // Created before `up`, so dind mounts a directory the test owns and every container may write to.
+  const sharedDir = await realpath(await mkdtemp(join(tmpdir(), 'shp-e2e-shared-')));
+  await chmod(sharedDir, 0o777);
+  tempDirs.add(sharedDir);
+  const composeEnv: NodeJS.ProcessEnv = { ...process.env, SHP_E2E_SHARED_DIR: sharedDir };
+
   const stop = async (): Promise<void> => {
     if (stopped) return;
     stopped = true;
     const errors: string[] = [];
     const down = await runRaw('docker', composeArgs(project, 'down', '-v', '--remove-orphans', '--timeout', '5'), {
+      env: composeEnv,
       timeoutMs: 120_000,
     });
     if (down.code !== 0) errors.push(`compose down: ${down.stderr.trim()}`);
@@ -162,12 +174,12 @@ export async function startHarness(): Promise<Harness> {
       const rmi = await runRaw('docker', ['image', 'rm', '--force', ...hostTags]);
       if (rmi.code !== 0) errors.push(`image rm: ${rmi.stderr.trim()}`);
     }
-    for (const dir of tempDirs) await rm(dir, { recursive: true, force: true });
+    for (const dir of tempDirs) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     if (errors.length > 0) throw new Error(`harness ${project} teardown: ${errors.join('; ')}`);
   };
 
   try {
-    await run('docker', composeArgs(project, 'up', '-d', '--quiet-pull'), { timeoutMs: 300_000 });
+    await run('docker', composeArgs(project, 'up', '-d', '--quiet-pull'), { env: composeEnv, timeoutMs: 300_000 });
 
     const port = async (service: string, containerPort: number): Promise<number> =>
       parsePort((await run('docker', composeArgs(project, 'port', service, String(containerPort)))).stdout);
@@ -395,6 +407,7 @@ export async function startHarness(): Promise<Harness> {
       project,
       registryHostPort,
       dockerHost,
+      sharedDir,
       fakeGithubUrl,
       dindEnv,
       dind,

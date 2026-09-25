@@ -59,13 +59,39 @@ const BackupStep = z
   })
   .meta({ id: 'BackupStep', description: 'Backup command and the host directory its artifact appears in' });
 
+/** The literal token in a restore argv that the agent replaces with the artifact's file name. */
+export const RESTORE_ARTIFACT_TOKEN = '{artifact}';
+
+/**
+ * The app's own restore command (SHP-D-038), exec'd in its running container like the backup.
+ * One or more argv entries carry the literal token `{artifact}`, which the agent replaces with the
+ * restored artifact's **file name** — the container names its own mount of the backups directory
+ * (e.g. `/backups/{artifact}`). Never a shell; the name is checked against `[A-Za-z0-9._-]+`
+ * before it is substituted.
+ */
+const RestoreStep = z
+  .strictObject({
+    service: z.string().min(1),
+    argv: Step.shape.argv.refine(
+      (argv) => argv.some((arg) => arg.includes(RESTORE_ARTIFACT_TOKEN)),
+      `restore argv must name the artifact with the literal token ${RESTORE_ARTIFACT_TOKEN}`,
+    ),
+  })
+  .meta({ id: 'RestoreStep', description: 'Restore command; {artifact} is replaced by the backup file name' });
+
 const ManifestSteps = z
   .strictObject({
     backup: BackupStep.optional(),
     /** Run as a one-shot `compose run --rm` with the new image before the swap (SHP-D-028). */
     migrate: Step.optional(),
+    /** Guided restore from the console only (SHP-D-038); needs `backup`, whose artifacts it restores. */
+    restore: RestoreStep.optional(),
   })
-  .meta({ id: 'ManifestSteps', description: 'Optional backup/migrate steps run before an image swap' });
+  .refine((steps) => steps.restore === undefined || steps.backup !== undefined, {
+    message: 'steps.restore needs steps.backup: a restore only ever uses an artifact the backup step took',
+    path: ['restore'],
+  })
+  .meta({ id: 'ManifestSteps', description: 'Optional backup/migrate/restore steps' });
 
 export const Manifest = z
   .strictObject({

@@ -1,0 +1,22 @@
+name: foreman
+repo: matdemers1/foreman
+workflow: ci.yml
+compose:
+  files:
+    - /DATA/apps/foreman/docker-compose.yml
+  project: foreman
+services:
+  server:
+    image: ghcr.io/matdemers1/foreman/server
+health:
+  service: server
+  port: 3000
+  path: /health
+steps:
+  backup:
+    service: db
+    artifactsDir: /DATA/apps/foreman/backups
+    argv: [pg_dump, --file=/backups/foreman.dump, foreman]
+  restore:
+    service: db
+    argv: "pg_restore --clean /backups/{artifact}"

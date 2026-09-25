@@ -44,6 +44,9 @@ import {
   FreezeRequest,
   Freeze,
   FreezeInfo,
+  RestoreRequest,
+  RestoreCandidate,
+  RestoreCandidates,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -100,6 +103,9 @@ const SCHEMAS: Record<string, ZodType> = {
   freezeRequest: FreezeRequest,
   freeze: Freeze,
   freezeInfo: FreezeInfo,
+  restoreRequest: RestoreRequest,
+  restoreCandidate: RestoreCandidate,
+  restoreCandidates: RestoreCandidates,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

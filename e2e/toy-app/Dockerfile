@@ -15,7 +15,7 @@ LABEL org.opencontainers.image.revision=${TOY_REVISION} \
       org.opencontainers.image.title=shipyard-toy \
       dev.d3cloud.shipyard.schema=${TOY_SCHEMA}
 WORKDIR /app
-COPY server.mjs migrate.mjs ./
+COPY server.mjs migrate.mjs backup.mjs restore.mjs ./
 USER node
 EXPOSE 3000
 CMD ["node", "server.mjs"]

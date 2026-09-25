@@ -11,6 +11,10 @@ services:
     command: ["--insecure-registry=registry:5000", "--insecure-registry=registry.shipyard.test"]
     ports:
       - "127.0.0.1::2375"
+    volumes:
+      # A host directory at the same path inside dind, so a bind mount in a stack dind runs reaches
+      # files the test process (the agent's side) can read — backup artifacts, restored data.
+      - ${SHP_E2E_SHARED_DIR:-/tmp/shp-e2e-shared}:${SHP_E2E_SHARED_DIR:-/tmp/shp-e2e-shared}
     networks: [harness]
 
   registry:

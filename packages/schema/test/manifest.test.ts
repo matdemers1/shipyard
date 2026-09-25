@@ -47,3 +47,34 @@ describe('service image', () => {
     expect(Manifest.safeParse({ ...base, services: { app: { image: 'ghcr.io/a/b@sha256:' + 'a'.repeat(64) } } }).success).toBe(false);
   });
 });
+
+describe('steps.restore (SHP-T-5.6)', () => {
+  const base = {
+    name: 'toy', repo: 'example/toy', workflow: 'ci.yml',
+    compose: { files: ['/srv/toy/compose.yml'], project: 'toy' },
+    services: { app: { image: 'ghcr.io/example/toy/app' } },
+    health: { service: 'app', port: 3000, path: '/health' },
+  };
+  const backup = { service: 'db', argv: ['pg_dump', '-f', '/backups/x.dump'], artifactsDir: '/srv/toy/backups' };
+
+  it('accepts a restore argv naming {artifact}, beside a backup step', () => {
+    const parsed = Manifest.parse({ ...base, steps: { backup, restore: { service: 'db', argv: ['pg_restore', '/backups/{artifact}'] } } });
+    expect(parsed.steps?.restore?.argv).toEqual(['pg_restore', '/backups/{artifact}']);
+  });
+
+  it('refuses a restore without a backup step, naming steps.restore', () => {
+    const result = Manifest.safeParse({ ...base, steps: { restore: { service: 'db', argv: ['pg_restore', '/backups/{artifact}'] } } });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((i) => i.path.join('.') === 'steps.restore' && i.message.includes('steps.backup'))).toBe(true);
+  });
+
+  it('refuses a restore argv that never names {artifact}', () => {
+    const result = Manifest.safeParse({ ...base, steps: { backup, restore: { service: 'db', argv: ['pg_restore', '/backups/latest.dump'] } } });
+    expect(result.success).toBe(false);
+  });
+
+  it('refuses a command string and unknown keys on the restore step', () => {
+    expect(Manifest.safeParse({ ...base, steps: { backup, restore: { service: 'db', argv: 'pg_restore /backups/{artifact}' } } }).success).toBe(false);
+    expect(Manifest.safeParse({ ...base, steps: { backup, restore: { service: 'db', argv: ['x', '{artifact}'], shell: true } } }).success).toBe(false);
+  });
+});

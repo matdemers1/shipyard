@@ -229,9 +229,85 @@ describe('Ledger queries', () => {
     await ledger.append(entry({ deployId: 'dep-3', backupArtifact: '/backups/dep-3.tar' }));
 
     expect(ledger.backupArtifacts('bindery')).toEqual([
-      { app: 'bindery', deployId: 'dep-1', backupArtifact: '/backups/dep-1.tar', at: '2026-09-24T00:00:00.000Z' },
-      { app: 'bindery', deployId: 'dep-3', backupArtifact: '/backups/dep-3.tar', at: '2026-09-24T00:00:00.000Z' },
+      // A release entry's backup with no record of its own matches the release before it.
+      { app: 'bindery', deployId: 'dep-1', backupArtifact: '/backups/dep-1.tar', at: '2026-09-24T00:00:00.000Z', release: null },
+      { app: 'bindery', deployId: 'dep-3', backupArtifact: '/backups/dep-3.tar', at: '2026-09-24T00:00:00.000Z', release: 'dep-2' },
     ]);
+  });
+
+  describe('backup and restore records (SHP-T-5.6)', () => {
+    const at = (h: number): string => new Date(Date.UTC(2026, 8, 24, h)).toISOString();
+
+    it('a backup recorded when taken is restorable though its deploy never became a release', async () => {
+      const { fs } = memoryFs();
+      const ledger = await Ledger.open(fs, PATH);
+      await ledger.append(entry({ deployId: 'dep-1' }));
+      await ledger.recordBackup({ app: 'bindery', deployId: 'dep-2', backupArtifact: '/backups/dep-2.dump', release: 'dep-1', at: at(1) });
+
+      expect(ledger.entries('bindery').map((e) => e.deployId)).toEqual(['dep-1']);
+      expect(ledger.last('bindery')?.deployId).toBe('dep-1');
+      expect(ledger.backupArtifacts('bindery')).toEqual([
+        { app: 'bindery', deployId: 'dep-2', backupArtifact: '/backups/dep-2.dump', at: at(1), release: 'dep-1' },
+      ]);
+      // The chain still verifies with the new kinds in it.
+      const reopened = await Ledger.open(fs, PATH);
+      expect(reopened.backupArtifacts('bindery')).toHaveLength(1);
+    });
+
+    it('a release that also carries its recorded backup is listed once', async () => {
+      const { fs } = memoryFs();
+      const ledger = await Ledger.open(fs, PATH);
+      await ledger.append(entry({ deployId: 'dep-1' }));
+      await ledger.recordBackup({ app: 'bindery', deployId: 'dep-2', backupArtifact: '/backups/dep-2.dump', release: 'dep-1', at: at(1) });
+      await ledger.append(entry({ deployId: 'dep-2', backupArtifact: '/backups/dep-2.dump' }));
+      expect(ledger.backupArtifacts('bindery').map((b) => [b.deployId, b.release])).toEqual([['dep-2', 'dep-1']]);
+    });
+
+    it('releaseRunning vouches for the last release only when its digests are what runs', async () => {
+      const { fs } = memoryFs();
+      const ledger = await Ledger.open(fs, PATH);
+      expect(ledger.releaseRunning('bindery', {})).toBeNull();
+      await ledger.append(entry({ deployId: 'dep-1' }));
+      const recorded = ledger.last('bindery')?.images ?? [];
+      const running = Object.fromEntries(recorded.map((image) => [image.service, image.digest]));
+      expect(ledger.releaseRunning('bindery', running)).toBe('dep-1');
+      expect(ledger.releaseRunning('bindery', { ...running, [recorded[0]?.service ?? '']: `sha256:${'9'.repeat(64)}` })).toBeNull();
+    });
+
+    it('a restore is not a release, and blocks another restore for 24 hours', async () => {
+      const { fs } = memoryFs();
+      const ledger = await Ledger.open(fs, PATH);
+      await ledger.append(entry({ deployId: 'dep-1' }));
+      const images = ledger.last('bindery')?.images ?? [];
+      await ledger.append({
+        kind: 'restore',
+        app: 'bindery',
+        deployId: 'rs-1',
+        backupOf: 'dep-2',
+        restoredFrom: '/backups/dep-2.dump',
+        release: 'dep-1',
+        sha: 'a'.repeat(40),
+        images,
+        backupArtifact: '/backups/rs-1.dump',
+        at: at(10),
+      });
+      expect(ledger.entries('bindery').map((e) => e.deployId)).toEqual(['dep-1']);
+      expect(ledger.restores('bindery').map((r) => r.deployId)).toEqual(['rs-1']);
+      expect(ledger.restoreWithinLimit('bindery', new Date(Date.parse(at(10)) + 23 * 3600_000))?.deployId).toBe('rs-1');
+      expect(ledger.restoreWithinLimit('bindery', new Date(Date.parse(at(10)) + 24 * 3600_000))).toBeNull();
+      expect(ledger.restoreWithinLimit('other', new Date(at(11)))).toBeNull();
+    });
+
+    it('rejects malformed backup and restore records', async () => {
+      const { fs } = memoryFs();
+      const ledger = await Ledger.open(fs, PATH);
+      await expect(ledger.recordBackup({ app: 'bindery', deployId: 'dep-1', backupArtifact: 'relative.dump', release: null, at: at(1) })).rejects.toThrow(
+        LedgerEntryInvalidError,
+      );
+      await expect(
+        ledger.append({ kind: 'restore', app: 'bindery', deployId: 'rs', backupOf: '', restoredFrom: '/b', release: 'dep-1', sha: 'a'.repeat(40), images: [], backupArtifact: null, at: at(1) }),
+      ).rejects.toThrow(LedgerEntryInvalidError);
+    });
   });
 
   it('knownDigests collects every digest recorded for the app', async () => {

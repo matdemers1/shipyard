@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { ZodError } from 'zod';
 
-import { parseManifestYaml } from '../src/manifest.js';
+import { Manifest, parseManifestYaml } from '../src/manifest.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -30,5 +30,20 @@ describe('parseManifestYaml', () => {
     } catch (error) {
       expect(error).not.toBeInstanceOf(ZodError);
     }
+  });
+});
+
+describe('service image', () => {
+  const base = {
+    name: 'toy', repo: 'example/toy', workflow: 'ci.yml',
+    compose: { files: ['/srv/toy/compose.yml'], project: 'toy' },
+    health: { service: 'app', port: 3000, path: '/health' },
+  };
+  it('accepts a registry with a port', () => {
+    expect(Manifest.safeParse({ ...base, services: { app: { image: 'registry:5000/toy/app' } } }).success).toBe(true);
+  });
+  it('rejects a tag or a digest', () => {
+    expect(Manifest.safeParse({ ...base, services: { app: { image: 'registry:5000/toy/app:latest' } } }).success).toBe(false);
+    expect(Manifest.safeParse({ ...base, services: { app: { image: 'ghcr.io/a/b@sha256:' + 'a'.repeat(64) } } }).success).toBe(false);
   });
 });

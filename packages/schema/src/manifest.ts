@@ -21,7 +21,7 @@ const ServiceConfig = z
     image: z
       .string()
       .min(1)
-      .refine((v) => !v.includes(':'), 'image must not include a tag; the tag is chosen at deploy time'),
+      .refine((v) => !v.includes('@') && !(v.split('/').pop() ?? '').includes(':'), 'image must not include a tag or digest; both are chosen at deploy time'),
   })
   .meta({ id: 'ServiceConfig', description: 'The untagged image for one compose service' });
 

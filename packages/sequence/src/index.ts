@@ -13,3 +13,4 @@ export * from './redact.js';
 export * from './journal.js';
 export * from './ledger.js';
 export * from './disk.js';
+export * from './machine.js';

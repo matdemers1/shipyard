@@ -49,6 +49,11 @@ export interface GhcrAdapterOptions {
   timeoutMs?: number;
   /** Hosts (e.g. `registry:5000`) reached over plain HTTP with no auth — for the e2e local registry. */
   plainHttpHosts?: string[];
+  /**
+   * The architecture whose manifest labels are read from an index. Defaults to the host's. Labels
+   * come from one build, so when the index has no entry for it the first real platform is used.
+   */
+  architecture?: string;
 }
 
 function parseRepo(imageRepo: string): { host: string; path: string } {
@@ -73,6 +78,7 @@ export function createRegistryAdapter(options: GhcrAdapterOptions = {}): Registr
   const doFetch = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const plainHttpHosts = new Set(options.plainHttpHosts ?? []);
+  const architecture = options.architecture ?? (process.arch === 'x64' ? 'amd64' : process.arch);
 
   const tokenCache = new Map<string, CachedToken>();
 
@@ -178,13 +184,12 @@ export function createRegistryAdapter(options: GhcrAdapterOptions = {}): Registr
       const top = await getManifest(host, path, digest);
       let manifest: OciManifest;
       if (isIndex(top)) {
-        const amd64 = top.manifests.find(
-          (m) => m.platform !== undefined && m.platform.architecture === 'amd64' && m.platform.os !== 'unknown',
-        );
-        if (amd64 === undefined) {
-          throw new RefusalError(refusal('ghcr_unreachable', `${host} index for ${imageRepo}@${digest} has no linux/amd64 manifest`));
+        const real = top.manifests.filter((m) => m.platform !== undefined && m.platform.os !== 'unknown');
+        const chosen = real.find((m) => m.platform?.architecture === architecture) ?? real[0];
+        if (chosen === undefined) {
+          throw new RefusalError(refusal('ghcr_unreachable', `${host} index for ${imageRepo}@${digest} has no image manifest`));
         }
-        manifest = asManifest(await getManifest(host, path, amd64.digest), host, imageRepo, digest);
+        manifest = asManifest(await getManifest(host, path, chosen.digest), host, imageRepo, digest);
       } else {
         manifest = asManifest(top, host, imageRepo, digest);
       }

@@ -6,7 +6,13 @@ import { auditContext, type AuditContextOptions } from './audit.js';
 import type { Db } from './db.js';
 import { errorHandler, sendRefusal } from './errors.js';
 import { authenticate, authRouter, type OidcClient } from './auth/index.js';
+import { agentRouter } from './agent/index.js';
+import { appsRouter } from './apps/index.js';
+import { deploysRouter } from './deploys/index.js';
+import { Bus } from './events.js';
+import { mcpRouter } from './mcp/index.js';
 import { openapiRouter } from './openapi.js';
+import { tokensRouter } from './tokens/index.js';
 import { healthRouter } from './routes/health.js';
 
 export interface AppDeps {
@@ -16,6 +22,8 @@ export interface AppDeps {
   onUnauditedMutation?: AuditContextOptions['onUnauditedMutation'];
   /** Sign in with D3 Auth, built at boot by `createOidcClient`; null or absent means password only. */
   oidc?: OidcClient | null;
+  /** Long-poll wake-ups; one per process. Tests may pass their own to observe or trigger it. */
+  bus?: Bus;
   /**
    * Test-only seam: a router mounted at `/api/_test` before the 404 handler, so integration
    * tests can exercise `req.audit`/`req.actor` and the unaudited-mutation guard without a real
@@ -28,11 +36,20 @@ export interface AppDeps {
 export function createApp(deps: AppDeps): Express {
   const { db, logger, config, onUnauditedMutation, testRouter } = deps;
   const authDeps = { db, logger, config, oidc: deps.oidc ?? null };
+  const serviceDeps = { db, logger, config, bus: deps.bus ?? new Bus() };
 
   const app = express();
   app.disable('x-powered-by');
   if (config.TRUST_PROXY_HOPS !== undefined) app.set('trust proxy', config.TRUST_PROXY_HOPS);
-  app.use(express.json({ limit: '256kb' }));
+  app.use(
+    express.json({
+      limit: '256kb',
+      // The agent signs the exact bytes it sent (SHP-D-064); verification needs them, not a re-encoding.
+      verify: (req, _res, buf) => {
+        (req as { rawBody?: Buffer }).rawBody = buf;
+      },
+    }),
+  );
 
   app.use((req, res, next) => {
     const start = process.hrtime.bigint();
@@ -57,6 +74,11 @@ export function createApp(deps: AppDeps): Express {
   // Feature routers mount here, before the 404 handler below.
   app.use('/api/auth', authRouter(authDeps));
   app.use('/api', openapiRouter());
+  app.use('/api/agent', agentRouter(serviceDeps));
+  app.use('/api/apps', appsRouter(serviceDeps));
+  app.use('/api/deploys', deploysRouter(serviceDeps));
+  app.use('/api/tokens', tokensRouter(serviceDeps));
+  app.use('/mcp', mcpRouter(serviceDeps));
   // ─────────────────────────────────────────────────────────────────────
 
   if (testRouter !== undefined) {

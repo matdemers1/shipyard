@@ -12,6 +12,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@shipyard/schema": "workspace:*"
+    "@shipyard/schema": "workspace:*",
+    "@shipyard/sequence": "workspace:*",
+    "pino": "^10.3.1"
   }
 }

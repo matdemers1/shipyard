@@ -1,0 +1,9 @@
+{
+  "id": "t1",
+  "label": "x",
+  "prefix": "shp_ab12",
+  "apps": [
+    "foreman"
+  ],
+  "token": "shp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+}

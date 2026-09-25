@@ -1,0 +1,32 @@
+{
+  "deployId": "d1",
+  "kind": "deploy",
+  "app": "foreman",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dryRun": false,
+  "state": "succeeded",
+  "currentStep": null,
+  "requester": {
+    "label": "claude: foreman#12",
+    "repo": "matdemers1/foreman",
+    "branch": "main"
+  },
+  "images": [
+    {
+      "service": "server",
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "schemaRevision": "20260924_init",
+  "refusal": null,
+  "gates": [
+    {
+      "gate": "G5",
+      "pass": true,
+      "reason": "ci.yml succeeded"
+    }
+  ],
+  "createdAt": "2026-09-25T00:00:00Z",
+  "endedAt": "2026-09-25T00:05:00Z"
+}

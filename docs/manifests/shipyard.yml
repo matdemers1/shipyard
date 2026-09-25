@@ -1,0 +1,35 @@
+# Shipyard's own server, deployed through Shipyard like any other app (SHP-REQ-071, SHP-D-011).
+# Host-local and argv-only (SHP-D-017): the copy that counts is <data root>/apps/shipyard.yml.
+#
+# Only the server is listed. The agent is never in a manifest: it is upgraded by hand, so a bad
+# release can never take away the one process able to roll it back (SHP-D-011).
+#
+# A broken server release is rolled back by the agent alone, with the server unreachable
+# (SHP-REQ-072, SHP-D-081); proven in e2e/tests/selfdeploy.test.ts.
+name: shipyard
+repo: matdemers1/shipyard
+workflow: ci.yml
+compose:
+  files:
+    - /DATA/shipyard/docker-compose.yml
+  project: shipyard
+services:
+  server:
+    image: ghcr.io/matdemers1/shipyard/server
+# The server's /api/health answers {status: 'ok', schemaRevision} (the Prisma migration it is on),
+# which is what the engine's check requires; the image's schema label supplies the expected value.
+health:
+  service: server
+  port: 3300
+  path: /api/health
+soakSeconds: 120
+steps:
+  # One-shot `compose run --rm` with the new image, before the swap (SHP-D-028).
+  migrate:
+    service: server
+    argv: [node, node_modules/prisma/build/index.js, migrate, deploy]
+envFiles:
+  - /DATA/shipyard/server.env
+foreman:
+  project: SHP
+  environment: production

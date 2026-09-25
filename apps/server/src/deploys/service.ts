@@ -251,7 +251,7 @@ const STATUS_SELECT = {
   result: true,
   endedAt: true,
   app: { select: { name: true } },
-  images: { select: { service: true, sha: true, digest: true }, orderBy: { service: 'asc' } },
+  images: { select: { service: true, sha: true, digest: true, migrationLabel: true }, orderBy: { service: 'asc' } },
   deploy: {
     select: {
       id: true,
@@ -274,6 +274,39 @@ interface GateResult {
   reason: string;
 }
 
+interface ResultImage {
+  service: string;
+  sha: string;
+  digest: string;
+  migration: string | null;
+}
+
+/**
+ * A dry run's images live only in `result` (SHP-REQ-050: dry runs never touch `target_image`),
+ * so the sheet reads them from there. The agent's `TargetResult.images` carries a `migration`
+ * label per image; anything malformed is dropped rather than failing the status read.
+ */
+function readResultImages(result: Prisma.JsonValue | null): ResultImage[] {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return [];
+  const images = (result as { images?: unknown }).images;
+  if (!Array.isArray(images)) return [];
+  return images
+    .filter(
+      (i): i is { service: string; sha: string; digest: string; migration?: unknown } =>
+        typeof i === 'object' &&
+        i !== null &&
+        typeof (i as { service?: unknown }).service === 'string' &&
+        typeof (i as { sha?: unknown }).sha === 'string' &&
+        typeof (i as { digest?: unknown }).digest === 'string',
+    )
+    .map((i) => ({
+      service: i.service,
+      sha: i.sha,
+      digest: i.digest,
+      migration: typeof i.migration === 'string' ? i.migration : null,
+    }));
+}
+
 function readGates(result: Prisma.JsonValue | null): GateResult[] {
   if (typeof result !== 'object' || result === null || Array.isArray(result)) return [];
   const gates = (result as { gates?: unknown }).gates;
@@ -290,6 +323,13 @@ function readGates(result: Prisma.JsonValue | null): GateResult[] {
 
 function toStatus(row: StatusRow): DeployStatus {
   const parsedRefusal = RefusalSchema.safeParse(row.refusal);
+  const dbImages = row.images.map((i) => ({
+    service: i.service,
+    sha: i.sha,
+    digest: i.digest,
+    migration: i.migrationLabel ?? null,
+  }));
+  const images = dbImages.length > 0 ? dbImages : readResultImages(row.result);
   return {
     deployId: row.deploy.id,
     kind: row.deploy.kind,
@@ -299,7 +339,7 @@ function toStatus(row: StatusRow): DeployStatus {
     state: row.state,
     currentStep: row.currentStep,
     requester: { label: row.deploy.requesterLabel, repo: row.deploy.requesterRepo, branch: row.deploy.requesterBranch },
-    images: row.images.map((i) => ({ service: i.service, sha: i.sha, digest: i.digest })),
+    images,
     schemaRevision: row.schemaRevision,
     refusal: parsedRefusal.success ? parsedRefusal.data : null,
     gates: readGates(row.result),

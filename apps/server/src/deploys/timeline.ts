@@ -125,7 +125,10 @@ export async function listTimeline(db: Db, options: TimelineOptions): Promise<Ti
   if (names !== undefined) where.app = { name: { in: names } };
 
   if (options.requester !== undefined && options.requester !== '') {
-    where.deploy = { requesterLabel: { contains: options.requester, mode: 'insensitive' } };
+    // Prisma passes `contains` into ILIKE unescaped: a `%` or `_` in the search would be a wildcard
+    // and widen the results. Escaped, they match themselves (PostgreSQL's default escape is \).
+    const literal = options.requester.replace(/[\\%_]/g, (c) => `\\${c}`);
+    where.deploy = { requesterLabel: { contains: literal, mode: 'insensitive' } };
   }
 
   if (options.kind !== undefined) {

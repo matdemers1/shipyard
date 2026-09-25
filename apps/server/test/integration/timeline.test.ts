@@ -275,6 +275,15 @@ describe('GET /api/deploys/timeline (SHP-REQ-062)', () => {
     expect(page.items).toHaveLength(3);
   });
 
+  it('treats % and _ in the requester search as themselves, not wildcards', async () => {
+    await seedFixture();
+    const { cookie } = await signIn('viewer');
+    for (const q of ['%25', 'A_ice', '%5C']) {
+      const res = await request(app).get(`/api/deploys/timeline?requester=${q}`).set('Cookie', cookie);
+      expect((res.body as TimelinePage).items, q).toHaveLength(0);
+    }
+  });
+
   it('filters by outcome, including active for every non-terminal state', async () => {
     await seedFixture();
     const { cookie } = await signIn('viewer');

@@ -120,6 +120,8 @@ const TargetImage = z
     service: z.string().min(1),
     sha: z.string().regex(/^[0-9a-f]{40}$/, 'exactly 40 lowercase hex characters'),
     digest: Digest,
+    /** The release's `dev.d3cloud.shipyard.migration` label, if any (SHP-D-057). */
+    migration: z.string().max(100).nullable().optional(),
   })
   .meta({ id: 'TargetImage', description: 'The image swapped in for one service' });
 

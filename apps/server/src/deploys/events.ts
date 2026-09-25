@@ -105,19 +105,8 @@ export function deployEventsRouter(deps: ServiceDeps, options: DeployEventsOptio
   });
 
   router.get('/:id/events', async (req, res) => {
-    // Scope is checked before the stream opens, so an out-of-scope caller gets a refusal, not a stream.
-    const first = await readableStatus(db, req, res);
-    if (first === null) return;
-    const deployId = first.deployId;
-    const topic = `deploy:${deployId}` as const;
-
-    res.status(200);
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
+    // Listen for the client going away *before* the first await: a disconnect during the scope
+    // read would otherwise be missed, and the waiter armed below would never be released.
     let closed = false;
     // Read through a function: `closed` flips in the close handler, which narrowing cannot see.
     const isClosed = (): boolean => closed;
@@ -128,6 +117,22 @@ export function deployEventsRouter(deps: ServiceDeps, options: DeployEventsOptio
       round?.abort();
     };
     res.on('close', onClose);
+
+    // Scope is checked before the stream opens, so an out-of-scope caller gets a refusal, not a stream.
+    const first = await readableStatus(db, req, res);
+    if (first === null || isClosed()) {
+      res.off('close', onClose);
+      return;
+    }
+    const deployId = first.deployId;
+    const topic = `deploy:${deployId}` as const;
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
 
     let seq = 0;
     const send = (event: string, data: unknown): void => {

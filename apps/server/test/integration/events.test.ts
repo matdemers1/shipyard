@@ -218,6 +218,29 @@ describe('GET /api/deploys/:id/events', () => {
     expect(listenerCount(`deploy:${deployId}`)).toBe(0);
   });
 
+  it('a client gone before the first read leaves no listener behind (50 raw connect-and-drop)', async () => {
+    const { deployId } = await seed();
+    const cookie = await signIn('viewer');
+    if (server === null) {
+      server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server?.once('listening', () => { resolve(); }));
+    }
+    const { port } = server.address() as AddressInfo;
+    const { request: httpRequest } = await import('node:http');
+    for (let i = 0; i < 50; i += 1) {
+      const req = httpRequest({ host: '127.0.0.1', port, path: `/api/deploys/${deployId}/events`, headers: { Cookie: cookie } });
+      req.on('error', () => undefined);
+      req.end();
+      // Dropped before the server has answered anything.
+      req.destroy();
+    }
+    const start = Date.now();
+    while (listenerCount(`deploy:${deployId}`) !== 0 && Date.now() - start < 5000) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(listenerCount(`deploy:${deployId}`)).toBe(0);
+  });
+
   it('a terminal deploy sends its state and closes at once (reconnect gets the full state)', async () => {
     const { deployId, targetId } = await seed();
     await db.deployTarget.update({ where: { id: targetId }, data: { state: 'failed', endedAt: new Date() } });

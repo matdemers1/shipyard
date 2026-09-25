@@ -3,11 +3,11 @@ import type { DeployStatus } from '@shipyard/schema';
 import { useEffect, useRef, useState } from 'react';
 import { useCan, useMe } from '../lib/auth';
 import { RefusalError } from '../lib/api';
+import { getCommitsTo } from '../lib/changelog';
 import {
   approveDeploy,
   commitsToShip,
   getApp,
-  getCommits,
   hasContractMigration,
   pollDeployStatus,
   POLL_WAIT_SECONDS,
@@ -78,7 +78,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
         if (!stopped.current) setSoakSeconds(null);
       });
 
-    void getCommits(action.app)
+    void getCommitsTo(action.app, action.sha)
       .then((res) => {
         if (!stopped.current) setCommits(res);
       })

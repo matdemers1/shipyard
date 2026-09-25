@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { refusal } from '@shipyard/schema';
 import { createGitHubAdapter, RefusalError as SequenceRefusalError, type GitHubPort } from '@shipyard/sequence/github';
+import { taskIdsIn } from '../changelog.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { recordedRelease } from './drift.js';
@@ -11,7 +12,7 @@ import { recordedRelease } from './drift.js';
  * (SHP-REQ-056, SHP-REQ-059, SHP-REQ-087). Read-only, same actor rules as the rest of `/api/apps`.
  */
 
-const TASK_ID_RE = /\b[A-Z][A-Z0-9]{1,7}-T-\d+(?:\.\d+)?\b/g;
+const SHA_RE = /^[0-9a-f]{40}$/i;
 
 const MAX_COMMITS_FOR_CI = 10;
 const CACHE_TTL_MS = 60_000;
@@ -44,10 +45,6 @@ function parseWorkflow(manifestYaml: string): string | null {
   } catch {
     return null;
   }
-}
-
-function taskIdsIn(message: string): string[] {
-  return [...message.matchAll(TASK_ID_RE)].map((m) => m[0]);
 }
 
 function conclusionToCi(conclusion: string | null, status: string): CiState {
@@ -102,13 +99,20 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
       return;
     }
 
+    const toParam = req.query['to'];
+    if (toParam !== undefined && (typeof toParam !== 'string' || !SHA_RE.test(toParam))) {
+      sendRefusal(res, refusal('invalid_request', 'to must be a 40-hex commit SHA.'));
+      return;
+    }
+    const to = typeof toParam === 'string' ? toParam.toLowerCase() : null;
+
     const workflow = parseWorkflow(row.manifestYaml);
 
     const release = await recordedRelease(db, row.id);
     const live = release?.sha ?? null;
 
     try {
-      const value = await computeCommits(github, cache, row.repo, row.defaultBranch, workflow, live);
+      const value = await computeCommits(github, cache, row.repo, row.defaultBranch, workflow, live, to);
       res.json(value);
     } catch (error) {
       if (error instanceof SequenceRefusalError) {
@@ -129,23 +133,32 @@ async function computeCommits(
   defaultBranch: string,
   workflow: string | null,
   live: string | null,
+  to: string | null,
 ): Promise<CommitsResponse> {
-  // The comparison itself names the head, so the cache key is keyed on live + repo/branch; a
+  // `to` (SHP-REQ-087) is the candidate SHA the console already knows; the range narrows from the
+  // default branch's HEAD to exactly that commit rather than the always-moving branch tip. The
+  // comparison itself names the head, so the cache key is keyed on live + repo/branch/to; a
   // changed head naturally falls out of a fresh `compare` call each time the cache expires.
+  const target = to ?? defaultBranch;
   const now = Date.now();
-  const cacheKey = `${repo}@${defaultBranch}:${live ?? 'none'}`;
+  const cacheKey = `${repo}@${target}:${live ?? 'none'}`;
   const cached = cache.get(cacheKey);
   if (cached !== undefined && cached.expiresAt > now && cached.value.source === 'github') {
     return cached.value;
   }
 
-  const comparison = live === null ? null : await github.compare(repo, live, defaultBranch);
+  const comparison = live === null ? null : await github.compare(repo, live, target);
   let commits: { sha: string; message: string }[];
   let head: string | null;
 
   if (live !== null && comparison !== null) {
     commits = comparison.commits;
     head = commits.length > 0 ? (commits[commits.length - 1]?.sha ?? live) : live;
+  } else if (to !== null) {
+    // No recorded release, or GitHub does not know the recorded SHA any more, but the caller
+    // named an exact candidate: that candidate is the head with no commit list to show.
+    head = to;
+    commits = [];
   } else {
     // No recorded release, or GitHub does not know the recorded SHA any more: fall back to the
     // last 10 commits on the default branch against itself (self-compare), i.e. just the head.

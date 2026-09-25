@@ -184,6 +184,49 @@ describe('DryRunSheet', () => {
     expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
   });
 
+  it('shows every cited Foreman task ID as a chip from the scoped commits response (SHP-REQ-087)', async () => {
+    mockFetch({
+      'GET /api/auth/me': meReply('deployer'),
+      'GET /api/apps/web': APP_REPLY,
+      'GET /api/apps/web/commits': {
+        status: 200,
+        body: {
+          live: 'b'.repeat(40),
+          commits: [
+            { sha: SHA, message: 'SHP-T-5.8: changelog helper', ci: 'success', taskIds: ['SHP-T-5.8', 'SHP-T-5.9'] },
+          ],
+          newestGreen: SHA,
+          source: 'github',
+        },
+      },
+      'POST /api/deploys': { status: 201, body: { deployId: DEPLOY_ID, state: 'queued' } },
+      [`GET /api/deploys/${DEPLOY_ID}`]: {
+        status: 200,
+        body: {
+          deployId: DEPLOY_ID,
+          kind: 'deploy',
+          app: 'web',
+          sha: SHA,
+          dryRun: true,
+          state: 'succeeded',
+          currentStep: null,
+          requester: { label: 'me', repo: null, branch: null },
+          images: [],
+          schemaRevision: null,
+          refusal: null,
+          gates: [{ gate: 'G5', pass: true, reason: 'ci.yml succeeded' }],
+          createdAt: new Date().toISOString(),
+          endedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    render(<Harness action={{ kind: 'deploy', app: 'web', sha: SHA }} />);
+
+    expect(await screen.findByText('SHP-T-5.8')).toBeInTheDocument();
+    expect(await screen.findByText('SHP-T-5.9')).toBeInTheDocument();
+  });
+
   it('an approve action POSTs /api/deploys/:id/approve', async () => {
     const calls = mockFetch({
       'GET /api/auth/me': meReply('deployer'),

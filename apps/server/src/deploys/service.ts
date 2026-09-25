@@ -75,7 +75,7 @@ export function isRefusal(v: unknown): v is Refusal {
 }
 
 /** Postgres 23505 on the one-active-target index, however the driver adapter surfaces it. */
-function isUniqueViolation(err: unknown): boolean {
+export function isUniqueViolation(err: unknown): boolean {
   const seen = new Set<unknown>();
   let cur: unknown = err;
   while (typeof cur === 'object' && cur !== null && !seen.has(cur)) {
@@ -91,8 +91,11 @@ function isUniqueViolation(err: unknown): boolean {
   return false;
 }
 
+/** How long a deploy waits for a deployer's approval before it expires (SHP-D-048, SHP-REQ-061). */
+export const APPROVAL_TTL_MS = 60 * 60 * 1000;
+
 /** The refusal naming the holder of `appName`'s lock, or null if nobody holds it now. */
-async function lockRefusal(db: Db, appName: string, appId: string): Promise<Refusal | null> {
+export async function lockRefusal(db: Db, appName: string, appId: string): Promise<Refusal | null> {
   const holder = await db.deployTarget.findFirst({
     where: { appId, state: { in: [...ACTIVE_STATES] } },
     select: { state: true, currentStep: true, deployId: true, deploy: { select: { requesterLabel: true, requestedSha: true } } },
@@ -152,7 +155,7 @@ export async function createDeploy(
   const notDeployable = await check(db, appName);
   if (notDeployable !== null) return notDeployable;
 
-  const app = await db.app.findUnique({ where: { name: appName }, select: { id: true } });
+  const app = await db.app.findUnique({ where: { name: appName }, select: { id: true, approvalPolicy: true } });
   if (app === null) return refusal('unknown_app', `No app named ${appName} has been reported by the agent.`);
 
   let sha: string;
@@ -176,7 +179,11 @@ export async function createDeploy(
   }
 
   const dryRun = input.dryRun === true;
-  const state: DeployTargetState = dryRun ? 'queued' : 'locked';
+  // An agent-requested (token) deploy or rollback of an approval-required app is held, without the
+  // lock, until a deployer approves it from the console (SHP-REQ-060, SHP-D-015). A deployer's own
+  // console request needs none: confirming the dry-run sheet is the approval.
+  const held = !dryRun && actor.type === 'token' && app.approvalPolicy === 'required';
+  const state: DeployTargetState = dryRun ? 'queued' : held ? 'awaiting_approval' : 'locked';
   const data: Prisma.DeployCreateInput = {
     kind: input.kind,
     requestedSha: sha,
@@ -192,6 +199,7 @@ export async function createDeploy(
         ...(rollbackToDeployId !== undefined ? { rollbackToDeployId } : {}),
       },
     },
+    ...(held ? { approval: { create: { expiresAt: new Date(Date.now() + APPROVAL_TTL_MS) } } } : {}),
   };
 
   let deployId: string | undefined;
@@ -203,7 +211,7 @@ export async function createDeploy(
       const row = await db.deploy.create({ data, select: { id: true } });
       deployId = row.id;
     } catch (err) {
-      if (dryRun || !isUniqueViolation(err)) throw err;
+      if (dryRun || held || !isUniqueViolation(err)) throw err;
       const locked = await lockRefusal(db, appName, app.id);
       if (locked !== null) return locked;
     }
@@ -226,7 +234,12 @@ export async function createDeploy(
       ...(rollbackToDeployId !== undefined ? { rollbackToDeployId } : {}),
     },
   });
-  bus.publish('work');
+  if (held) {
+    // Nothing for the agent yet; wake anyone already following the deploy (and the home banner).
+    bus.publish(`deploy:${deployId}`);
+  } else {
+    bus.publish('work');
+  }
   return { deployId, state };
 }
 

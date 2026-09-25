@@ -15,6 +15,7 @@ import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { assertDeployable } from '../apps/drift.js';
 import { assertNotFrozen } from '../freeze/service.js';
+import { createGroupDeploy } from '../groups/service.js';
 
 /**
  * Deploy requests, dry runs and status (SHP-T-2.5). The server pre-checks only G1 (authorisation),
@@ -124,8 +125,10 @@ export async function createDeploy(
   const { db, bus } = deps;
   const check = options.check ?? defaultDeployableCheck;
 
-  if (input.group !== undefined || input.app === undefined) {
-    return refusal('invalid_request', 'Group deploys arrive in Phase 5.', 'Deploy each app on its own for now.');
+  // A group deploy locks every member in one transaction and ships them in order (SHP-REQ-078).
+  if (input.group !== undefined) return createGroupDeploy(deps, caller, input, options);
+  if (input.app === undefined) {
+    return refusal('invalid_request', 'A deploy names an app or a group.');
   }
   const appName = input.app;
 
@@ -367,6 +370,16 @@ export async function getDeployStatus(db: Db, deployId: string): Promise<DeployS
     orderBy: { createdAt: 'asc' },
   });
   return row === null ? null : toStatus(row);
+}
+
+/** Every target of a deploy, in deploy order (a group's members; a single app's one target). */
+export async function getDeployStatuses(db: Db, deployId: string): Promise<DeployStatus[]> {
+  const rows = await db.deployTarget.findMany({
+    where: { deployId },
+    select: STATUS_SELECT,
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  return rows.map(toStatus);
 }
 
 export interface ListDeploysOptions {

@@ -24,6 +24,35 @@ export interface ResolveOptions {
   dryRun: boolean;
   /** Overrides how env names present on the host are found. Default: the manifest's env files. */
   envNamesProvider?: ((manifest: Manifest) => Promise<string[]>) | undefined;
+  /**
+   * A group promotion's expected digests per service (SHP-D-047, SHP-REQ-079): the digests the
+   * canary soaked. Any service whose resolved digest differs is refused `digest_mismatch`, dry runs
+   * included. A service named here that the manifest does not map is ignored; a mapped service
+   * not named here carries no expectation.
+   */
+  expectDigests?: Record<string, string> | undefined;
+}
+
+/** The first service whose resolved digest differs from the expected one, as a refusal; else null. */
+export function expectedDigestRefusal(
+  expect: Record<string, string> | undefined,
+  resolved: Record<string, string | null>,
+): Refusal | null {
+  if (expect === undefined) return null;
+  for (const service of Object.keys(expect).sort()) {
+    if (!(service in resolved)) continue;
+    const expected = expect[service];
+    const got = resolved[service];
+    if (expected === undefined || got === undefined) continue;
+    if (got !== expected) {
+      return refusal(
+        'digest_mismatch',
+        `Service "${service}" resolves to ${got ?? 'no image'} for this SHA, not ${expected}, the digest the group's canary soaked.`,
+        'The image for this SHA changed after the canary shipped; deploy the group again so the canary soaks what the rest will get.',
+      );
+    }
+  }
+  return null;
 }
 
 export interface ResolvedTarget {
@@ -143,6 +172,9 @@ export async function resolveDeployTarget(
     gates = evaluateGates(facts);
     const refused = firstRefusal(gates);
     if (refused !== null) return { live, gates, refusal: refused, images: [] };
+    // A group promotion ships exactly the canary's digests, or nothing (SHP-REQ-079).
+    const mismatch = expectedDigestRefusal(options.expectDigests, digests);
+    if (mismatch !== null) return { live, gates, refusal: mismatch, images: [] };
 
     const images: VerifiedImage[] = [];
     for (const [service, config] of Object.entries(manifest.services)) {

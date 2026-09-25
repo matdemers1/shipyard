@@ -1,5 +1,6 @@
 import type { DeployTargetState, PollResponse } from '@shipyard/schema';
 import type { Db } from '../db.js';
+import { expectedDigestsFor } from '../groups/service.js';
 
 /**
  * Work dispatch for the agent's long poll (SHP-REQ-040, SHP-D-041). A target is runnable when
@@ -7,6 +8,11 @@ import type { Db } from '../db.js';
  * app's lock (`locked`) or a dry run (`queued` on a `dry_run` deploy — a dry run never locks,
  * SHP-REQ-050). Claiming is one statement: `FOR UPDATE SKIP LOCKED` means two concurrent polls
  * can never take the same target, and neither waits on the other.
+ *
+ * A group deploy's members (SHP-REQ-078) all sit in `locked` from the start, holding their apps;
+ * one is runnable only once every earlier member of the same deploy (by `created_at`, which is
+ * deploy order) has succeeded. The two-minute re-dispatch below applies only to a member that was
+ * already runnable, so it can never hand a later member out early.
  */
 
 export type PollTarget = NonNullable<PollResponse['target']>;
@@ -41,6 +47,13 @@ export async function claimTarget(db: Db, agentId: string): Promise<string | nul
         and (t."dispatched_at" is null
              or (t."started_at" is null and t."dispatched_at" < now() - interval '2 minutes'))
         and (t."state" = 'locked' or (t."state" = 'queued' and d."dry_run"))
+        -- A group member waits for every earlier member of its deploy to succeed.
+        and (d."group_name" is null or not exists (
+              select 1 from "deploy_target" p
+              where p."deploy_id" = t."deploy_id"
+                and p."id" <> t."id"
+                and (p."created_at", p."id") < (t."created_at", t."id")
+                and p."state" <> 'succeeded'))
       order by t."created_at", t."id"
       for update of t skip locked
       limit 1
@@ -66,6 +79,8 @@ export async function describeTarget(db: Db, targetId: string): Promise<PollTarg
       deploy: { select: { kind: true, requestedSha: true, dryRun: true, requesterLabel: true } },
     },
   });
+  // A group promotion carries the digests its canary soaked (SHP-REQ-079).
+  const expectDigests = await expectedDigestsFor(db, targetId);
   return {
     targetId: row.id,
     deployId: row.deployId,
@@ -74,6 +89,7 @@ export async function describeTarget(db: Db, targetId: string): Promise<PollTarg
     sha: row.deploy.requestedSha,
     dryRun: row.deploy.dryRun,
     ...(row.rollbackToDeployId === null ? {} : { toDeployId: row.rollbackToDeployId }),
+    ...(expectDigests === undefined ? {} : { expectDigests }),
     requesterLabel: row.deploy.requesterLabel.slice(0, 200),
   };
 }

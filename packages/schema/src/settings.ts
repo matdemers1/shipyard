@@ -98,3 +98,61 @@ export const D3AuthSettings = z
   })
   .meta({ id: 'D3AuthSettings', description: 'Sign in with D3 Auth as configured — never the client secret' });
 export type D3AuthSettings = z.infer<typeof D3AuthSettings>;
+
+/**
+ * Settings → Alert email (SHP-REQ-093, SHP-T-6.9). The mail relay the stale-agent and failed
+ * backup/drill alerts go through — on the D3 host, D3 Auth's mail-relay Worker — and who receives
+ * them. The relay token is write-only, like the D3 Auth client secret: only `tokenSet` comes back.
+ * MAIL_RELAY_URL / MAIL_RELAY_TOKEN / ALERT_TO in server.env win, and the screen shows them read-only.
+ */
+
+export const RelayUrl = z
+  .string()
+  .trim()
+  .min(1)
+  .max(2048)
+  .refine(isAllowedIssuer, 'must be an https URL (plain http only for localhost), with no query or fragment')
+  .meta({ id: 'RelayUrl', description: 'The mail relay endpoint: https, or http only for localhost' });
+export type RelayUrl = z.infer<typeof RelayUrl>;
+
+export const MailSettingsUpdate = z
+  .strictObject({
+    relayUrl: RelayUrl,
+    /** The relay's bearer token. Omit to keep the stored one. Never echoed back. */
+    token: z.string().min(1).max(1024).optional(),
+    /** Who receives alert emails. */
+    alertTo: z.email().max(320),
+  })
+  .meta({ id: 'MailSettingsUpdate', description: 'Save the mail relay URL, its (write-only) token and the alert recipient' });
+export type MailSettingsUpdate = z.infer<typeof MailSettingsUpdate>;
+
+export const MailSettings = z
+  .strictObject({
+    /** server.env (read-only here), Settings, or nowhere. */
+    source: D3AuthSource,
+    relayUrl: z.string().nullable(),
+    /** Whether a relay token is set. The token itself is never returned. */
+    tokenSet: z.boolean(),
+    alertTo: z.string().nullable(),
+    /** True when an alert would be emailed right now. */
+    active: z.boolean(),
+    /** False when SESSION_SECRET is unset: a token could not be read back after a restart. */
+    canStoreSecret: z.boolean(),
+    /** Why it is configured but cannot send, in a sentence; null otherwise. */
+    problem: z.string().nullable(),
+    updatedAt: z.iso.datetime().nullable(),
+  })
+  .meta({ id: 'MailSettings', description: 'Alert email as configured — never the relay token' });
+export type MailSettings = z.infer<typeof MailSettings>;
+
+export const MailTestResult = z
+  .strictObject({
+    /** True when the relay accepted the message. */
+    sent: z.boolean(),
+    /** The relay's HTTP status, when it answered. */
+    status: z.int().min(100).max(599).optional(),
+    /** What the relay said (truncated), or why it could not be reached. */
+    detail: z.string().max(500).optional(),
+  })
+  .meta({ id: 'MailTestResult', description: 'What the mail relay answered to one test message' });
+export type MailTestResult = z.infer<typeof MailTestResult>;

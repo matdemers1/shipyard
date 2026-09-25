@@ -42,6 +42,8 @@ export interface AppDeps {
   oidc?: OidcClient | null;
   /** Long-poll wake-ups; one per process. Tests may pass their own to observe or trigger it. */
   bus?: Bus;
+  /** Test-only: a shorter timeout for Settings → Alert email → Send test email. */
+  mailTestTimeoutMs?: number;
   /** First-run setup's throttle limits and clock; tests pass small ones. */
   setup?: Pick<SetupDeps, 'limits' | 'now'>;
   /**
@@ -111,8 +113,11 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api', usersRouter(serviceDeps));
   app.use('/api', pendingApprovalsRouter(serviceDeps));
   app.use('/api/tokens', tokensRouter(serviceDeps));
-  // Admin-only: Sign in with D3 Auth configured from the console (SHP-REQ-110).
-  app.use('/api/settings', settingsRouter({ ...serviceDeps, oidc }));
+  // Admin-only: Sign in with D3 Auth (SHP-REQ-110) and alert email (SHP-T-6.9) configured from the console.
+  app.use(
+    '/api/settings',
+    settingsRouter({ ...serviceDeps, oidc, ...(deps.mailTestTimeoutMs !== undefined ? { mailTestTimeoutMs: deps.mailTestTimeoutMs } : {}) }),
+  );
   app.use('/mcp', mcpRouter(serviceDeps));
 
   // The console is served by the server itself: one origin, one cookie, no CORS. In development

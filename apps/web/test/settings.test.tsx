@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import type { D3AuthSettings } from '@shipyard/schema';
+import type { D3AuthSettings, MailSettings } from '@shipyard/schema';
 import { App } from '../src/App';
 import { AuthProvider } from '../src/lib/auth';
 import { Settings } from '../src/screens/Settings';
@@ -43,6 +43,17 @@ function settings(overrides: Partial<D3AuthSettings> = {}): D3AuthSettings {
   };
 }
 
+const MAIL_OFF: MailSettings = {
+  source: 'none',
+  relayUrl: null,
+  tokenSet: false,
+  alertTo: null,
+  active: false,
+  canStoreSecret: true,
+  problem: null,
+  updatedAt: null,
+};
+
 const ON = settings({
   source: 'settings',
   issuer: 'https://auth.example.com',
@@ -57,6 +68,8 @@ function routes(extra: Record<string, Reply | Reply[]> = {}, current: D3AuthSett
   return {
     'GET /api/auth/me': meReply('admin'),
     'GET /api/settings/d3auth': { status: 200, body: current },
+    // The Alert email section on the same screen (SHP-T-6.9); its own tests are in alert-email.test.tsx.
+    'GET /api/settings/mail': { status: 200, body: MAIL_OFF },
     ...extra,
   };
 }

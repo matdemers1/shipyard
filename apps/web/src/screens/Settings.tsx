@@ -22,12 +22,14 @@ import { useCallback, useEffect, useState, type SyntheticEvent } from 'react';
 import { copyText, shortDate } from '../lib/admin';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { downloadManifest, settings as settingsApi } from '../lib/settings';
+import { AlertEmailSettings } from './AlertEmailSettings';
 
 /**
  * Settings (SHP-T-6.8, SHP-REQ-110): configure Sign in with D3 Auth without editing server files.
  * Admin-only — the nav shows it only to an admin, the route refuses anyone else, and so does the
  * server. The client secret is write-only: the screen only ever learns whether one is stored.
- * Password + authenticator sign-in is unaffected by anything here (SHP-REQ-001).
+ * Password + authenticator sign-in is unaffected by anything here (SHP-REQ-001). Alert email
+ * (SHP-T-6.9) is its own section, in AlertEmailSettings.tsx.
  */
 
 function asRefusal(error: unknown): RefusalError {
@@ -387,6 +389,7 @@ export function Settings() {
             <Section title="Register Shipyard in D3 Auth" description="What D3 Auth needs to know about this server.">
               <Registration s={s} />
             </Section>
+            <AlertEmailSettings />
           </>
         )}
       </Stack>

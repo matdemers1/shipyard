@@ -25,6 +25,7 @@ import {
   SetupCompleteRequest,
   D3AuthSettingsUpdate,
   D3AuthTestRequest,
+  MailSettingsUpdate,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -79,6 +80,7 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   SetupCompleteRequest,
   D3AuthSettingsUpdate,
   D3AuthTestRequest,
+  MailSettingsUpdate,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -105,6 +107,7 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   SetupCompleteRequest: 'setupCompleteRequest',
   D3AuthSettingsUpdate: 'd3AuthSettingsUpdate',
   D3AuthTestRequest: 'd3AuthTestRequest',
+  MailSettingsUpdate: 'mailSettingsUpdate',
 };
 
 describe('request schema coverage', () => {

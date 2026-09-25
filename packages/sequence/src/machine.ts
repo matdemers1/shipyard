@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto';
-import { link, mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 
 import { refusal } from '@shipyard/schema';
 import type { DeployTargetState, Manifest, Refusal } from '@shipyard/schema';
 import { stringify as stringifyYaml } from 'yaml';
 
 import { checkOnce } from './check.js';
+import { tryGuard } from './guard.js';
 import type { CheckOutcome } from './check.js';
 import { pruneAfterSuccess } from './disk.js';
 import { composeTargetOf, resolveDeployTarget } from './facts.js';
@@ -186,31 +187,12 @@ function isStale(holder: Partial<LockContent>, now: number, staleMs: number): bo
  * one process holds it. Returns 'busy' when another process holds it.
  */
 async function withGuard<T>(path: string, fn: () => Promise<T>): Promise<T | 'busy'> {
-  const guard = `${path}.guard`;
-  const tmp = tempName(guard);
-  await writeFile(tmp, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
+  const release = await tryGuard(`${path}.guard`, LOCK_GUARD_STALE_MS);
+  if (release === 'busy') return 'busy';
   try {
-    let held = false;
-    for (let attempt = 0; attempt < 2 && !held; attempt++) {
-      try {
-        await link(tmp, guard);
-        held = true;
-      } catch (err) {
-        if (errCode(err) !== 'EEXIST') throw err;
-        const info = await stat(guard).catch(() => null);
-        if (info !== null && Date.now() - info.mtimeMs <= LOCK_GUARD_STALE_MS) return 'busy';
-        // Left by a process that died holding it (or just released): clear it and try once more.
-        if (info !== null) await unlink(guard).catch(() => undefined);
-      }
-    }
-    if (!held) return 'busy';
-    try {
-      return await fn();
-    } finally {
-      await unlink(guard).catch(() => undefined);
-    }
+    return await fn();
   } finally {
-    await unlink(tmp).catch(() => undefined);
+    await release();
   }
 }
 
@@ -454,6 +436,8 @@ export function result(run: Run, outcome: Outcome): DeployResult {
 export async function runDeploy(ports: SequencePorts, ctx: MachineContext, request: DeployRequest): Promise<DeployResult> {
   const log = ports.log.child({ deployId: request.deployId, app: request.app });
   const loaded = ctx.manifests.get(request.app);
+  // Another process (the agent, or a host CLI) may have appended since this ledger was opened.
+  await ctx.ledger.refresh();
   const run = new Run(ports, ctx, request, log, !request.dryRun && loaded !== undefined);
   const empty: Outcome = { state: 'refused', images: [], gates: [], refusal: null, schemaRevision: null, backupArtifact: null };
 
@@ -533,6 +517,8 @@ export async function runDeploy(ports: SequencePorts, ctx: MachineContext, reque
 }
 
 async function deployLocked(ports: SequencePorts, ctx: MachineContext, run: Run, manifest: Manifest, target: ComposeTarget): Promise<Outcome> {
+  // Nothing else can change this app's releases while its lock is held; adopt what landed before it.
+  await ctx.ledger.refresh();
   const verifyRecord = await run.begin('verify');
   let resolved: ResolvedTarget;
   try {

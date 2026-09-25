@@ -138,6 +138,13 @@ export interface FsPort {
    * `recursive`, at any depth (backup artifacts some apps nest by date).
    */
   list(dir: string, options?: { recursive?: boolean }): Promise<{ path: string; size: number; mtimeMs: number }[]>;
+  /**
+   * Takes an exclusive cross-process lock named after `path` (a `<path>.lock` guard file), waiting
+   * for another holder, and returns its release (SHP-T-6.11). The ledger holds it around every
+   * read-verify-append so two processes sharing one ledger file cannot both chain from a stale
+   * tail. Optional so single-process in-memory fakes need not implement it; the real adapter does.
+   */
+  lock?(path: string): Promise<() => Promise<void>>;
 }
 
 export interface Clock {

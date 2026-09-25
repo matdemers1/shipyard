@@ -75,7 +75,7 @@ const AgentReleaseImage = z
   })
   .meta({ id: 'AgentReleaseImage', description: 'One image of a release in the agent ledger' });
 
-const AgentRelease = z
+export const AgentRelease = z
   .strictObject({
     /** The ledger's deploy ID: the server's deploy ID when the server dispatched it, else the host CLI's own. */
     deployId: z.string().min(1).max(100),

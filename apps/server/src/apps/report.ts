@@ -1,5 +1,5 @@
 import type { Router } from 'express';
-import { AgentReport, REPORTED_RELEASES_PER_APP, refusal } from '@shipyard/schema';
+import { AgentRelease, AgentReport, REPORTED_RELEASES_PER_APP, refusal } from '@shipyard/schema';
 import { verifyAgentRequest } from '../agent/verify.js';
 import type { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
@@ -41,6 +41,9 @@ export interface ImportedRelease {
  * is found and skipped, never duplicated. A deploy ID that is not a UUID cannot be a deploy's ID
  * and is skipped with a log line. Only the newest `REPORTED_RELEASES_PER_APP` are considered.
  */
+/** How far ahead of the server's clock an agent's ledger time may be before it is refused. */
+const FUTURE_SKEW_MS = 5 * 60 * 1000;
+
 async function importReleases(
   tx: Prisma.TransactionClient,
   appId: string,
@@ -50,7 +53,14 @@ async function importReleases(
   const newest = releases.toSorted((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, REPORTED_RELEASES_PER_APP);
   const candidates: Release[] = [];
   const seen = new Set<string>();
+  // A ledger time is the agent's clock: one from the future (skew, or a forged line) must never
+  // outrank a real release as the app's live one.
+  const latestAllowed = Date.now() + FUTURE_SKEW_MS;
   for (const r of newest) {
+    if (Date.parse(r.at) > latestAllowed) {
+      logger.warn({ app: r.app, deployId: r.deployId, at: r.at }, 'ledger release is dated in the future; not imported');
+      continue;
+    }
     if (!UUID_RE.test(r.deployId)) {
       logger.warn({ app: r.app, deployId: r.deployId }, 'ledger release has a deploy ID that is not a UUID; not imported');
       continue;
@@ -116,7 +126,18 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       sendRefusal(res, refusal('not_enrolled', 'Only an enrolled agent can report.'));
       return;
     }
-    const parsed = AgentReport.safeParse(req.body);
+    // One bad ledger release must not cost the agent its whole report (and its heartbeat): each
+    // release is validated on its own, and those that fail are dropped with a warning.
+    const body: unknown = req.body;
+    if (typeof body === 'object' && body !== null && Array.isArray((body as { releases?: unknown }).releases)) {
+      const all = (body as { releases: unknown[] }).releases;
+      const valid = all.filter((r) => AgentRelease.safeParse(r).success);
+      if (valid.length !== all.length) {
+        deps.logger.warn({ agentId, dropped: all.length - valid.length }, 'agent report carried ledger releases that failed validation; dropped');
+      }
+      (body as { releases: unknown[] }).releases = valid;
+    }
+    const parsed = AgentReport.safeParse(body);
     if (!parsed.success) {
       sendRefusal(
         res,

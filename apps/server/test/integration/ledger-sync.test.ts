@@ -255,6 +255,23 @@ describe('ledger sync (SHP-REQ-111)', () => {
     expect(await db.deploy.count()).toBe(0);
   });
 
+  it('never imports a release dated in the future: it cannot outrank the real live release', async () => {
+    const now = await report({ web: digest('8') }, [ledgerRelease('8', new Date().toISOString())]);
+    expect(now.imported).toHaveLength(1);
+    const future = ledgerRelease('9', new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString());
+    const res = await report({ web: digest('8') }, [future]);
+    expect(res.imported).toEqual([]);
+    expect(await db.deploy.count()).toBe(1);
+  });
+
+  it('one malformed release is dropped; the report, and its heartbeat, still land', async () => {
+    const good = ledgerRelease('a', '2026-09-25T15:00:00.000Z');
+    const bad = { ...ledgerRelease('b', '2026-09-25T15:01:00.000Z'), images: [{ service: 'web', repo: 'r', digest: 'not-a-digest', migration: 'none' }] };
+    const res = await report({ web: digest('a') }, [good, bad]);
+    expect(res.imported).toHaveLength(1);
+    expect(await db.deploy.count()).toBe(1);
+  });
+
   it('skips a ledger deploy ID that is not a UUID', async () => {
     const odd = ledgerRelease('7', '2026-09-25T15:00:00.000Z', { deployId: 'cli-20260925-1' });
     const res = await report({ web: digest('7') }, [odd]);

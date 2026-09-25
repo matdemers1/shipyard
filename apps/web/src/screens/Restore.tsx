@@ -200,7 +200,7 @@ export function Restore() {
           <DataList
             aria-label="Backups"
             empty={
-              <EmptyState kind="empty" heading="No backups yet" size="inline">
+              <EmptyState kind="empty" heading="No backups recorded for this app" size="inline">
                 A backup appears here once a deploy of {app} runs its backup step.
               </EmptyState>
             }

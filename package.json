@@ -2,7 +2,7 @@
   "name": "shipyard",
   "private": true,
   "version": "0.0.0",
-  "description": "One deploy button for a Docker Compose host — for people and for Claude Code sessions. A portless agent verifies every request with GitHub and GHCR before it touches anything.",
+  "description": "One deploy button for a Docker Compose host \u2014 for people and for Claude Code sessions. A portless agent verifies every request with GitHub and GHCR before it touches anything.",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
@@ -13,7 +13,7 @@
   "scripts": {
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --if-present --filter '!e2e' test",
+    "test": "pnpm -r --if-present --filter '!e2e' --filter '!console-e2e' test",
     "build": "pnpm -r --if-present build",
     "e2e": "pnpm --filter e2e test",
     "test:integration": "pnpm --filter shipyard-server test:integration"

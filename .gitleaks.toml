@@ -1,0 +1,31 @@
+# Allowlist for scripts/secret-scan.sh (SHP-T-6.6). Every entry below is a known test fixture or
+# test-only placeholder, not a real credential — each is annotated with why.
+title = "shipyard gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+# gitleaks 8.21's built-in allowlist syntax: paths and regexes are each an array of regex strings.
+paths = [
+  # A fake GHCR anonymous-token response used by packages/sequence's registry adapter tests
+  # (SHP-T-1.3). The "token" decodes to `v1:matdemers1/shipyard/server:<fake timestamp>` — a
+  # synthetic fixture value, not a token GHCR ever issued.
+  '''packages/sequence/test/fixtures/ghcr/token\.json''',
+]
+
+regexes = [
+  # The literal string every integration/unit test uses for SESSION_SECRET so cookie signing is
+  # deterministic in tests (apps/server/src/auth/cookies.ts consumes it the same as any other
+  # value) — never read by, or valid against, a running deployment.
+  '''test-session-secret''',
+
+  # Throwaway TOTP base32 seeds for the console-e2e harness's seeded test users (SHP-T-6.2):
+  # console-e2e/harness/env.ts's `viewer` fixture and console-e2e/harness/seed.ts's `deployer`
+  # user. Both are generated afresh, written only into the `_test` database the harness migrates
+  # and wipes on every run (console-e2e/harness/serve.mjs), and are never read by, or valid
+  # against, any real deployment. Pinned to their exact literal values, not a pattern, so this
+  # allowlist entry cannot shadow a real secret that happens to also be base32.
+  '''KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU''',
+  '''GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ''',
+]

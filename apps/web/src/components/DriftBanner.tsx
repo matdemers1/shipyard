@@ -217,7 +217,7 @@ export function DriftBanner({ app, eventId, detectedAt, services, pending = null
             {pending.deployId !== null ? (
               <>
                 {': '}
-                <Link asChild>
+                <Link asChild variant="inline">
                   <RouterLink to={`/deploys/${pending.deployId}`}>see the rollback</RouterLink>
                 </Link>
               </>

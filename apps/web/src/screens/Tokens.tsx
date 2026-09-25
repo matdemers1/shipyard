@@ -245,7 +245,8 @@ export function Tokens() {
         <PageHeader
           title="API tokens"
           description="Bearer tokens for Claude Code sessions and CI, each limited to named apps."
-          {...(list !== null ? { count: list.filter((t) => t.revokedAt === null).length, countLabel: 'live' } : {})}
+          // countNoun, not countLabel: countLabel replaces the heading's whole accessible name.
+          {...(list !== null ? { count: list.filter((t) => t.revokedAt === null).length, countNoun: { one: 'live', other: 'live' } } : {})}
         />
         {refusal === null ? null : (
           <Alert tone="danger" title={refusal.message} dynamic>
@@ -267,9 +268,14 @@ export function Tokens() {
           <DataList
             aria-label="API tokens"
             empty={
-              <EmptyState kind="empty" size="inline" heading="No tokens — create one per repo" headingLevel={2}>
-                Each repo that deploys through Claude Code gets its own token, scoped to its apps.
-              </EmptyState>
+              <Stack gap="12">
+                <EmptyState kind="empty" size="inline" heading="No tokens — create one per repo" headingLevel={2}>
+                  Each repo that deploys through Claude Code gets its own token, scoped to its apps.
+                </EmptyState>
+                <FormField label="What the repo's .mcp.json will hold" help="The token itself is shown once, when you create it.">
+                  <Mono value={mcpSnippet(window.location.origin, '<token>')} block />
+                </FormField>
+              </Stack>
             }
           >
             {list.map((t) => (

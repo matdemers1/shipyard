@@ -57,6 +57,9 @@ function DetailSkeleton({ app }: { app: string }) {
     <Page aria-busy="true">
       <Stack gap="24">
         <PageHeader title={app} description="Reading what the agent last reported." />
+        <span role="status" className="shp-visually-hidden">
+          Loading {app}
+        </span>
         <Skeleton variant="text" lines={4} />
         <Skeleton variant="block" height={96} />
         <Skeleton variant="text" lines={6} />
@@ -178,7 +181,8 @@ export function AppDetail() {
           <Alert tone="info" title={`A ${detail.active.state.replace('_', ' ')} is in progress`}>
             {detail.active.holder} holds {detail.name}
             {detail.active.currentStep !== null ? ` at ${detail.active.currentStep}` : ''}.{' '}
-            <Link asChild>
+            {/* Inside running text: underlined, not told apart by colour alone (WCAG 1.4.1). */}
+            <Link asChild variant="inline">
               <RouterLink to={`/deploys/${detail.active.deployId}/live`}>Follow it</RouterLink>
             </Link>
           </Alert>

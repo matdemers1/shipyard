@@ -10,6 +10,9 @@ import { useCan } from '../lib/auth';
 import { fetchGroups } from '../lib/groups';
 import { useHomeData } from '../lib/home';
 
+/** How to add an app: a manifest on the agent's host (docs/runbooks/onboard-app.md). */
+const ONBOARD_RUNBOOK_URL = 'https://github.com/matdemers1/shipyard/blob/main/docs/runbooks/onboard-app.md';
+
 /** S2 Home: the approvals banner, the stale-agent banner, then one card per app (SHP-D-023). */
 export function Home() {
   const { status, apps, approvals, noAgent, noApps, agentStale, error, refresh } = useHomeData();
@@ -53,12 +56,20 @@ export function Home() {
 
         {status === 'error' ? (
           <Alert tone="danger" title={error?.message ?? 'Shipyard is not answering.'}>
-            {error?.fix ?? 'Check that the server is running and reachable, then try again.'}
+            {error !== null && error.status >= 500
+              ? `The server answered but could not read its own records — most often it has lost its database. Check that PostgreSQL is up and the server's logs. ${error.fix}`
+              : (error?.fix ?? 'Check that the server is running and reachable, then try again.')}
           </Alert>
         ) : null}
 
         {status === 'loading' ? (
-          <Grid as="ul" minItemWidth="sm">
+          <span role="status" className="shp-visually-hidden">
+            Loading apps
+          </span>
+        ) : null}
+
+        {status === 'loading' ? (
+          <Grid as="ul" minItemWidth="sm" aria-hidden="true">
             {[0, 1, 2].map((i) => (
               <li key={i}>
                 <Skeleton variant="block" height={140} />
@@ -74,7 +85,16 @@ export function Home() {
         ) : null}
 
         {status === 'ready' && !noAgent && noApps ? (
-          <EmptyState kind="empty" heading="Agent reported no apps" headingLevel={2}>
+          <EmptyState
+            kind="empty"
+            heading="Agent reported no apps"
+            headingLevel={2}
+            action={
+              <Link href={ONBOARD_RUNBOOK_URL} target="_blank" rel="noreferrer">
+                Onboarding runbook
+              </Link>
+            }
+          >
             The agent is enrolled but has not reported any manifests yet. Add a manifest to the agent's host and wait
             for its next report, or see the onboarding runbook.
           </EmptyState>
@@ -86,7 +106,7 @@ export function Home() {
           </Alert>
         ) : null}
 
-        {status === 'ready' ? <ApprovalsBanner approvals={approvals} onReview={openSheet} onDenied={refresh} /> : null}
+        {status === 'ready' ? <ApprovalsBanner approvals={approvals} canDeny={canDeploy} onReview={openSheet} onDenied={refresh} /> : null}
 
         {status === 'ready' && apps.length > 0 ? (
           <Grid as="ul" minItemWidth="sm">

@@ -102,7 +102,8 @@ export function Shell({ children }: { children?: ReactNode }) {
               icon={<Icon />}
               label={label}
               current={isCurrent(pathname, to)}
-              {...(to === '/system' && systemWarnings > 0 ? { count: systemWarnings, countLabel: `${String(systemWarnings)} needing attention` } : {})}
+              // countLabel replaces the link's whole accessible name, so it must still say where it goes.
+              {...(to === '/system' && systemWarnings > 0 ? { count: systemWarnings, countLabel: `${label}, ${String(systemWarnings)} needing attention` } : {})}
             >
               <RouterLink to={to} />
             </SideNavItem>

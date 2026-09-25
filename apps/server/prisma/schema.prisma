@@ -18,9 +18,18 @@ datasource db {
 
 // ─── Enums ──────────────────────────────────────────────────────────────
 
+/// admin: deployer who also manages users and agents. deployer: may change state. viewer: read-only
+/// (SHP-D-067, SHP-REQ-065). `operator` predates the roles decision and is treated as deployer.
 enum UserRole {
   admin
   operator
+  deployer
+  viewer
+}
+
+enum DriftResolution {
+  adopt_live
+  redeploy_recorded
 }
 
 enum SessionMethod {
@@ -66,35 +75,39 @@ enum ActorType {
 // ─── Users, identities, sessions, tokens ───────────────────────────────────
 
 model User {
-  id             String    @id @default(uuid()) @db.Uuid
-  email          String    @unique
-  displayName    String    @map("display_name")
-  passwordHash   String?   @map("password_hash")
-  totpSecret     String?   @map("totp_secret")
-  totpEnabledAt  DateTime? @map("totp_enabled_at") @db.Timestamptz(3)
-  role           UserRole  @default(operator)
-  disabledAt     DateTime? @map("disabled_at") @db.Timestamptz(3)
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id            String    @id @default(uuid()) @db.Uuid
+  email         String    @unique
+  displayName   String    @map("display_name")
+  passwordHash  String?   @map("password_hash")
+  totpSecret    String?   @map("totp_secret")
+  totpEnabledAt DateTime? @map("totp_enabled_at") @db.Timestamptz(3)
+  role          UserRole  @default(operator)
+  disabledAt    DateTime? @map("disabled_at") @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  identities        Identity[]
-  sessions          Session[]
-  apiTokens         ApiToken[]
-  confirmedAgents   Agent[]        @relation("AgentConfirmedByUser")
-  deploysRequested  Deploy[]       @relation("DeployRequesterUser")
-  auditEvents       AuditEvent[]   @relation("AuditActorUser")
+  identities       Identity[]
+  sessions         Session[]
+  apiTokens        ApiToken[]
+  confirmedAgents  Agent[]      @relation("AgentConfirmedByUser")
+  driftResolutions DriftEvent[] @relation("DriftResolvedBy")
+  approvalsGiven   Approval[]   @relation("ApprovalBy")
+  freezesSet       Freeze[]     @relation("FreezeBy")
+  schedulesCreated Schedule[]   @relation("ScheduleBy")
+  deploysRequested Deploy[]     @relation("DeployRequesterUser")
+  auditEvents      AuditEvent[] @relation("AuditActorUser")
 
   @@map("user")
 }
 
 model Identity {
-  id           String    @id @default(uuid()) @db.Uuid
-  userId       String    @map("user_id") @db.Uuid
-  issuer       String
-  subject      String
-  emailAtLink  String?   @map("email_at_link")
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  lastUsedAt   DateTime? @map("last_used_at") @db.Timestamptz(3)
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  issuer      String
+  subject     String
+  emailAtLink String?   @map("email_at_link")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt  DateTime? @map("last_used_at") @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id])
 
@@ -104,15 +117,15 @@ model Identity {
 }
 
 model Session {
-  id           String        @id @default(uuid()) @db.Uuid
-  userId       String        @map("user_id") @db.Uuid
-  tokenHash    String        @unique @map("token_hash")
-  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
-  expiresAt    DateTime      @map("expires_at") @db.Timestamptz(3)
-  lastSeenAt   DateTime?     @map("last_seen_at") @db.Timestamptz(3)
-  ip           String?
-  userAgent    String?       @map("user_agent")
-  method       SessionMethod
+  id         String        @id @default(uuid()) @db.Uuid
+  userId     String        @map("user_id") @db.Uuid
+  tokenHash  String        @unique @map("token_hash")
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt  DateTime      @map("expires_at") @db.Timestamptz(3)
+  lastSeenAt DateTime?     @map("last_seen_at") @db.Timestamptz(3)
+  ip         String?
+  userAgent  String?       @map("user_agent")
+  method     SessionMethod
 
   user User @relation(fields: [userId], references: [id])
 
@@ -120,20 +133,20 @@ model Session {
 }
 
 model ApiToken {
-  id           String    @id @default(uuid()) @db.Uuid
-  userId       String    @map("user_id") @db.Uuid
-  label        String
-  tokenHash    String    @unique @map("token_hash")
-  prefix       String
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  lastUsedAt   DateTime? @map("last_used_at") @db.Timestamptz(3)
-  lastUsedIp   String?   @map("last_used_ip")
-  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  label      String
+  tokenHash  String    @unique @map("token_hash")
+  prefix     String
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(3)
+  lastUsedIp String?   @map("last_used_ip")
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(3)
 
-  user  User          @relation(fields: [userId], references: [id])
-  apps  ApiTokenApp[]
+  user User          @relation(fields: [userId], references: [id])
+  apps ApiTokenApp[]
 
-  deploysRequested Deploy[] @relation("DeployRequesterToken")
+  deploysRequested Deploy[]     @relation("DeployRequesterToken")
   auditEvents      AuditEvent[] @relation("AuditActorToken")
 
   @@map("api_token")
@@ -153,18 +166,18 @@ model ApiTokenApp {
 // ─── Agents ─────────────────────────────────────────────────────────────
 
 model Agent {
-  id                 String    @id @default(uuid()) @db.Uuid
-  publicKey          String    @map("public_key")
-  fingerprint        String    @unique
-  enrolledAt         DateTime  @default(now()) @map("enrolled_at") @db.Timestamptz(3)
-  confirmedAt        DateTime? @map("confirmed_at") @db.Timestamptz(3)
-  confirmedByUserId  String?   @map("confirmed_by_user_id") @db.Uuid
-  lastHeartbeatAt    DateTime? @map("last_heartbeat_at") @db.Timestamptz(3)
-  agentVersion       String?   @map("agent_version")
-  composeVersion     String?   @map("compose_version")
-  engineApiVersion   String?   @map("engine_api_version")
+  id                String    @id @default(uuid()) @db.Uuid
+  publicKey         String    @map("public_key")
+  fingerprint       String    @unique
+  enrolledAt        DateTime  @default(now()) @map("enrolled_at") @db.Timestamptz(3)
+  confirmedAt       DateTime? @map("confirmed_at") @db.Timestamptz(3)
+  confirmedByUserId String?   @map("confirmed_by_user_id") @db.Uuid
+  lastHeartbeatAt   DateTime? @map("last_heartbeat_at") @db.Timestamptz(3)
+  agentVersion      String?   @map("agent_version")
+  composeVersion    String?   @map("compose_version")
+  engineApiVersion  String?   @map("engine_api_version")
 
-  confirmedByUser User? @relation("AgentConfirmedByUser", fields: [confirmedByUserId], references: [id])
+  confirmedByUser User?        @relation("AgentConfirmedByUser", fields: [confirmedByUserId], references: [id])
   apps            App[]
   auditEvents     AuditEvent[] @relation("AuditActorAgent")
 
@@ -174,24 +187,32 @@ model Agent {
 // ─── Apps (read-only mirror written only by agent reports) ────────────────
 
 model App {
-  id              String    @id @default(uuid()) @db.Uuid
-  name            String    @unique
-  agentId         String    @map("agent_id") @db.Uuid
-  manifestYaml    String    @map("manifest_yaml")
-  manifestSha256  String    @map("manifest_sha256")
-  repo            String?
-  defaultBranch   String?   @map("default_branch")
-  services        Json?
-  soakSeconds     Int?      @map("soak_seconds")
-  approvalPolicy  String?   @map("approval_policy")
-  foremanProject  String?   @map("foreman_project")
-  groupName       String?   @map("group_name")
-  canary          Boolean   @default(false)
-  reportedAt      DateTime? @map("reported_at") @db.Timestamptz(3)
+  id                 String    @id @default(uuid()) @db.Uuid
+  name               String    @unique
+  agentId            String    @map("agent_id") @db.Uuid
+  manifestYaml       String    @map("manifest_yaml")
+  manifestSha256     String    @map("manifest_sha256")
+  repo               String?
+  defaultBranch      String?   @map("default_branch")
+  services           Json?
+  soakSeconds        Int?      @map("soak_seconds")
+  approvalPolicy     String?   @map("approval_policy")
+  foremanProject     String?   @map("foreman_project")
+  groupName          String?   @map("group_name")
+  canary             Boolean   @default(false)
+  reportedAt         DateTime? @map("reported_at") @db.Timestamptz(3)
+  foremanEnvironment String?   @map("foreman_environment")
+  /// service → digest the agent last saw running (drift input, SHP-REQ-054).
+  runningDigests     Json?     @map("running_digests")
+  /// Set while observed digests differ from the recorded release and no resolution was made.
+  driftedAt          DateTime? @map("drifted_at") @db.Timestamptz(3)
 
-  agent   Agent          @relation(fields: [agentId], references: [id])
-  targets DeployTarget[]
-  tokens  ApiTokenApp[]
+  agent           Agent            @relation(fields: [agentId], references: [id])
+  targets         DeployTarget[]
+  tokens          ApiTokenApp[]
+  driftEvents     DriftEvent[]
+  freezes         Freeze[]
+  backupArtifacts BackupArtifact[]
 
   @@map("app")
 }
@@ -199,45 +220,55 @@ model App {
 // ─── Deploys, targets, images, steps ───────────────────────────────────────
 
 model Deploy {
-  id                 String     @id @default(uuid()) @db.Uuid
-  kind               DeployKind @default(deploy)
-  requestedSha       String     @map("requested_sha") @db.Char(40)
-  dryRun             Boolean    @default(false) @map("dry_run")
-  requesterUserId    String?    @map("requester_user_id") @db.Uuid
-  requesterTokenId   String?    @map("requester_token_id") @db.Uuid
-  requesterLabel     String     @map("requester_label")
-  requesterRepo      String?    @map("requester_repo")
-  requesterBranch    String?    @map("requester_branch")
-  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
-  expiredAt          DateTime?  @map("expired_at") @db.Timestamptz(3)
+  id               String     @id @default(uuid()) @db.Uuid
+  kind             DeployKind @default(deploy)
+  requestedSha     String     @map("requested_sha") @db.Char(40)
+  dryRun           Boolean    @default(false) @map("dry_run")
+  requesterUserId  String?    @map("requester_user_id") @db.Uuid
+  requesterTokenId String?    @map("requester_token_id") @db.Uuid
+  requesterLabel   String     @map("requester_label")
+  requesterRepo    String?    @map("requester_repo")
+  requesterBranch  String?    @map("requester_branch")
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiredAt        DateTime?  @map("expired_at") @db.Timestamptz(3)
 
-  requesterUser  User?    @relation("DeployRequesterUser", fields: [requesterUserId], references: [id])
-  requesterToken ApiToken? @relation("DeployRequesterToken", fields: [requesterTokenId], references: [id])
+  /// A group deploy names its group (SHP-D-047).
+  groupName      String?        @map("group_name")
+  requesterUser  User?          @relation("DeployRequesterUser", fields: [requesterUserId], references: [id])
+  requesterToken ApiToken?      @relation("DeployRequesterToken", fields: [requesterTokenId], references: [id])
   targets        DeployTarget[]
+  approval       Approval?
+  schedule       Schedule?
 
   @@map("deploy")
 }
 
 model DeployTarget {
-  id               String            @id @default(uuid()) @db.Uuid
-  deployId         String            @map("deploy_id") @db.Uuid
-  appId            String            @map("app_id") @db.Uuid
-  state            DeployTargetState @default(queued)
-  liveShaBefore    String?           @map("live_sha_before") @db.Char(40)
-  result           Json?
-  refusal          Json?
-  schemaRevision   String?           @map("schema_revision")
-  startedAt        DateTime?         @map("started_at") @db.Timestamptz(3)
-  endedAt          DateTime?         @map("ended_at") @db.Timestamptz(3)
-  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                 String            @id @default(uuid()) @db.Uuid
+  deployId           String            @map("deploy_id") @db.Uuid
+  appId              String            @map("app_id") @db.Uuid
+  state              DeployTargetState @default(queued)
+  liveShaBefore      String?           @map("live_sha_before") @db.Char(40)
+  result             Json?
+  refusal            Json?
+  schemaRevision     String?           @map("schema_revision")
+  /// The step the agent last reported, for lock refusals and progress (SHP-REQ-039).
+  currentStep        String?           @map("current_step")
+  /// When the agent took this target from a poll; null while it waits.
+  dispatchedAt       DateTime?         @map("dispatched_at") @db.Timestamptz(3)
+  /// For a rollback: the earlier deploy whose recorded digests are the target (SHP-D-080).
+  rollbackToDeployId String?           @map("rollback_to_deploy_id") @db.Uuid
+  startedAt          DateTime?         @map("started_at") @db.Timestamptz(3)
+  endedAt            DateTime?         @map("ended_at") @db.Timestamptz(3)
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   deploy Deploy @relation(fields: [deployId], references: [id])
   app    App    @relation(fields: [appId], references: [id])
 
-  images  TargetImage[]
-  steps   Step[]
-  outbox  Outbox[]
+  images TargetImage[]
+  steps  Step[]
+  outbox Outbox[]
 
   // The partial unique index enforcing "at most one active deploy_target per app" is hand-written
   // into the init migration, because Prisma cannot express a partial index — see
@@ -246,14 +277,14 @@ model DeployTarget {
 }
 
 model TargetImage {
-  id               String  @id @default(uuid()) @db.Uuid
-  targetId         String  @map("target_id") @db.Uuid
-  service          String
-  repo             String
-  sha              String  @db.Char(40)
-  digest           String
-  previousDigest   String? @map("previous_digest")
-  migrationLabel   String? @map("migration_label")
+  id             String  @id @default(uuid()) @db.Uuid
+  targetId       String  @map("target_id") @db.Uuid
+  service        String
+  repo           String
+  sha            String  @db.Char(40)
+  digest         String
+  previousDigest String? @map("previous_digest")
+  migrationLabel String? @map("migration_label")
 
   target DeployTarget @relation(fields: [targetId], references: [id])
 
@@ -261,14 +292,14 @@ model TargetImage {
 }
 
 model Step {
-  id         String    @id @default(uuid()) @db.Uuid
-  targetId   String    @map("target_id") @db.Uuid
-  name       String
-  argv       String[]
-  startedAt  DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
-  endedAt    DateTime? @map("ended_at") @db.Timestamptz(3)
-  exitCode   Int?      @map("exit_code")
-  output     String?
+  id        String    @id @default(uuid()) @db.Uuid
+  targetId  String    @map("target_id") @db.Uuid
+  name      String
+  argv      String[]
+  startedAt DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  endedAt   DateTime? @map("ended_at") @db.Timestamptz(3)
+  exitCode  Int?      @map("exit_code")
+  output    String?
 
   target DeployTarget @relation(fields: [targetId], references: [id])
 
@@ -279,20 +310,20 @@ model Step {
 // ─── Audit ──────────────────────────────────────────────────────────────
 
 model AuditEvent {
-  id            String    @id @default(uuid()) @db.Uuid
-  at            DateTime  @default(now()) @db.Timestamptz(3)
-  actorType     ActorType @map("actor_type")
-  actorUserId   String?   @map("actor_user_id") @db.Uuid
-  actorTokenId  String?   @map("actor_token_id") @db.Uuid
-  actorAgentId  String?   @map("actor_agent_id") @db.Uuid
-  actorLabel    String    @map("actor_label")
-  action        String
-  entityType    String    @map("entity_type")
-  entityId      String?   @map("entity_id")
-  before        Json?
-  after         Json?
-  ip            String?
-  requestId     String?   @map("request_id")
+  id           String    @id @default(uuid()) @db.Uuid
+  at           DateTime  @default(now()) @db.Timestamptz(3)
+  actorType    ActorType @map("actor_type")
+  actorUserId  String?   @map("actor_user_id") @db.Uuid
+  actorTokenId String?   @map("actor_token_id") @db.Uuid
+  actorAgentId String?   @map("actor_agent_id") @db.Uuid
+  actorLabel   String    @map("actor_label")
+  action       String
+  entityType   String    @map("entity_type")
+  entityId     String?   @map("entity_id")
+  before       Json?
+  after        Json?
+  ip           String?
+  requestId    String?   @map("request_id")
 
   actorUser  User?     @relation("AuditActorUser", fields: [actorUserId], references: [id])
   actorToken ApiToken? @relation("AuditActorToken", fields: [actorTokenId], references: [id])
@@ -306,17 +337,115 @@ model AuditEvent {
 // ─── Outbox ─────────────────────────────────────────────────────────────
 
 model Outbox {
-  id              String    @id @default(uuid()) @db.Uuid
-  targetId        String    @map("target_id") @db.Uuid
-  idempotencyKey  String    @unique @map("idempotency_key")
-  payload         Json
-  attempts        Int       @default(0)
-  nextAt          DateTime  @default(now()) @map("next_at") @db.Timestamptz(3)
-  lastError       String?   @map("last_error")
-  deliveredAt     DateTime? @map("delivered_at") @db.Timestamptz(3)
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  id             String    @id @default(uuid()) @db.Uuid
+  targetId       String    @map("target_id") @db.Uuid
+  idempotencyKey String    @unique @map("idempotency_key")
+  payload        Json
+  attempts       Int       @default(0)
+  nextAt         DateTime  @default(now()) @map("next_at") @db.Timestamptz(3)
+  lastError      String?   @map("last_error")
+  deliveredAt    DateTime? @map("delivered_at") @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
   target DeployTarget @relation(fields: [targetId], references: [id])
 
   @@map("outbox")
+}
+
+// ─── Phase 2+ (one migration, written by the fleet lead up front) ─────────────
+
+/// Nonces the server has accepted from the agent, kept until the timestamp window closes
+/// (SHP-REQ-103: a reused nonce is refused).
+model AgentNonce {
+  nonce       String   @id
+  fingerprint String
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz(3)
+
+  @@index([expiresAt])
+  @@map("agent_nonce")
+}
+
+/// Running digests that differed from the recorded release, and how a deployer resolved it
+/// (SHP-D-031, SHP-D-085).
+model DriftEvent {
+  id               String           @id @default(uuid()) @db.Uuid
+  appId            String           @map("app_id") @db.Uuid
+  observed         Json
+  recorded         Json
+  detectedAt       DateTime         @default(now()) @map("detected_at") @db.Timestamptz(3)
+  resolvedAt       DateTime?        @map("resolved_at") @db.Timestamptz(3)
+  resolution       DriftResolution?
+  reason           String?
+  resolvedByUserId String?          @map("resolved_by_user_id") @db.Uuid
+
+  app        App   @relation(fields: [appId], references: [id])
+  resolvedBy User? @relation("DriftResolvedBy", fields: [resolvedByUserId], references: [id])
+
+  @@index([appId, detectedAt])
+  @@map("drift_event")
+}
+
+/// A deploy held for a deployer's approval; expires after an hour (SHP-D-048).
+model Approval {
+  id              String    @id @default(uuid()) @db.Uuid
+  deployId        String    @unique @map("deploy_id") @db.Uuid
+  requestedAt     DateTime  @default(now()) @map("requested_at") @db.Timestamptz(3)
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz(3)
+  approvedAt      DateTime? @map("approved_at") @db.Timestamptz(3)
+  deniedAt        DateTime? @map("denied_at") @db.Timestamptz(3)
+  expiredAt       DateTime? @map("expired_at") @db.Timestamptz(3)
+  decidedByUserId String?   @map("decided_by_user_id") @db.Uuid
+
+  deploy    Deploy @relation(fields: [deployId], references: [id])
+  decidedBy User?  @relation("ApprovalBy", fields: [decidedByUserId], references: [id])
+
+  @@map("approval")
+}
+
+/// A frozen app refuses new deploys but allows rollback and restore (SHP-D-049).
+model Freeze {
+  id        String    @id @default(uuid()) @db.Uuid
+  appId     String    @map("app_id") @db.Uuid
+  reason    String
+  byUserId  String    @map("by_user_id") @db.Uuid
+  from      DateTime  @default(now()) @db.Timestamptz(3)
+  until     DateTime? @db.Timestamptz(3)
+  clearedAt DateTime? @map("cleared_at") @db.Timestamptz(3)
+
+  app App  @relation(fields: [appId], references: [id])
+  by  User @relation("FreezeBy", fields: [byUserId], references: [id])
+
+  @@index([appId, clearedAt])
+  @@map("freeze")
+}
+
+/// A deploy of a named SHA at a time; every gate re-runs when it fires (SHP-D-039, SHP-D-051).
+model Schedule {
+  id          String    @id @default(uuid()) @db.Uuid
+  deployId    String    @unique @map("deploy_id") @db.Uuid
+  fireAt      DateTime  @map("fire_at") @db.Timestamptz(3)
+  firedAt     DateTime? @map("fired_at") @db.Timestamptz(3)
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  byUserId    String    @map("by_user_id") @db.Uuid
+
+  deploy Deploy @relation(fields: [deployId], references: [id])
+  by     User   @relation("ScheduleBy", fields: [byUserId], references: [id])
+
+  @@index([fireAt])
+  @@map("schedule")
+}
+
+/// A backup a deploy took, as the agent reported it: the only restore candidates (SHP-D-080).
+model BackupArtifact {
+  id        String   @id @default(uuid()) @db.Uuid
+  appId     String   @map("app_id") @db.Uuid
+  targetId  String?  @map("target_id") @db.Uuid
+  path      String
+  size      BigInt?
+  createdAt DateTime @map("created_at") @db.Timestamptz(3)
+
+  app App @relation(fields: [appId], references: [id])
+
+  @@index([appId, createdAt])
+  @@map("backup_artifact")
 }

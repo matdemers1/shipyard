@@ -1,10 +1,12 @@
 import { Router, type Request } from 'express';
-import { AppName, DeployRequest, refusal, type Refusal } from '@shipyard/schema';
+import { AppName, DeployKind, DeployRequest, refusal, type Refusal } from '@shipyard/schema';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { MAX_WAIT_SECONDS, callerFromRequest, createDeploy, isRefusal, listDeploys, waitForChange } from './service.js';
+import { foremanStatus, isTimelineOutcome, listTimeline } from './timeline.js';
 
 export * from './service.js';
+export * from './timeline.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_LIMIT = 20;
@@ -94,6 +96,110 @@ export function deploysRouter(deps: ServiceDeps): Router {
       ...(req.actor?.type === 'token' ? { apps: req.tokenApps ?? new Set<string>() } : {}),
     });
     res.json(rows);
+  });
+
+  // Placed before `/:id`, so `timeline` is never read as a deploy id.
+  router.get('/timeline', async (req, res) => {
+    const denied = assertCanRead(req);
+    if (denied !== null) {
+      sendRefusal(res, denied);
+      return;
+    }
+    const limit = intParam(req.query['limit'], DEFAULT_LIMIT, 1, MAX_LIMIT);
+    if (limit === null) {
+      sendRefusal(res, refusal('invalid_request', `limit must be a whole number from 1 to ${String(MAX_LIMIT)}.`));
+      return;
+    }
+
+    const rawApp = req.query['app'];
+    let app: string | undefined;
+    if (rawApp !== undefined) {
+      const name = AppName.safeParse(rawApp);
+      if (!name.success) {
+        sendRefusal(res, refusal('invalid_request', 'app must be an app name.'));
+        return;
+      }
+      app = name.data;
+      const scoped = outOfScope(req, app);
+      if (scoped !== null) {
+        sendRefusal(res, scoped);
+        return;
+      }
+    }
+
+    const rawRequester = req.query['requester'];
+    if (rawRequester !== undefined && typeof rawRequester !== 'string') {
+      sendRefusal(res, refusal('invalid_request', 'requester must be a string.'));
+      return;
+    }
+
+    const rawOutcome = req.query['outcome'];
+    if (rawOutcome !== undefined && !isTimelineOutcome(rawOutcome)) {
+      sendRefusal(res, refusal('invalid_request', 'outcome must be one of the recognised outcomes.'));
+      return;
+    }
+
+    const rawKind = req.query['kind'];
+    const kind = DeployKind.safeParse(rawKind);
+    if (rawKind !== undefined && !kind.success) {
+      sendRefusal(res, refusal('invalid_request', 'kind must be a recognised deploy kind.'));
+      return;
+    }
+
+    const rawDryRun = req.query['dryRun'];
+    if (rawDryRun !== undefined && rawDryRun !== 'true' && rawDryRun !== 'false') {
+      sendRefusal(res, refusal('invalid_request', 'dryRun must be true or false.'));
+      return;
+    }
+
+    const rawCursor = req.query['cursor'];
+    if (rawCursor !== undefined && typeof rawCursor !== 'string') {
+      sendRefusal(res, refusal('invalid_request', 'cursor must be a string.'));
+      return;
+    }
+
+    const page = await listTimeline(db, {
+      limit,
+      ...(app !== undefined ? { app } : {}),
+      ...(req.actor?.type === 'token' ? { apps: req.tokenApps ?? new Set<string>() } : {}),
+      ...(rawRequester !== undefined ? { requester: rawRequester } : {}),
+      ...(rawOutcome !== undefined ? { outcome: rawOutcome } : {}),
+      ...(kind.success ? { kind: kind.data } : {}),
+      ...(rawDryRun === 'true' ? { dryRun: true } : {}),
+      ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
+    });
+    res.json(page);
+  });
+
+  router.get('/:id/foreman', async (req, res) => {
+    const denied = assertCanRead(req);
+    if (denied !== null) {
+      sendRefusal(res, denied);
+      return;
+    }
+    const raw: unknown = req.params['id'];
+    const id = typeof raw === 'string' ? raw : '';
+    if (!UUID_RE.test(id)) {
+      sendRefusal(res, NO_SUCH_DEPLOY);
+      return;
+    }
+    // waitForChange(0) is the cheapest way to fetch the deploy's app for the scope check.
+    const status = await waitForChange(deps, id, 0);
+    if (status === null) {
+      sendRefusal(res, NO_SUCH_DEPLOY);
+      return;
+    }
+    const scoped = outOfScope(req, status.app);
+    if (scoped !== null) {
+      sendRefusal(res, scoped);
+      return;
+    }
+    const result = await foremanStatus(db, id);
+    if (result === null) {
+      sendRefusal(res, NO_SUCH_DEPLOY);
+      return;
+    }
+    res.json(result);
   });
 
   router.get('/:id', async (req, res) => {

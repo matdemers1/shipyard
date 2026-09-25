@@ -154,6 +154,13 @@ as above) from the host. Verify:
 - Foreman shows a deployment row for this app's project (`foreman.project` in the manifest), once
   the outbox has posted it.
 
+> [!warning] A backup step the running image cannot run yet
+> `steps.backup` runs in the app's *running* container. If the command only exists in the release
+> being deployed (Bindery's `api.export.cli dump` arrived with BND-T-002), the first deploy would
+> fail at `backup_failed`. For that one deploy: take the app's own backup by hand, deploy with a copy
+> of the manifest that omits `steps.backup`, and put the full manifest back straight after. Every
+> later deploy runs the backup step normally.
+
 ## 8. Rollback drill (non-production apps only)
 
 For any app that is not production-critical (do this on d3auth-demo, foreman-board and bindery
@@ -174,7 +181,12 @@ Already onboarded; see `docs/manifests/README.md` for the exact sequence run (dr
 deploy, a refused older-SHA deploy) and `docs/manifests/d3auth-demo.yml` for its manifest. No data,
 no migrate step, `approval: none`.
 
-### foreman-board
+### foreman-board — done (2026-09-25)
+
+First Shipyard deploy: `7684cd2` (FRM-T-005/006, SHP-T-5.10), backup → pull → swap → check → soak,
+schema `20260925045658_deployment_tasks`. Its backup step is Foreman's own `run-job backup`, read
+from the stack's `backups` volume, mounted read-only into the agent at its identical path.
+
 
 A canary member of a `group` shared with `foreman` (SHP-D-047): set `group: foreman` and
 `canary: true` on its manifest, so it deploys first within the group when both are deployed
@@ -182,7 +194,11 @@ together. It migrates on boot (its own container runs its migration when it star
 `steps.migrate`), so its manifest has no `steps.migrate` — the swap alone is enough; the migration
 happens inside the new container as it comes up, before it reports healthy.
 
-### foreman
+### foreman — done (2026-09-25)
+
+Promoted the digests foreman-board soaked (same SHA `7684cd2`, identical digests), with the same
+backup step. The group promotion itself (SHP-T-5.3) runs from the console or MCP once a user exists.
+
 
 Shares images with foreman-board and is the other `group: foreman` member (not the canary). Also
 migrates on boot — no `steps.migrate` here either. A pre-migration dump happens at boot (inside
@@ -190,7 +206,13 @@ foreman's own startup, not a Shipyard `steps.backup`), so a Shipyard-level backu
 required, though one can still be added if a host-triggered backup before the swap is wanted in
 addition.
 
-### bindery
+### bindery — done (2026-09-25)
+
+First Shipyard deploy: `28929d4`, `alembic upgrade head` as the one-shot migrate step, schema
+`0032_taxonomy_library_required`; backup taken by hand for this first deploy (the note above). The
+compose file moved from `:main` to literal `sha-` tags and its api/worker environment into
+`bindery.env` (resolved config compared before and after — identical).
+
 
 Has real data and an explicit migration step: set `steps.migrate` to run `alembic upgrade head` as
 argv in the service that has the app's code and DB access, e.g.:

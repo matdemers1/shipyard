@@ -137,7 +137,16 @@ docker compose -p shipyard exec postgres psql -U postgres -c 'ALTER ROLE shipyar
 ## Installed on the D3 Cloud host (2026-09-25)
 
 `shipyard.d3cloud.io` behind its own tunnel (`shipyard`, id `2bd6239d-44bd-4699-8dee-010992593367`,
-remotely managed: ingress `shipyard.d3cloud.io → http://server:3300`), images
-`sha-a4acc3350ad88e21fc349c2a4a906851124c32e5`, schema `20260925005523_phase2_to_5`. Agent
+remotely managed: ingress `shipyard.d3cloud.io → http://server:3300`). Images
+`sha-d86d57687295879d50c9d30699bd21d358d1a330`, schema `20260925061243_agent_pat_expiry`. Agent
 `SHA256:3EyGWyLaNLLVUpapKEJr2Gn1+pyB4nlHQmr/uZH6gcA` confirmed via `host-admin`; the outbox posts to
 Foreman with a token issued by Foreman's own `issue-token` ("shipyard outbox", read+write).
+
+- Backups: `/DATA/shipyard/backups` (uid 1000) mounted at `/backups`; `host-admin backup` and
+  `host-admin drill` both green on 2026-09-25 (21 tables restored at `20260925061243_agent_pat_expiry`).
+- The agent mounts `/DATA/.docker` read-only with `DOCKER_CONFIG=/DATA/.docker` in `agent.env`, for
+  the private Foreman, Bindery and D3 Auth images (SHP-T-4.11).
+- Managed stacks, each mounted at its identical path: d3auth-demo, foreman-board, foreman, bindery,
+  d3auth (d3auth needs a console approval for every deploy).
+- Not configured yet: `MAIL_RELAY_URL`/`MAIL_RELAY_TOKEN`/`ALERT_TO` (stale-agent and backup-failure
+  email; until then they are logged only).

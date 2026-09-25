@@ -148,5 +148,10 @@ Foreman with a token issued by Foreman's own `issue-token` ("shipyard outbox", r
   the private Foreman, Bindery and D3 Auth images (SHP-T-4.11).
 - Managed stacks, each mounted at its identical path: d3auth-demo, foreman-board, foreman, bindery,
   d3auth (d3auth needs a console approval for every deploy).
+- Sign in with D3 Auth (the other half of dual login): in D3 Auth's console, **Apps → Add an app**,
+  upload `docs/d3auth/shipyard.d3auth.json`; put the issued client secret with
+  `D3AUTH_ISSUER=https://auth.d3cloud.io`, `D3AUTH_CLIENT_ID=shipyard`, `D3AUTH_CLIENT_SECRET=…` in
+  `server.env`, then `docker compose -p shipyard up -d server`. A D3 Auth identity signs in only once
+  it is linked to an existing Shipyard account (Account screen) — it never creates one.
 - Not configured yet: `MAIL_RELAY_URL`/`MAIL_RELAY_TOKEN`/`ALERT_TO` (stale-agent and backup-failure
   email; until then they are logged only).

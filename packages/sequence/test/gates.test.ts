@@ -37,6 +37,7 @@ interface FactsOverride {
   aheadOfLive?: GateFacts['aheadOfLive'];
   digests?: GateFacts['digests'];
   envNamesPresent?: GateFacts['envNamesPresent'];
+  declaredEnv?: GateFacts['declaredEnv'];
   laterMigrationLabels?: GateFacts['laterMigrationLabels'];
   freeBytes?: number;
 }
@@ -224,6 +225,63 @@ describe('refusal shape and specificity', () => {
     });
     const result = evaluateGates(facts).find((r) => r.gate === 'G9');
     expect(result?.refusal?.message).toContain('API_KEY');
+  });
+
+  it('G9 refuses on a name an image declares that is absent, naming which image declared it', () => {
+    const facts = buildFacts({
+      envNamesPresent: ['DATABASE_URL'],
+      declaredEnv: { server: ['SMTP_HOST'] },
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G9');
+    expect(result?.pass).toBe(false);
+    expect(result?.refusal?.code).toBe('env_missing');
+    expect(result?.refusal?.message).toContain('SMTP_HOST');
+    expect(result?.refusal?.message).toContain('declared by server image');
+  });
+
+  it('G9 passes when an image-declared name is present even though nothing was required by the manifest', () => {
+    const facts = buildFacts({
+      envNamesPresent: ['SMTP_HOST'],
+      declaredEnv: { server: ['SMTP_HOST'] },
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G9');
+    expect(result?.pass).toBe(true);
+  });
+
+  it('G9 union of manifest requiredEnv and image-declared names names each source', () => {
+    const facts = buildFacts({
+      manifest: { requiredEnv: ['API_KEY'] },
+      envNamesPresent: [],
+      declaredEnv: { server: ['SMTP_HOST'] },
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G9');
+    expect(result?.refusal?.message).toContain('API_KEY (manifest requiredEnv)');
+    expect(result?.refusal?.message).toContain('SMTP_HOST (declared by server image)');
+  });
+
+  it('G9 names a variable required by both the manifest and an image with both sources', () => {
+    const facts = buildFacts({
+      manifest: { requiredEnv: ['SMTP_HOST'] },
+      envNamesPresent: [],
+      declaredEnv: { server: ['SMTP_HOST'] },
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G9');
+    expect(result?.refusal?.message).toContain('SMTP_HOST (manifest requiredEnv, declared by server image)');
+  });
+
+  it('G9 refusal says so when names are required but the manifest names no env files', () => {
+    const facts = buildFacts({
+      manifest: { requiredEnv: ['API_KEY'] },
+      envNamesPresent: [],
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G9');
+    expect(result?.refusal?.fix.toLowerCase()).toContain('no env files');
+  });
+
+  it('G9 is not evaluated for a rollback that never gathered declaredEnv (image-only rollback unblocked)', () => {
+    const facts = buildFacts({ kind: 'rollback', manifest: { requiredEnv: ['API_KEY'] }, laterMigrationLabels: [] });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G9');
+    expect(result).toBeUndefined();
   });
 
   it('G10 refusal fix points at restore', () => {

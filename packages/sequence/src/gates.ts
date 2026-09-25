@@ -110,18 +110,36 @@ function evaluateG8(facts: GateFacts): GateResult {
   return { gate: 'G8', pass: false, reason: message, refusal: refusal('image_missing', message) };
 }
 
-function evaluateG9(facts: GateFacts): GateResult | null {
-  const required = facts.manifest.requiredEnv ?? [];
-  if (facts.envNamesPresent === undefined || required.length === 0) {
-    return null;
+/** Every required env name, in order, with the label(s) it should carry in the refusal message. */
+function requiredEnvSources(facts: GateFacts): { name: string; sources: string[] }[] {
+  const bySource = new Map<string, string[]>();
+  const add = (name: string, source: string): void => {
+    const sources = bySource.get(name);
+    if (sources === undefined) bySource.set(name, [source]);
+    else if (!sources.includes(source)) sources.push(source);
+  };
+  for (const name of facts.manifest.requiredEnv ?? []) add(name, 'manifest requiredEnv');
+  for (const [service, names] of Object.entries(facts.declaredEnv ?? {})) {
+    for (const name of names) add(name, `declared by ${service} image`);
   }
+  return [...bySource.entries()].map(([name, sources]) => ({ name, sources }));
+}
+
+function evaluateG9(facts: GateFacts): GateResult | null {
+  if (facts.envNamesPresent === undefined) return null;
+  const required = requiredEnvSources(facts);
+  if (required.length === 0) return null;
   const present = new Set(facts.envNamesPresent);
-  const missing = required.filter((name) => !present.has(name));
+  const missing = required.filter(({ name }) => !present.has(name));
   if (missing.length === 0) {
     return { gate: 'G9', pass: true, reason: 'every required env name is present' };
   }
-  const message = `missing required env ${missing.join(', ')}`;
-  return { gate: 'G9', pass: false, reason: message, refusal: refusal('env_missing', message) };
+  const message = `missing required env ${missing.map(({ name, sources }) => `${name} (${sources.join(', ')})`).join(', ')}`;
+  const noEnvFiles = (facts.manifest.envFiles ?? []).length === 0;
+  const fix = noEnvFiles
+    ? 'the manifest names no env files; add one under envFiles carrying these names and retry'
+    : undefined;
+  return { gate: 'G9', pass: false, reason: message, refusal: refusal('env_missing', message, fix) };
 }
 
 function evaluateG10(facts: GateFacts): GateResult | null {

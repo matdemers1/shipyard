@@ -8,6 +8,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./github": {
+      "types": "./src/adapters/github.ts",
+      "default": "./dist/adapters/github.js"
     }
   },
   "scripts": {

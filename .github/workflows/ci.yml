@@ -99,17 +99,53 @@ jobs:
         app: [server, agent]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The HEAD commit's own trailers are read below; a shallow clone can hide them.
+          fetch-depth: 0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # `migration` (from the HEAD commit's Shipyard-Migration trailer: expand|contract|none) decides
+      # whether a failed self-deploy may be auto-rolled back; `schema` is what /health must report.
+      - id: shipyard-labels
+        name: Compute Shipyard labels from the HEAD commit's trailer
+        run: bash scripts/shipyard-labels.sh | tee -a "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/${{ github.repository }}/${{ matrix.app }}
           tags: type=sha,format=long
+          labels: |
+            dev.d3cloud.shipyard.migration=${{ steps.shipyard-labels.outputs.migration }}
+            dev.d3cloud.shipyard.schema=${{ steps.shipyard-labels.outputs.schema }}
+      # Built and loaded first, so a broken module graph never reaches GHCR: the e2e suite runs from
+      # source and cannot see a workspace package the Dockerfile forgot to build.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: apps/${{ matrix.app }}/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: shipyard-smoke:${{ matrix.app }}
+          build-args: |
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha
+      - name: Smoke-test the image's module graph
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.app }}" = server ]; then
+            modules="/app/dist/app.js /app/dist/apps/commits.js"
+          else
+            modules="/app/dist/loop.js /cli/dist/commands.js"
+          fi
+          for m in $modules; do
+            docker run --rm --entrypoint node shipyard-smoke:${{ matrix.app }} --input-type=module -e "await import('$m')"
+            echo "loads: $m"
+          done
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
@@ -122,13 +158,12 @@ jobs:
             REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha
-      - name: Verify the published revision label
+      - name: Verify the published labels
         run: |
           set -euo pipefail
           image="ghcr.io/${{ github.repository }}/${{ matrix.app }}:sha-${{ github.sha }}"
-          revision=$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' | jq -r '.config.Labels["org.opencontainers.image.revision"]')
-          if [ "$revision" != "${{ github.sha }}" ]; then
-            echo "revision label '$revision' does not match ${{ github.sha }}" >&2
-            exit 1
-          fi
-          echo "revision label matches: $revision"
+          labels="$(docker buildx imagetools inspect "$image" --format '{{json .Image}}' | jq '.config.Labels')"
+          echo "$labels" | jq -e --arg v "${{ github.sha }}" '.["org.opencontainers.image.revision"] == $v' > /dev/null
+          echo "$labels" | jq -e --arg v "${{ steps.shipyard-labels.outputs.migration }}" '.["dev.d3cloud.shipyard.migration"] == $v' > /dev/null
+          echo "$labels" | jq -e --arg v "${{ steps.shipyard-labels.outputs.schema }}" '.["dev.d3cloud.shipyard.schema"] == $v' > /dev/null
+          echo "labels match: revision ${{ github.sha }}, migration ${{ steps.shipyard-labels.outputs.migration }}, schema ${{ steps.shipyard-labels.outputs.schema }}"

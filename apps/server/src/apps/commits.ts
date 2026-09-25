@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { refusal } from '@shipyard/schema';
-import { createGitHubAdapter, RefusalError as SequenceRefusalError, type GitHubPort } from '@shipyard/sequence';
+import { createGitHubAdapter, RefusalError as SequenceRefusalError, type GitHubPort } from '@shipyard/sequence/github';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { recordedRelease } from './drift.js';

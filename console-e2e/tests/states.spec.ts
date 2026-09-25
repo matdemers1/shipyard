@@ -176,7 +176,7 @@ test.describe('as an admin, baseline world', () => {
       json(route, 200, { live: HELD_SHA, head: HELD_SHA, commits: [], newestGreen: HELD_SHA, source: 'github' }),
     );
     await page.goto('/');
-    await page.getByRole('button', { name: 'Review' }).click();
+    await page.getByRole('button', { name: 'Review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
     await expect(dialog.getByText(`Nothing to ship — live is ${HELD_SHA.slice(0, 7)}.`)).toBeVisible();
   });
@@ -189,7 +189,7 @@ test.describe('as an admin, baseline world', () => {
       await new Promise(() => undefined);
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Review' }).click();
+    await page.getByRole('button', { name: 'Review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
     await expect(dialog.getByText('Checking gates…')).toBeVisible();
     await expect(dialog.locator('.d3-spn')).toBeAttached();
@@ -213,7 +213,7 @@ test.describe('as an admin, baseline world', () => {
       }),
     );
     await page.goto('/');
-    await page.getByRole('button', { name: 'Review' }).click();
+    await page.getByRole('button', { name: 'Review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
     const g5 = dialog.getByRole('listitem').filter({ hasText: 'G5' });
     await expect(g5).toContainText('failed');
@@ -545,7 +545,7 @@ test.describe('as a viewer', () => {
     // visible, but nothing that opens the sheet (Review, Deploy, Roll back) is offered…
     await page.goto('/');
     await expect(page.getByText(fx.apps.approval, { exact: false }).first()).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Review' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Review', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Deny' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Deploy/ })).toHaveCount(0);
     // …and asking the API for a dry run anyway is refused: the sheet has nothing to show.

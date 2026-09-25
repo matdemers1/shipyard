@@ -111,7 +111,7 @@ const SCREENS: Screen[] = [
     path: () => '/',
     ready: (p) => h1(p, 'Home'),
     act: async (p, fx) => {
-      await p.getByRole('button', { name: 'Review' }).click();
+      await p.getByRole('button', { name: 'Review', exact: true }).click();
       await dialog(p, `Approve deploy of ${fx.apps.approval}`);
     },
   },

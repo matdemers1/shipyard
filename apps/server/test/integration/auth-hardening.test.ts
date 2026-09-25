@@ -18,6 +18,21 @@ import { loadConfig } from '../../src/config.js';
 import { createDb, type Db } from '../../src/db.js';
 import { errorHandler } from '../../src/errors.js';
 
+/**
+ * A valid TOTP code for `secret` from a step not used yet in this test run. The replay guard
+ * (correctly) refuses a second sign-in with the same step's code, so two sign-ins by one user in
+ * the same 30 s would otherwise fail or pass depending on where the clock falls. Offsets stay
+ * inside the ±1-step window the server accepts.
+ */
+const usedTotpSteps = new Map<string, number>();
+function freshTotp(secret: string): string {
+  const n = usedTotpSteps.get(secret) ?? 0;
+  usedTotpSteps.set(secret, n + 1);
+  const offsets = [0, 30_000, -30_000];
+  return totpCode(secret, Date.now() + (offsets[n % offsets.length] ?? 0));
+}
+
+
 // SHP-REQ-107 (single-use MFA ticket) and SHP-REQ-108 (failed-attempt throttling).
 
 const databaseUrl = process.env['DATABASE_URL'];
@@ -140,7 +155,7 @@ describe('the MFA ticket is single-use (SHP-REQ-107)', () => {
     const first = mfaCookieFrom(await request(app).post('/api/auth/login').send({ email: user.email, password: PASSWORD }));
     const second = mfaCookieFrom(await request(app).post('/api/auth/login').send({ email: user.email, password: PASSWORD }));
 
-    const code = totpCode(user.totpSecret);
+    const code = freshTotp(user.totpSecret);
     expectRefusal(await request(app).post('/api/auth/totp').set('Cookie', first).send({ code }), 401, 'unauthenticated');
     expect(await db.session.count()).toBe(0);
 
@@ -202,14 +217,14 @@ describe('failed sign-in attempts are throttled (SHP-REQ-108)', () => {
       expectRefusal(await agent.post('/api/auth/totp').send({ code: wrong }), 401, 'unauthenticated');
     }
     // The next TOTP attempt is refused with the throttle, even with the right code.
-    expectRefusal(await agent.post('/api/auth/totp').send({ code: totpCode(user.totpSecret) }), 429, 'too_many_attempts');
+    expectRefusal(await agent.post('/api/auth/totp').send({ code: freshTotp(user.totpSecret) }), 429, 'too_many_attempts');
     // And a fresh /login cannot farm a new budget: the account is paused.
     expectRefusal(await agent.post('/api/auth/login').send({ email: user.email, password: PASSWORD }), 429, 'too_many_attempts');
     expect(await db.session.count()).toBe(0);
 
     clock.now += 16 * MIN;
     await agent.post('/api/auth/login').send({ email: user.email, password: PASSWORD });
-    const ok = await agent.post('/api/auth/totp').send({ code: totpCode(user.totpSecret) });
+    const ok = await agent.post('/api/auth/totp').send({ code: freshTotp(user.totpSecret) });
     expect(ok.status).toBe(200);
     expect(await db.session.count()).toBe(1);
   });
@@ -269,7 +284,7 @@ describe('failed sign-in attempts are throttled (SHP-REQ-108)', () => {
     }
     const agent = request.agent(app);
     await agent.post('/api/auth/login').set('X-Forwarded-For', '192.0.2.2').send({ email: user.email, password: PASSWORD });
-    expect((await agent.post('/api/auth/totp').set('X-Forwarded-For', '192.0.2.2').send({ code: totpCode(user.totpSecret) })).status).toBe(200);
+    expect((await agent.post('/api/auth/totp').set('X-Forwarded-For', '192.0.2.2').send({ code: freshTotp(user.totpSecret) })).status).toBe(200);
     // Two more failures would have tripped it (2 + 2 > 3) had the counter not reset.
     for (let i = 0; i < 2; i += 1) {
       expectRefusal(

@@ -15,12 +15,14 @@ export default defineConfig({
     projects: [
       {
         resolve: { alias: schemaAlias },
-        test: { name: 'unit', include: ['test/unit/**/*.test.ts'] },
+        test: { name: 'unit',
+          setupFiles: ['test/setup/loopback.ts'], include: ['test/unit/**/*.test.ts'] },
       },
       {
         resolve: { alias: schemaAlias },
         test: {
           name: 'integration',
+          setupFiles: ['test/setup/loopback.ts'],
           include: ['test/integration/**/*.test.ts'],
           // A shared database makes these order-dependent; they run one file at a time.
           fileParallelism: false,

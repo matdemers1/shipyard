@@ -13,7 +13,12 @@
       "vite/client"
     ],
     "declaration": false,
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@shipyard/schema": [
+        "../../packages/schema/src/index.ts"
+      ]
+    }
   },
   "include": [
     "src",

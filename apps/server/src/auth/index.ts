@@ -376,6 +376,13 @@ export function authRouter(deps: AuthDeps): Router {
     res.json({ id: user.id, email: user.email, displayName: user.displayName, role: user.role });
   });
 
+  // ── Sign-in methods (read-only, for the console's sign-in screen) ────
+  // The D3 Auth button is shown only when the OIDC client exists, so a server without it never
+  // offers a button that leads to a refusal. The password form is always available.
+  router.get('/methods', (_req, res) => {
+    res.json({ password: true, d3auth: oidc !== null });
+  });
+
   // ── Session ─────────────────────────────────────────────────────────
   router.get('/me', requireUser, async (req, res) => {
     const user = await db.user.findUnique({

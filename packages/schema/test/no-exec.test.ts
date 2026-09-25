@@ -20,6 +20,7 @@ import {
   SignatureHeaders,
   FreezeRequest,
   RestoreRequest,
+  ScheduleRequest,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -69,6 +70,7 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   SignatureHeaders,
   FreezeRequest,
   RestoreRequest,
+  ScheduleRequest,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -90,6 +92,7 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   SignatureHeaders: 'signatureHeaders',
   FreezeRequest: 'freezeRequest',
   RestoreRequest: 'restoreRequest',
+  ScheduleRequest: 'scheduleRequest',
 };
 
 describe('request schema coverage', () => {

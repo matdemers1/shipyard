@@ -1,7 +1,7 @@
 import { Badge, Button, Card, CardBody, CardTitle, Cluster, Link, Stack } from '@d3cloud/ui';
 import { GitCommitHorizontal } from 'lucide-react';
 import { Link as RouterLink } from 'react-router-dom';
-import { ageFrom, primaryActionFor, shortSha, waitingCount, type HomeApp } from '../lib/home';
+import { ageFrom, primaryActionFor, shortSha, waitingCount, type HomeApp, type PendingApproval } from '../lib/home';
 import type { SheetAction } from './DryRunSheet';
 
 /** CI-state tones for the commits-waiting dot, drawn from the newest checked commit. */
@@ -23,10 +23,12 @@ export interface AppCardProps {
   /** Hidden for a viewer (SHP-REQ-105). */
   canDeploy: boolean;
   onShip: (action: SheetAction) => void;
+  /** This app's deploy waiting on a deployer's approval, if any: reviewed from the card too. */
+  approval?: PendingApproval | undefined;
 }
 
 /** One app, one card (SHP-D-023, SHP-REQ-056, SHP-REQ-059). */
-export function AppCard({ app, canDeploy, onShip }: AppCardProps) {
+export function AppCard({ app, canDeploy, onShip, approval }: AppCardProps) {
   const action = primaryActionFor(app);
   const waiting = waitingCount(app.commits);
 
@@ -63,6 +65,19 @@ export function AppCard({ app, canDeploy, onShip }: AppCardProps) {
           ) : null}
 
           <div>{lastResultText(app)}</div>
+
+          {canDeploy && approval !== undefined ? (
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                onShip({ kind: 'approve', app: app.name, sha: approval.sha, deployId: approval.deployId });
+              }}
+            >
+              Review approval · {shortSha(approval.sha)}
+            </Button>
+          ) : null}
 
           {canDeploy ? (
             action.kind === 'ship' ? (

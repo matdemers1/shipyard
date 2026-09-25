@@ -111,7 +111,13 @@ export function Home() {
         {status === 'ready' && apps.length > 0 ? (
           <Grid as="ul" minItemWidth="sm">
             {apps.map((app) => (
-              <AppCard key={app.name} app={app} canDeploy={canDeploy} onShip={openSheet} />
+              <AppCard
+                key={app.name}
+                app={app}
+                canDeploy={canDeploy}
+                onShip={openSheet}
+                approval={approvals.find((a) => a.app === app.name)}
+              />
             ))}
           </Grid>
         ) : null}

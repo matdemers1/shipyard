@@ -20,7 +20,8 @@ import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
 import { AdoptLiveButton, DriftBanner } from '../components/DriftBanner';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { FreezeSheet, UnfreezeButton } from '../components/FreezeSheet';
-import { RefusalError, unreachableRefusal } from '../lib/api';
+import { RefusalError, request, unreachableRefusal } from '../lib/api';
+import type { PendingApproval } from '../lib/home';
 import { useCan } from '../lib/auth';
 import {
   age,
@@ -44,7 +45,7 @@ import {
 type Load =
   | { status: 'loading' }
   | { status: 'error'; error: RefusalError }
-  | { status: 'ready'; detail: Detail; drift: DriftState; freeze: FreezeInfo | null };
+  | { status: 'ready'; detail: Detail; drift: DriftState; freeze: FreezeInfo | null; approval: PendingApproval | undefined };
 
 function stateTone(state: string): 'neutral' | 'attention' | 'danger' {
   if (state === 'failed' || state === 'rolled_back' || state === 'refused') return 'danger';
@@ -82,9 +83,15 @@ export function AppDetail() {
 
   useEffect(() => {
     const controller = new AbortController();
-    Promise.all([appDetail.get(app, controller.signal), appDetail.drift(app, controller.signal), freeze.get(app, controller.signal)])
-      .then(([detail, drift, freezeStatus]) => {
-        setLoad({ status: 'ready', detail, drift, freeze: freezeStatus.freeze });
+    Promise.all([
+      appDetail.get(app, controller.signal),
+      appDetail.drift(app, controller.signal),
+      freeze.get(app, controller.signal),
+      // A deploy of this app waiting on a deployer (SHP-REQ-060). Reading it must not break the page.
+      request<PendingApproval[]>('/api/approvals', { signal: controller.signal }).catch(() => [] as PendingApproval[]),
+    ])
+      .then(([detail, drift, freezeStatus, approvals]) => {
+        setLoad({ status: 'ready', detail, drift, freeze: freezeStatus.freeze, approval: approvals.find((a) => a.app === app) });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -175,6 +182,28 @@ export function AppDetail() {
               else reload();
             }}
           />
+        ) : null}
+
+        {load.approval !== undefined ? (
+          <Alert tone="warning" title="A deploy is waiting on approval">
+            {load.approval.requester.label} asked to deploy <code>{sha7(load.approval.sha)}</code>. It holds no lock and
+            expires {when(load.approval.expiresAt)}.{' '}
+            {can ? (
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  if (load.approval === undefined) return;
+                  setSheet({ kind: 'approve', app: detail.name, sha: load.approval.sha, deployId: load.approval.deployId });
+                }}
+              >
+                Review and approve
+              </Button>
+            ) : (
+              'A deployer approves it.'
+            )}
+          </Alert>
         ) : null}
 
         {detail.active !== null ? (

@@ -59,7 +59,12 @@ const ARTIFACT_GRACE_MS = 1000;
 export async function runBackup(ports: StepPorts, target: ComposeTarget, step: BackupStepDef): Promise<BackupResult> {
   // What was there before the step, so an existing file can never pass as this step's artifact —
   // not even one whose mtime is skewed into the future.
-  const before = new Map((await ports.fs.list(step.artifactsDir, { recursive: true })).map((entry) => [entry.path, entry.mtimeMs]));
+  // A directory the app's first backup will create is simply empty before it (ENOENT is not a failure).
+  const listed = await ports.fs.list(step.artifactsDir, { recursive: true }).catch((err: unknown) => {
+    if ((err as { code?: unknown } | null)?.code === 'ENOENT') return [];
+    throw err;
+  });
+  const before = new Map(listed.map((entry) => [entry.path, entry.mtimeMs]));
   const startedAt = ports.clock.now().getTime();
   const result = await ports.docker.compose(target, ['exec', '-T', step.service, ...step.argv]);
   const endedAt = ports.clock.now().getTime();

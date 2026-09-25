@@ -60,6 +60,22 @@ function fakeFs(files: FakeFile[] = [], before: FakeFile[] = []): { fs: FsPort; 
 }
 
 describe('runBackup', () => {
+  it('treats an artifacts directory the first backup creates as empty beforehand', async () => {
+    const { docker } = fakeDocker();
+    const fresh = { path: '/backups/predeploy/bundles/2026/09/25/new.tar.gz', size: 10, mtimeMs: 1000 };
+    let calls = 0;
+    const fs: FsPort = {
+      readFile: () => Promise.reject(new Error('not implemented')),
+      writeFileAtomic: () => Promise.resolve(),
+      appendLine: () => Promise.resolve(),
+      exists: () => Promise.resolve(true),
+      mkdirp: () => Promise.resolve(),
+      list: () => (calls++ === 0 ? Promise.reject(Object.assign(new Error('ENOENT: no such directory'), { code: 'ENOENT' })) : Promise.resolve([fresh])),
+    };
+    const result = await runBackup({ docker, fs, clock: fakeClock(1000) }, TARGET, { service: 'db', argv: ['backup'], artifactsDir: '/backups/predeploy' });
+    expect(result.artifact.path).toBe(fresh.path);
+  });
+
   it('finds an artifact nested by date, and not an unchanged nested file', async () => {
     const { docker } = fakeDocker();
     const old = { path: '/backups/bundles/2026/09/24/old.tar.gz', size: 10, mtimeMs: 500 };

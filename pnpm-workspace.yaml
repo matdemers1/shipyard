@@ -2,6 +2,7 @@ packages:
   - apps/*
   - packages/*
   - e2e
+  - console-e2e
 
 # Supply-chain policy, as in Foreman and D3 Auth: nothing published in the last seven days, no
 # provenance downgrades, no exotic transitive sources.

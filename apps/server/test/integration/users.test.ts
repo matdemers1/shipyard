@@ -205,6 +205,79 @@ describe('invites', () => {
     expect((await request(app).get(`/api/invites/${newer.token}`)).status).toBe(200);
   });
 
+  it('a replacement invite cannot be confirmed with the superseded invite\'s TOTP secret, and the role never leaks across', async () => {
+    const admin = await signIn('admin');
+    const first = await invite(admin.cookie, 'escalate@example.com', 'deployer');
+    const accepted = await request(app)
+      .post(`/api/invites/${first.token}/accept`)
+      .send({ displayName: 'Escalate', password: PASSWORD });
+    expect(accepted.status).toBe(200);
+    const secret = new URL((accepted.body as { otpauthUri: string }).otpauthUri).searchParams.get('secret') ?? '';
+
+    // Re-invite the same address at a lower role. The pending account from the first accept is
+    // gone, so it has no working login and cannot be revived by anything, including the old secret.
+    const second = await invite(admin.cookie, 'escalate@example.com', 'viewer');
+    expect(await db.user.count({ where: { email: 'escalate@example.com' } })).toBe(0);
+
+    const wrongInvite = await request(app)
+      .post(`/api/invites/${first.token}/confirm-totp`)
+      .send({ code: totpCode(secret) });
+    expect(wrongInvite.status).toBe(404); // the first invite is revoked/invalid now
+
+    const stolenSecret = await request(app)
+      .post(`/api/invites/${second.token}/confirm-totp`)
+      .send({ code: totpCode(secret) });
+    expect(stolenSecret.status).toBe(409);
+    expect(err(stolenSecret).message).toMatch(/not been accepted yet/);
+    expect(await db.user.count({ where: { email: 'escalate@example.com' } })).toBe(0);
+
+    // Accepting and confirming the replacement invite properly yields the new, lower role.
+    const secondAccept = await request(app)
+      .post(`/api/invites/${second.token}/accept`)
+      .send({ displayName: 'Escalate', password: PASSWORD });
+    expect(secondAccept.status).toBe(200);
+    const secondSecret = new URL((secondAccept.body as { otpauthUri: string }).otpauthUri).searchParams.get('secret') ?? '';
+    const confirmed = await request(app)
+      .post(`/api/invites/${second.token}/confirm-totp`)
+      .send({ code: totpCode(secondSecret) });
+    expect(confirmed.status).toBe(200);
+    const users = await db.user.findMany({ where: { email: 'escalate@example.com' } });
+    expect(users).toHaveLength(1);
+    expect(users[0]?.role).toBe('viewer');
+  });
+
+  it('the reverse direction: a re-invite to a higher role is never left at the lower one', async () => {
+    const admin = await signIn('admin');
+    const first = await invite(admin.cookie, 'promote@example.com', 'viewer');
+    await request(app).post(`/api/invites/${first.token}/accept`).send({ displayName: 'Promote', password: PASSWORD });
+
+    const second = await invite(admin.cookie, 'promote@example.com', 'deployer');
+    const secondAccept = await request(app)
+      .post(`/api/invites/${second.token}/accept`)
+      .send({ displayName: 'Promote', password: PASSWORD });
+    expect(secondAccept.status).toBe(200);
+    const secret = new URL((secondAccept.body as { otpauthUri: string }).otpauthUri).searchParams.get('secret') ?? '';
+    const confirmed = await request(app)
+      .post(`/api/invites/${second.token}/confirm-totp`)
+      .send({ code: totpCode(secret) });
+    expect(confirmed.status).toBe(200);
+    const users = await db.user.findMany({ where: { email: 'promote@example.com' } });
+    expect(users).toHaveLength(1);
+    expect(users[0]?.role).toBe('deployer');
+  });
+
+  it('concurrent first-accepts of one invite yield exactly one user, the loser refused not 500', async () => {
+    const admin = await signIn('admin');
+    const created = await invite(admin.cookie, 'racer@example.com', 'deployer');
+    const [a, b] = await Promise.all([
+      request(app).post(`/api/invites/${created.token}/accept`).send({ displayName: 'A', password: PASSWORD }),
+      request(app).post(`/api/invites/${created.token}/accept`).send({ displayName: 'B', password: PASSWORD }),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    expect(await db.user.count({ where: { email: 'racer@example.com' } })).toBe(1);
+  });
+
   it('refuses an invite for an address that already has an account', async () => {
     const admin = await signIn('admin');
     const existing = await db.user.findUniqueOrThrow({ where: { id: admin.userId } });
@@ -282,6 +355,26 @@ describe('users', () => {
     const audits = await db.auditEvent.count({ where: { action: 'user.updated' } });
     expect(audits).toBe(2);
     expect(unaudited).toEqual([]);
+  });
+
+  it('two admins demoting each other at once leave exactly one admin', async () => {
+    const a = await signIn('admin');
+    const b = await signIn('admin');
+    const [r1, r2] = await Promise.all([
+      request(app).patch(`/api/users/${b.userId}`).set('Cookie', a.cookie).send({ role: 'viewer' }),
+      request(app).patch(`/api/users/${a.userId}`).set('Cookie', b.cookie).send({ role: 'viewer' }),
+    ]);
+    // Exactly one succeeds; the other is refused — either by the last-admin check (409, if it
+    // raced in ahead of the role change) or by requireRole re-reading its now-demoted actor (403,
+    // if it lost the race entirely). Either way, never both 200.
+    const statuses = [r1.status, r2.status];
+    const successes = statuses.filter((s) => s === 200);
+    const refusals = statuses.filter((s) => s !== 200);
+    expect(successes).toHaveLength(1);
+    expect(refusals).toHaveLength(1);
+    expect([403, 409]).toContain(refusals[0]);
+    const admins = await db.user.count({ where: { role: 'admin', disabledAt: null } });
+    expect(admins).toBe(1);
   });
 });
 

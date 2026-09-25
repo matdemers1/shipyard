@@ -5,6 +5,7 @@ import { refusal, type Refusal } from '@shipyard/schema';
 import { ANONYMOUS_ACTOR, type Actor } from '../audit.js';
 import { generateTotpSecret, hashPassword, requireUser, totpUri, verifyTotp } from '../auth/index.js';
 import { requireRole, STATE_CHANGING_ROLES, type Role } from '../auth/scope.js';
+import { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 
@@ -199,44 +200,67 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       return;
     }
     const { role, disabled } = parsed.data;
-    const losesAdmin =
-      target.role === 'admin' &&
-      target.disabledAt === null &&
-      ((role !== undefined && role !== 'admin') || disabled === true);
-    if (losesAdmin) {
-      const otherAdmins = await db.user.count({ where: { role: 'admin', disabledAt: null, id: { not: target.id } } });
-      if (otherAdmins === 0) {
-        sendRefusal(
-          res,
-          refusal(
-            'conflict',
-            'This is the last active admin; demoting or disabling it would leave nobody able to manage users.',
-            'Make another user an admin first.',
-          ),
-        );
-        return;
+    const actorId = req.actor?.id;
+
+    // Locks every active admin row before deciding whether this demotion/disable would leave
+    // none, so two admins demoting each other at the same moment serialize instead of racing:
+    // the second transaction re-reads the row it locked only after the first has committed, by
+    // which point the other admin's row may no longer match the lock predicate at all.
+    type PatchResult =
+      | { kind: 'gone' }
+      | { kind: 'lastAdmin' }
+      | { kind: 'self' }
+      | { kind: 'ok'; before: { role: Role; disabledAt: Date | null }; updated: Awaited<ReturnType<typeof db.user.update>> };
+    const result: PatchResult = await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "user" WHERE role = 'admin' AND disabled_at IS NULL FOR UPDATE`;
+      const locked = await tx.user.findUnique({ where: { id } });
+      if (locked === null) return { kind: 'gone' };
+      const losesAdmin =
+        locked.role === 'admin' &&
+        locked.disabledAt === null &&
+        ((role !== undefined && role !== 'admin') || disabled === true);
+      if (losesAdmin) {
+        const otherAdmins = await tx.user.count({ where: { role: 'admin', disabledAt: null, id: { not: locked.id } } });
+        if (otherAdmins === 0) return { kind: 'lastAdmin' };
       }
+      if (locked.id === actorId) return { kind: 'self' };
+      const disabledAt = disabled === undefined ? locked.disabledAt : disabled ? (locked.disabledAt ?? new Date()) : null;
+      const updated = await tx.user.update({
+        where: { id },
+        data: { ...(role !== undefined ? { role } : {}), disabledAt },
+      });
+      // A disabled user's sessions end at once; its tokens stop resolving because the owner is disabled.
+      if (disabled === true) await tx.session.deleteMany({ where: { userId: id } });
+      return { kind: 'ok', before: { role: locked.role, disabledAt: locked.disabledAt }, updated };
+    });
+    if (result.kind === 'gone') {
+      sendRefusal(res, NO_SUCH_USER);
+      return;
     }
-    if (target.id === req.actor?.id) {
+    if (result.kind === 'lastAdmin') {
+      sendRefusal(
+        res,
+        refusal(
+          'conflict',
+          'This is the last active admin; demoting or disabling it would leave nobody able to manage users.',
+          'Make another user an admin first.',
+        ),
+      );
+      return;
+    }
+    if (result.kind === 'self') {
       sendRefusal(
         res,
         refusal('conflict', 'You cannot change your own role or disable yourself.', 'Ask another admin to do it.'),
       );
       return;
     }
-
-    const disabledAt = disabled === undefined ? target.disabledAt : disabled ? (target.disabledAt ?? new Date()) : null;
-    const updated = await db.user.update({
-      where: { id },
-      data: { ...(role !== undefined ? { role } : {}), disabledAt },
-    });
-    // A disabled user's sessions end at once; its tokens stop resolving because the owner is disabled.
-    if (disabled === true) await db.session.deleteMany({ where: { userId: id } });
+    const { updated } = result;
     await req.audit({
       action: 'user.updated',
       entityType: 'user',
       entityId: id,
-      before: { role: target.role, disabled: target.disabledAt !== null },
+      before: { role: result.before.role, disabled: result.before.disabledAt !== null },
       after: { role: updated.role, disabled: updated.disabledAt !== null },
     });
     const identities = await db.identity.count({ where: { userId: id } });
@@ -297,17 +321,29 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       where: { email, acceptedAt: null, revokedAt: null },
       select: { id: true },
     });
-    const row = await db.$transaction(async (tx) => {
+    // `existing` here is never a confirmed account (that was refused above), so it can only be a
+    // pending user an earlier accept created. It never had a working login — deleting it means
+    // this invite's own accept is the only thing that can create the user confirm-totp will later
+    // apply this invite's role to, instead of confirm-totp binding to it by email alone and
+    // inheriting a role or TOTP secret from a superseded invite (SHP-REQ-067).
+    const pendingToClear = existing?.id;
+    const { row, clearedPending } = await db.$transaction(async (tx) => {
       if (superseded.length > 0) {
         await tx.invite.updateMany({
           where: { id: { in: superseded.map((s) => s.id) }, acceptedAt: null, revokedAt: null },
           data: { revokedAt: createdAt },
         });
       }
-      return tx.invite.create({
+      let cleared = false;
+      if (pendingToClear !== undefined) {
+        await tx.user.delete({ where: { id: pendingToClear } });
+        cleared = true;
+      }
+      const created = await tx.invite.create({
         data: { email, role, tokenHash: hashInviteToken(token), invitedById: inviter, expiresAt },
         include: { invitedBy: { select: { email: true } } },
       });
+      return { row: created, clearedPending: cleared };
     });
     await req.audit({
       action: 'invite.created',
@@ -318,6 +354,7 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
         role,
         expiresAt: expiresAt.toISOString(),
         ...(superseded.length > 0 ? { superseded: superseded.map((s) => s.id) } : {}),
+        ...(clearedPending ? { clearedPendingUser: pendingToClear } : {}),
       },
     });
     const base = (config.PUBLIC_URL ?? `${req.protocol}://${req.get('host') ?? 'localhost'}`).replace(/\/+$/, '');
@@ -370,21 +407,17 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
   }
 
   /**
-   * The account an earlier, unconfirmed accept created: same email, no TOTP yet, and created after
-   * the first invite to that address (so by an invite accept, perhaps of a superseded invite).
-   * Anything else with that email is a real account and blocks the invite.
+   * The account an earlier, unconfirmed accept of *this* invite created (accept may restart any
+   * number of times against a still-live invite). Creating any new invite for an address deletes
+   * a leftover pending user for it (see POST /invites), so a pending user found by email here can
+   * only be one this exact invite's own accept produced — never a stale one from an invite that
+   * has since been revoked or superseded. Anything with that email whose TOTP is already enabled
+   * is a real account and blocks the invite.
    */
   async function pendingUserFor(invite: InviteRow) {
     const user = await db.user.findFirst({ where: { email: { equals: invite.email, mode: 'insensitive' } } });
     if (user === null) return { user: null, blocked: false } as const;
-    const first = await db.invite.findFirst({
-      where: { email: invite.email },
-      orderBy: { createdAt: 'asc' },
-      select: { createdAt: true },
-    });
-    const pending =
-      user.totpEnabledAt === null && first !== null && user.createdAt.getTime() >= first.createdAt.getTime();
-    return { user, blocked: !pending } as const;
+    return { user, blocked: user.totpEnabledAt !== null } as const;
   }
 
   router.get('/invites/:token', limited, async (req, res) => {
@@ -423,10 +456,29 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
     const passwordHash = await hashPassword(parsed.data.password);
     const totpSecret = generateTotpSecret();
     const data = { displayName: parsed.data.displayName, passwordHash, totpSecret, totpEnabledAt: null, role: invite.role };
-    const user =
-      pending.user === null
-        ? await db.user.create({ data: { email: invite.email, ...data } })
-        : await db.user.update({ where: { id: pending.user.id }, data });
+    let user;
+    if (pending.user === null) {
+      try {
+        user = await db.user.create({ data: { email: invite.email, ...data } });
+      } catch (e) {
+        // Two concurrent first-accepts of the same invite: exactly one wins the unique email;
+        // the other is refused rather than surfacing the database's 500.
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+          sendRefusal(
+            res,
+            refusal(
+              'conflict',
+              'This invite is already being accepted by another request.',
+              'Wait a moment and check whether it went through, or reload the invite link.',
+            ),
+          );
+          return;
+        }
+        throw e;
+      }
+    } else {
+      user = await db.user.update({ where: { id: pending.user.id }, data });
+    }
     const actor: Actor = { type: 'user', id: user.id, label: user.email };
     await req.audit({
       action: pending.user === null ? 'invite.accepted_pending_totp' : 'invite.accept_restarted',
@@ -489,7 +541,9 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
         data: { acceptedAt: at },
       });
       if (claimed.count !== 1) return false;
-      await tx.user.update({ where: { id: user.id }, data: { totpEnabledAt: at } });
+      // The invite this confirm actually consumes decides the role, even if it was restarted
+      // or the account row predates a role change on the invite itself.
+      await tx.user.update({ where: { id: user.id }, data: { totpEnabledAt: at, role: invite.role } });
       return true;
     });
     if (!consumed) {

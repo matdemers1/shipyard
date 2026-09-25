@@ -57,8 +57,16 @@ describe('guided restore after a failed contract release, against the dind harne
       const { execFileSync } = await import('node:child_process');
       const sh = (cmd: string): string => { try { return execFileSync('sh', ['-c', cmd], { encoding: 'utf8' }); } catch (e) { return String(e); } };
       console.log('DEBUG host:', sh(`id; ls -ld ${h.sharedDir} ${dataDir}; mount | grep -E ' /tmp ' || true; df -h /tmp`));
-      const r1 = await h.dind(['run', '--rm', '-u', '1000', '-v', `${dataDir}:/data`, 'alpine', 'sh', '-c', 'id; ls -ld /data; touch /data/probe && echo WROTE']);
-      console.log('DEBUG dind uid1000:', r1.code, r1.stdout, r1.stderr);
+      const r1 = await h
+        .dind(['run', '--rm', '-u', '1000', '-v', `${dataDir}:/data`, 'alpine', 'sh', '-c', 'id; ls -ld /data; touch /data/probe && echo WROTE'])
+        .then((r) => `${r.stdout} ${r.stderr}`)
+        .catch((e: unknown) => String(e));
+      console.log('DEBUG dind uid1000:', r1);
+      const r3 = await h
+        .dind(['run', '--rm', '-v', `${h.sharedDir}:/s`, 'alpine', 'sh', '-c', 'ls -la /s; mount | grep -i shp || true'])
+        .then((r) => `${r.stdout} ${r.stderr}`)
+        .catch((e: unknown) => String(e));
+      console.log('DEBUG dind root view of shared:', r3);
       console.log('DEBUG host after:', sh(`ls -la ${dataDir}`));
       const r2 = await h.dind(['info', '--format', '{{.SecurityOptions}} {{.Driver}}']);
       console.log('DEBUG dind info:', r2.stdout, r2.stderr);

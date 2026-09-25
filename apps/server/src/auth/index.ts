@@ -23,6 +23,7 @@ import { SESSION_TTL_MS, createSession, hashSessionToken, resolveSession } from 
 import { MfaTickets } from './tickets.js';
 import { DEFAULT_ACCOUNT_LIMITS, DEFAULT_IP_LIMITS, Throttle, type ThrottleLimits } from './throttle.js';
 import { TotpReplayGuard } from './totp.js';
+import { resolveToken } from '../tokens/tokens.js';
 
 // Helpers other tasks import (SHP-T-0.6 bootstrap-admin, tests).
 export { hashPassword, verifyPassword } from './passwords.js';
@@ -31,6 +32,7 @@ export { createSession, hashSessionToken, resolveSession, SESSION_TTL_MS } from 
 export { createOidcClient, OidcError, PendingSignIns, type CompletedSignIn, type OidcClient } from './oidc.js';
 export { SESSION_COOKIE, MFA_COOKIE, OIDC_TX_COOKIE } from './cookies.js';
 export { Throttle, DEFAULT_ACCOUNT_LIMITS, DEFAULT_IP_LIMITS, type ThrottleLimits } from './throttle.js';
+export { assertCanActOn, assertCanChangeState, requireRole, STATE_CHANGING_ROLES, type Role } from './scope.js';
 
 export interface AuthDeps {
   db: Db;
@@ -101,18 +103,46 @@ function clientInfo(req: Request): { ip: string | undefined; userAgent: string |
   return { ip: req.ip, userAgent: req.get('user-agent') };
 }
 
+const BAD_BEARER = refusal(
+  'unauthenticated',
+  'The API token is malformed, unknown or revoked.',
+  'Send `Authorization: Bearer shp_…` with a live token, or issue a new one in the console.',
+);
+
 /**
- * Resolves the session cookie into `req.actor`, before any route runs. An absent, unknown,
- * expired or disabled-user session simply leaves `req.actor` unset; `requireUser` refuses later.
+ * Resolves the request's credentials into `req.actor`, before any route runs.
+ *
+ * An `Authorization` header must be a live API token (SHP-REQ-046): a malformed, unknown or
+ * revoked one is refused with 401 at once, never treated as anonymous. Otherwise an absent,
+ * unknown, expired or disabled-user session simply leaves `req.actor` unset; `requireUser`
+ * refuses later.
  */
 export function authenticate(deps: AuthDeps): RequestHandler {
-  return async (req, _res, next) => {
-    // Seam for API tokens (a later phase): an `Authorization: Bearer` header resolves here into
-    // `req.actor = { type: 'token', ... }`. Until then it is ignored and only the cookie counts.
+  return async (req, res, next) => {
+    const authorization = req.headers.authorization;
+    if (authorization !== undefined) {
+      const match = /^Bearer (\S+)$/i.exec(authorization.trim());
+      const resolved = match?.[1] === undefined ? null : await resolveToken(deps.db, match[1], req.ip);
+      if (resolved === null) {
+        sendRefusal(res, BAD_BEARER);
+        return;
+      }
+      req.actor = { type: 'token', id: resolved.id, label: `token ${resolved.label}` };
+      req.role = resolved.role;
+      req.tokenApps = resolved.apps;
+      next();
+      return;
+    }
+
     const token = readCookie(req, SESSION_COOKIE);
     if (token !== undefined && token !== '') {
       const resolved = await resolveSession(deps.db, token);
-      if (resolved !== null) req.actor = userActor(resolved.user);
+      if (resolved !== null) {
+        req.actor = userActor(resolved.user);
+        // The role is read per request, so a demotion takes effect at once (SHP-REQ-065).
+        const user = await deps.db.user.findUnique({ where: { id: resolved.user.id }, select: { role: true } });
+        if (user !== null) req.role = user.role;
+      }
     }
     next();
   };

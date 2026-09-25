@@ -40,6 +40,10 @@ import {
   TokenCreated,
   DeployStatus,
   TargetProgress,
+  FreezeReason,
+  FreezeRequest,
+  Freeze,
+  FreezeInfo,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -92,6 +96,10 @@ const SCHEMAS: Record<string, ZodType> = {
   tokenCreated: TokenCreated,
   deployStatus: DeployStatus,
   targetProgress: TargetProgress,
+  freezeReason: FreezeReason,
+  freezeRequest: FreezeRequest,
+  freeze: Freeze,
+  freezeInfo: FreezeInfo,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

@@ -4,6 +4,7 @@ import type { Role } from '../auth/scope.js';
 import type { ServiceDeps } from '../deps.js';
 import { callerCanActOn, isUniqueViolation, lockRefusal, type DeployCaller } from '../deploys/service.js';
 import { assertDeployable } from '../apps/drift.js';
+import { assertNotFrozen } from '../freeze/service.js';
 
 /**
  * Approvals (SHP-T-3.6). A token-requested deploy of an app whose manifest says
@@ -115,7 +116,7 @@ async function loadPending(deps: ServiceDeps, deployId: string) {
       approvedAt: true,
       deniedAt: true,
       expiredAt: true,
-      deploy: { select: { requestedSha: true, targets: { select: { id: true, state: true, app: { select: { id: true, name: true } } } } } },
+      deploy: { select: { kind: true, requestedSha: true, targets: { select: { id: true, state: true, app: { select: { id: true, name: true } } } } } },
     },
   });
   const target = row?.deploy.targets[0];
@@ -124,7 +125,7 @@ async function loadPending(deps: ServiceDeps, deployId: string) {
   if (row.approvedAt !== null) return refusal('conflict', 'This deploy has already been approved.');
   if (row.deniedAt !== null) return refusal('conflict', 'This deploy has already been denied.');
   if (target.state !== 'awaiting_approval') return refusal('conflict', `This deploy is ${target.state}, not awaiting approval.`);
-  return { approvalId: row.id, sha: row.deploy.requestedSha, target };
+  return { approvalId: row.id, sha: row.deploy.requestedSha, kind: row.deploy.kind, target };
 }
 
 /**
@@ -141,6 +142,12 @@ export async function approveDeploy(deps: ServiceDeps, decider: Decider, deployI
   // when it was requested: drift can open during the hour it waits (SHP-REQ-054).
   const blocked = await assertDeployable(deps.db, pending.target.app.name);
   if (blocked !== null) return blocked;
+  // Same for a freeze set after the deploy was requested (SHP-REQ-077, SHP-D-049): a held rollback
+  // is still approvable, only a held deploy is refused.
+  if (pending.kind === 'deploy') {
+    const frozen = await assertNotFrozen(deps.db, pending.target.app.name);
+    if (frozen !== null) return frozen;
+  }
   const userId = decider.actor?.id;
 
   let outcome: 'ok' | 'raced';

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,11 +6,26 @@ import { DeployTargetState, Manifest } from '@shipyard/schema';
 import type { Refusal } from '@shipyard/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// A seam into the real filesystem calls the lock makes, so a test can act between the moment a
+// taker judges a lock stale and the moment it takes the guard.
+const fsHooks = vi.hoisted(() => ({ beforeGuardLink: null as null | (() => Promise<void>) }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...real,
+    link: async (existing: string, target: string) => {
+      const hook = fsHooks.beforeGuardLink;
+      if (hook !== null && target.endsWith('.guard')) await hook();
+      return real.link(existing, target);
+    },
+  };
+});
+
 import { nodeFs } from '../src/adapters/node.js';
 import { Journal } from '../src/journal.js';
 import { Ledger } from '../src/ledger.js';
-import { canTransition, IllegalTransitionError, lockPath, runDeploy, transition, TRANSITIONS } from '../src/machine.js';
-import type { MachineContext } from '../src/machine.js';
+import { AppLock, canTransition, IllegalTransitionError, LOCK_GUARD_STALE_MS, lockPath, runDeploy, transition, TRANSITIONS } from '../src/machine.js';
+import type { LockHolder, MachineContext } from '../src/machine.js';
 import type { LoadedManifests } from '../src/manifest.js';
 import { RefusalError } from '../src/ports.js';
 import type {
@@ -114,7 +129,15 @@ interface World {
     upExits: number[];
     /** When set, `up` runs this digest instead of the one in the compose file. */
     tamperDigest: string | null;
+    /** Exit code of `compose rm` (default 0). */
+    rmExit: number;
+    /** When set, the app container crashes and Docker restarts it after this many ok probes. */
+    restartAfterProbes: number | null;
   };
+  /** Extra RepoDigests listed *before* the repo@digest entry, per digest. */
+  aliases: Map<string, string[]>;
+  /** Per service: when its container last started and Docker's restart count. */
+  starts: Map<string, { startedAt: string; restartCount: number }>;
 }
 
 function composeText(sha: string, digest: string): string {
@@ -169,7 +192,13 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
     pullExit: 0,
     upExits: [],
     tamperDigest: null,
+    rmExit: 0,
+    restartAfterProbes: null,
   };
+  const aliases = new Map<string, string[]>();
+  const starts = new Map<string, { startedAt: string; restartCount: number }>([['app', { startedAt: 'start-0', restartCount: 0 }]]);
+  let startCounter = 0;
+  let okProbes = 0;
 
   const realFs = nodeFs();
   const fs: FsPort = {
@@ -220,7 +249,19 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
           if (code !== 0) return exec(code);
           const text = await readFile(target.files[0] ?? '', 'utf8');
           const digest = /image: \S+@(sha256:[0-9a-f]{64})/.exec(text)?.[1];
-          if (digest !== undefined) running.set('app', opts.tamperDigest ?? digest);
+          if (digest !== undefined) {
+            const next = opts.tamperDigest ?? digest;
+            if (running.get('app') !== next) starts.set('app', { startedAt: `start-${String(++startCounter)}`, restartCount: 0 });
+            running.set('app', next);
+          }
+          return exec(0);
+        }
+        case 'rm': {
+          if (opts.rmExit !== 0) return exec(opts.rmExit);
+          for (const service of args.slice(3)) {
+            running.delete(service);
+            starts.delete(service);
+          }
           return exec(0);
         }
         default:
@@ -233,10 +274,11 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
         .map(([svc, digest]) => ({
           id: `c-${svc}`,
           service: svc,
-          repoDigests: [`${REPO}@${digest}`],
+          repoDigests: [...(aliases.get(digest) ?? []), `${REPO}@${digest}`],
           labels: images.get(digest)?.labels ?? {},
           state: 'running',
           networks: ['toy_default'],
+          ...starts.get(svc),
         }));
       return Promise.resolve(list);
     },
@@ -246,6 +288,11 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
       const count = (probeCounts.get(digest) ?? 0) + 1;
       probeCounts.set(digest, count);
       events.push('probe');
+      if (opts.restartAfterProbes !== null && digest === NEW_DIGEST && ++okProbes === opts.restartAfterProbes) {
+        // Crashed and restarted by Docker between two ticks: healthy again by the next probe.
+        const was = starts.get('app') ?? { startedAt: 'start-0', restartCount: 0 };
+        starts.set('app', { startedAt: `${was.startedAt}-again`, restartCount: was.restartCount + 1 });
+      }
       const schema = image?.labels[LABEL_SCHEMA] ?? 's?';
       switch (image?.health) {
         case 'fail':
@@ -312,7 +359,7 @@ async function makeWorld(options: { backup?: boolean; migrate?: boolean; soakSec
     onProgress: (e) => progress.push(e.state),
   };
 
-  return { root, dataRoot, composePath, artifactsDir, ports, ctx, events, images, running, composeCalls, progress, opts };
+  return { root, dataRoot, composePath, artifactsDir, ports, ctx, events, images, running, composeCalls, progress, opts, aliases, starts };
 }
 
 function request(overrides: Partial<DeployRequest> = {}): DeployRequest {
@@ -489,15 +536,34 @@ describe('runDeploy — dry run and refusals', () => {
 
 // ─── The lock ────────────────────────────────────────────────────────────────
 
+/** A lock file as another holder would have written it, with its heartbeat `ageMs` old. */
+function holderLock(overrides: Record<string, unknown> & { ageMs: number }): string {
+  const { ageMs, ...rest } = overrides;
+  return JSON.stringify({
+    pid: 1,
+    deployId: 'dep-other',
+    requesterLabel: 'claude session 7',
+    sha: 'c'.repeat(40),
+    step: 'soak',
+    at: '',
+    token: 'other-token',
+    heartbeatAt: new Date(Date.now() - ageMs).toISOString(),
+    ...rest,
+  });
+}
+
+const HOLDER: LockHolder = { pid: process.pid, deployId: 'dep-me', requesterLabel: 'me', sha: NEW_SHA, step: 'verify', at: '' };
+
 describe('runDeploy — host-CLI lock', () => {
   beforeEach(async () => {
     world = await makeWorld();
+    await mkdir(join(world.dataRoot, 'agent', 'locks'), { recursive: true });
   });
 
-  it("refuses while another live process holds the lock, naming its requester, SHA and step", async () => {
+  it('refuses while the holder is heartbeating, naming its requester, SHA and step — whatever its pid', async () => {
     const path = lockPath(world.dataRoot, 'toy');
-    await mkdir(join(world.dataRoot, 'agent', 'locks'), { recursive: true });
-    const holder = JSON.stringify({ pid: process.pid, deployId: 'dep-other', requesterLabel: 'claude session 7', sha: 'c'.repeat(40), step: 'soak', at: '' });
+    // PID 1 in the holder's container says nothing about this host: only the heartbeat counts.
+    const holder = holderLock({ pid: 2 ** 22 + 12345, ageMs: 5_000 });
     await writeFile(path, holder, 'utf8');
 
     const result = await runDeploy(world.ports, world.ctx, request());
@@ -509,17 +575,32 @@ describe('runDeploy — host-CLI lock', () => {
     expect(world.composeCalls).toEqual([]);
   });
 
-  it('takes over a stale lock whose holder is dead, and releases it afterwards', async () => {
+  it('takes over a lock whose heartbeat is older than 60 s even though its pid is alive, and releases it', async () => {
     const path = lockPath(world.dataRoot, 'toy');
-    await mkdir(join(world.dataRoot, 'agent', 'locks'), { recursive: true });
-    await writeFile(path, JSON.stringify({ pid: 2 ** 22 + 12345, deployId: 'dep-dead', requesterLabel: 'crashed cli', sha: 'c'.repeat(40), step: 'swap', at: '' }), 'utf8');
+    await writeFile(path, holderLock({ pid: process.pid, ageMs: 61_000 }), 'utf8');
 
     const result = await runDeploy(world.ports, world.ctx, request());
     expect(result.state).toBe('succeeded');
     await expect(stat(path)).rejects.toThrow();
   });
 
-  it('records the current step in the lock while it holds it', async () => {
+  it('treats a lock with no heartbeat (or unparsable) as stale', async () => {
+    const path = lockPath(world.dataRoot, 'toy');
+    await writeFile(path, JSON.stringify({ pid: process.pid, deployId: 'dep-old-format', requesterLabel: 'old cli', sha: 'c'.repeat(40), step: 'swap', at: '' }), 'utf8');
+    expect((await runDeploy(world.ports, world.ctx, request({ deployId: 'dep-a' }))).state).toBe('succeeded');
+    await writeFile(path, '{"pid": 12', 'utf8');
+    world.opts.aheadOfLive = 'identical';
+    expect(refusalOf(await runDeploy(world.ports, world.ctx, request({ deployId: 'dep-b' }))).code).not.toBe('locked');
+  });
+
+  it('honours the context lock staleness', async () => {
+    const path = lockPath(world.dataRoot, 'toy');
+    await writeFile(path, holderLock({ ageMs: 3_000 }), 'utf8');
+    world.ctx.lockStaleMs = 2_000;
+    expect((await runDeploy(world.ports, world.ctx, request())).state).toBe('succeeded');
+  });
+
+  it('records the current step and a heartbeat in the lock while it holds it', async () => {
     const seen: string[] = [];
     world.ctx.onProgress = () => undefined;
     const original = world.ports.docker.compose.bind(world.ports.docker);
@@ -527,8 +608,123 @@ describe('runDeploy — host-CLI lock', () => {
       if (args[0] === 'pull') seen.push(await readFile(lockPath(world.dataRoot, 'toy'), 'utf8'));
       return original(target, args);
     };
+    const before = Date.now();
     await runDeploy(world.ports, world.ctx, request({ requesterLabel: 'matt' }));
-    expect(JSON.parse(seen[0] ?? '{}')).toMatchObject({ requesterLabel: 'matt', sha: NEW_SHA, step: 'pull', pid: process.pid });
+    const lock = JSON.parse(seen[0] ?? '{}') as Record<string, unknown>;
+    expect(lock).toMatchObject({ requesterLabel: 'matt', sha: NEW_SHA, step: 'pull', pid: process.pid });
+    expect(lock['token']).toMatch(/^[0-9a-f]{32}$/);
+    expect(Date.parse(String(lock['heartbeatAt']))).toBeGreaterThanOrEqual(before - 1);
+  });
+});
+
+describe('AppLock — heartbeat and race-safe takeover', () => {
+  let dataRoot: string;
+  beforeEach(async () => {
+    dataRoot = await mkdtemp(join(tmpdir(), 'shp-lock-'));
+    roots.push(dataRoot);
+    await mkdir(join(dataRoot, 'agent', 'locks'), { recursive: true });
+  });
+  afterEach(() => {
+    fsHooks.beforeGuardLink = null;
+  });
+
+  const isLock = (x: unknown): x is AppLock => x instanceof AppLock;
+
+  it('exactly one of many concurrent takers wins a stale lock, every round', async () => {
+    const path = lockPath(dataRoot, 'toy');
+    for (let round = 0; round < 25; round++) {
+      await writeFile(path, holderLock({ ageMs: 120_000, deployId: `dep-dead-${String(round)}` }), 'utf8');
+      const takers = Array.from({ length: 8 }, (_, i) => AppLock.acquire(dataRoot, 'toy', { ...HOLDER, deployId: `dep-${String(round)}-${String(i)}` }));
+      const results = await Promise.all(takers);
+      const winners = results.filter(isLock);
+      expect(winners).toHaveLength(1);
+      for (const loser of results.filter((r) => !isLock(r))) expect(loser).toMatchObject({ code: 'locked' });
+      const held = JSON.parse(await readFile(path, 'utf8')) as { deployId: string };
+      const winner = winners[0];
+      if (winner === undefined) throw new Error('no winner');
+      const winnerIndex = results.indexOf(winner);
+      expect(held.deployId).toBe(`dep-${String(round)}-${String(winnerIndex)}`);
+      await winner.release();
+      await expect(stat(path)).rejects.toThrow();
+    }
+    // No temp or guard files are left behind.
+    expect(await readdir(join(dataRoot, 'agent', 'locks'))).toEqual([]);
+  });
+
+  it('compare-and-swap: a stale lock refreshed between the look and the swap is not taken', async () => {
+    const path = lockPath(dataRoot, 'toy');
+    await writeFile(path, holderLock({ ageMs: 120_000 }), 'utf8');
+    const refreshed = holderLock({ ageMs: 0, step: 'check' });
+    // The holder heartbeats after the taker judged it stale and before it holds the guard.
+    fsHooks.beforeGuardLink = async () => {
+      fsHooks.beforeGuardLink = null;
+      await writeFile(path, refreshed, 'utf8');
+    };
+    const result = await AppLock.acquire(dataRoot, 'toy', HOLDER);
+    expect(isLock(result)).toBe(false);
+    expect(result).toMatchObject({ code: 'locked', message: expect.stringContaining('step check') as unknown });
+    expect(await readFile(path, 'utf8')).toBe(refreshed);
+  });
+
+  it('compare-and-swap: another taker that won first is not overwritten', async () => {
+    const path = lockPath(dataRoot, 'toy');
+    await writeFile(path, holderLock({ ageMs: 120_000 }), 'utf8');
+    let first: AppLock | Refusal | undefined;
+    fsHooks.beforeGuardLink = async () => {
+      fsHooks.beforeGuardLink = null;
+      // A second taker runs its whole takeover inside the first one's window.
+      first = await AppLock.acquire(dataRoot, 'toy', { ...HOLDER, deployId: 'dep-first' });
+    };
+    const second = await AppLock.acquire(dataRoot, 'toy', { ...HOLDER, deployId: 'dep-second' });
+    expect(isLock(first)).toBe(true);
+    expect(isLock(second)).toBe(false);
+    expect(JSON.parse(await readFile(path, 'utf8'))).toMatchObject({ deployId: 'dep-first' });
+    if (isLock(first)) await first.release();
+  });
+
+  it('refuses while another process holds the takeover guard, and clears a guard left by a dead taker', async () => {
+    const path = lockPath(dataRoot, 'toy');
+    const stale = holderLock({ ageMs: 120_000 });
+    await writeFile(path, stale, 'utf8');
+    await writeFile(`${path}.guard`, '{}', 'utf8');
+    const busy = await AppLock.acquire(dataRoot, 'toy', HOLDER);
+    expect(busy).toMatchObject({ code: 'locked', message: expect.stringContaining('taking over') as unknown });
+    expect(await readFile(path, 'utf8')).toBe(stale);
+
+    const old = new Date(Date.now() - LOCK_GUARD_STALE_MS - 5_000);
+    await utimes(`${path}.guard`, old, old);
+    const taken = await AppLock.acquire(dataRoot, 'toy', HOLDER);
+    expect(isLock(taken)).toBe(true);
+    if (isLock(taken)) await taken.release();
+  });
+
+  it('heartbeats while held, stops on release, and never touches a lock it has lost', async () => {
+    const path = lockPath(dataRoot, 'toy');
+    const lock = await AppLock.acquire(dataRoot, 'toy', HOLDER, { heartbeatMs: 20 });
+    if (!isLock(lock)) throw new Error('not acquired');
+    const firstBeat = (JSON.parse(await readFile(path, 'utf8')) as { heartbeatAt: string }).heartbeatAt;
+    await new Promise((r) => setTimeout(r, 150));
+    const laterBeat = (JSON.parse(await readFile(path, 'utf8')) as { heartbeatAt: string }).heartbeatAt;
+    expect(Date.parse(laterBeat)).toBeGreaterThan(Date.parse(firstBeat));
+
+    // Taken over (it looked stale to someone): the old holder neither refreshes nor releases it.
+    const theirs = holderLock({ ageMs: 0, deployId: 'dep-new-holder' });
+    await writeFile(path, theirs, 'utf8');
+    await lock.heartbeat();
+    await lock.setStep('soak');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(await readFile(path, 'utf8')).toBe(theirs);
+    await lock.release();
+    expect(await readFile(path, 'utf8')).toBe(theirs);
+  });
+
+  it('a released lock is gone and its heartbeat has stopped', async () => {
+    const path = lockPath(dataRoot, 'toy');
+    const lock = await AppLock.acquire(dataRoot, 'toy', HOLDER, { heartbeatMs: 10 });
+    if (!isLock(lock)) throw new Error('not acquired');
+    await lock.release();
+    await new Promise((r) => setTimeout(r, 60));
+    await expect(stat(path)).rejects.toThrow();
   });
 });
 
@@ -680,5 +876,106 @@ describe('runDeploy — contract releases are never rolled back (SHP-REQ-017)', 
     expect(artifact).toMatch(/dump-\d+\.sql$/);
     expect(await readFile(artifact, 'utf8')).toBe('data');
     expect((await journalEntries(world)).some((e) => e.step === 'rollback')).toBe(false);
+  });
+});
+
+describe('runDeploy — a failed release with no previous one is stopped, not left running (SHP-REQ-016)', () => {
+  beforeEach(async () => {
+    world = await makeWorld();
+    // Nothing is running yet: a first deploy.
+    world.running.clear();
+    world.starts.clear();
+    world.images.set(NEW_DIGEST, { labels: { [LABEL_REVISION]: NEW_SHA }, health: 'fail' });
+  });
+
+  it('restores the compose file, removes the service with `compose rm -s -f`, and ends rolled_back', async () => {
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('rolled_back');
+    expect(refusalOf(result).code).toBe('health_failed');
+    expect(refusalOf(result).message).toContain('app had no previous release, so it was stopped and removed');
+    expect(await readFile(world.composePath, 'utf8')).toBe(composeText(OLD_SHA, OLD_DIGEST));
+    // The image that failed its check is not running; the restored placeholder was never `up`ed.
+    expect(world.running.has('app')).toBe(false);
+    expect(world.composeCalls.filter((a) => a[0] === 'up')).toEqual([['up', '-d', '--no-deps', 'app']]);
+    expect(world.composeCalls.at(-1)).toEqual(['rm', '-s', '-f', 'app']);
+    const rollbackEnd = (await journalEntries(world)).find((e) => e.step === 'rollback' && e.phase === 'end');
+    expect(rollbackEnd).toMatchObject({ argv: ['rm', '-s', '-f', 'app'], exitCode: 0, detail: { removed: ['app'], rmExitCode: 0 } });
+  });
+
+  it('a failing rm ends failed and says so', async () => {
+    world.opts.rmExit = 1;
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('failed');
+    expect(refusalOf(result).message).toContain('Rollback failed: compose rm exited 1');
+  });
+
+  it('a contract release with no previous one is left as it is', async () => {
+    world.images.set(NEW_DIGEST, { labels: { [LABEL_REVISION]: NEW_SHA, [LABEL_MIGRATION]: 'contract' }, health: 'fail' });
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('failed');
+    expect(world.running.get('app')).toBe(NEW_DIGEST);
+    expect(world.composeCalls.some((a) => a[0] === 'rm')).toBe(false);
+  });
+});
+
+describe('runDeploy — soak sees a restart between ticks (SHP-REQ-025)', () => {
+  beforeEach(async () => {
+    world = await makeWorld();
+  });
+
+  it('a container that crashed and restarted between two ticks → rolled_back, though /health says ok', async () => {
+    world.opts.restartAfterProbes = 2;
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('rolled_back');
+    expect(refusalOf(result).code).toBe('health_failed');
+    expect(refusalOf(result).message).toContain('Service "app" restarted during soak: its container started again at start-1-again.');
+    expect(world.progress.slice(-3)).toEqual(['soaking', 'rolling_back', 'rolled_back']);
+    expect(world.running.get('app')).toBe(OLD_DIGEST);
+  });
+
+  it('a restart counted without a new StartedAt is seen too', async () => {
+    world.opts.restartAfterProbes = 2;
+    const original = world.ports.docker.containers.bind(world.ports.docker);
+    world.ports.docker.containers = async (target, service) =>
+      (await original(target, service)).map((c) => ({ ...c, startedAt: 'fixed' }));
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('rolled_back');
+    expect(refusalOf(result).message).toContain('its restart count went from 0 to 1');
+  });
+
+  it('a steady container soaks through', async () => {
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('succeeded');
+  });
+});
+
+describe('runDeploy — rollback confirmation and the verified-release record', () => {
+  beforeEach(async () => {
+    world = await makeWorld();
+  });
+
+  it('confirms the previous digest among all RepoDigests, not only the first', async () => {
+    world.images.set(NEW_DIGEST, { labels: { [LABEL_REVISION]: NEW_SHA }, health: 'fail' });
+    const original = world.ports.docker.compose.bind(world.ports.docker);
+    world.ports.docker.compose = async (target, args) => {
+      // After the swap, the previous image also carries another digest of the repo, listed first.
+      if (args[0] === 'up') world.aliases.set(OLD_DIGEST, [`${REPO}@${OTHER_DIGEST}`]);
+      return original(target, args);
+    };
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('rolled_back');
+  });
+
+  it('records the verified release, and whether it is a contract, on the verify end line', async () => {
+    world.images.set(NEW_DIGEST, { labels: { [LABEL_REVISION]: NEW_SHA, [LABEL_MIGRATION]: 'contract' }, health: 'fail' });
+    await runDeploy(world.ports, world.ctx, request());
+    const verifyEnd = (await journalEntries(world)).find((e) => e.step === 'verify' && e.phase === 'end');
+    expect(verifyEnd?.detail).toMatchObject({ contract: true, images: [{ service: 'app', repo: REPO, digest: NEW_DIGEST, migration: 'contract' }] });
+
+    await rm(world.root, { recursive: true, force: true });
+    world = await makeWorld();
+    await runDeploy(world.ports, world.ctx, request());
+    const plain = (await journalEntries(world)).find((e) => e.step === 'verify' && e.phase === 'end');
+    expect(plain?.detail).toMatchObject({ contract: false });
   });
 });

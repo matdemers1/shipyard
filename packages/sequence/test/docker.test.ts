@@ -119,6 +119,8 @@ function fakeDocker(opts: {
       inspect: () =>
         Promise.resolve({
           Id: id,
+          State: { Status: 'running', StartedAt: '2026-09-24T10:00:00.000000000Z' },
+          RestartCount: 2,
           NetworkSettings: {
             Networks: Object.fromEntries(
               [...state.members.entries()].filter(([, s]) => s.has(id)).map(([n]) => [n, {}]),
@@ -296,8 +298,23 @@ describe('containers', () => {
         labels: { 'org.opencontainers.image.revision': 'abc' },
         state: 'running',
         networks: ['app_default', 'app_internal'],
+        startedAt: '2026-09-24T10:00:00.000000000Z',
+        restartCount: 2,
       },
     ]);
+    expect(f.raw.getContainer).toHaveBeenCalledWith('svc-container');
+  });
+
+  it('omits startedAt and restartCount for a container removed between the list and the inspect', async () => {
+    const f = fakeDocker();
+    f.raw.getContainer.mockImplementation(() => ({
+      inspect: () => Promise.reject(Object.assign(new Error('no such container'), { statusCode: 404 })),
+    }));
+    const adapter = createDockerAdapter({ docker: f.docker });
+    const [only] = await adapter.containers(TARGET, 'web');
+    expect(only).toBeDefined();
+    expect(only).not.toHaveProperty('startedAt');
+    expect(only).not.toHaveProperty('restartCount');
   });
 });
 

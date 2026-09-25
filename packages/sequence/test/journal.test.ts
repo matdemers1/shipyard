@@ -325,4 +325,55 @@ describe('recoverInterrupted', () => {
     expect(second).toHaveLength(0);
     expect(compose).toHaveBeenCalledTimes(1);
   });
+
+  describe('a contract release (SHP-REQ-017) is never auto-rolled back on restart', () => {
+    const HISTORY = {
+      '/opt/demo/compose.yaml': 'services:\n  app:\n    image: repo:new\n',
+      '/history/dep-1/manifest.json': JSON.stringify({
+        deployId: 'dep-1',
+        files: [{ original: '/opt/demo/compose.yaml', copy: '/history/dep-1/0-compose.yaml' }],
+      }),
+      '/history/dep-1/0-compose.yaml': 'services:\n  app:\n    image: repo:old\n',
+    };
+    const IMAGES = [{ service: 'app', repo: 'repo', digest: `sha256:${'2'.repeat(64)}`, migration: 'contract' }];
+
+    it.each(['check', 'soak', 'swap', 'migrate'])('killed mid-%s: ends failed + interrupted + contract, leaves compose and containers alone', async (lastStep) => {
+      const fs = makeMemoryFs(HISTORY);
+      const journal = new Journal(fs, 'journal.jsonl', makeClock(), makeLog().log);
+      await journal.begin({ deployId: 'dep-1', app: 'demo', step: 'deploy', detail: START_DETAIL });
+      await journal.begin({ deployId: 'dep-1', app: 'demo', step: 'verify' });
+      await journal.end({ deployId: 'dep-1', app: 'demo', step: 'verify', detail: { gates: [], contract: true, images: IMAGES } });
+      await journal.begin({ deployId: 'dep-1', app: 'demo', step: lastStep });
+
+      const [unfinished] = await journal.unfinished();
+      expect(unfinished?.detail).toMatchObject({ ...START_DETAIL, contract: true, images: IMAGES });
+
+      const { docker, compose } = makeDocker();
+      const results = await recoverInterrupted({ fs, docker, log: makeLog().log, clock: makeClock() }, journal, { historyDir: '/history' });
+
+      expect(results).toEqual([{ deployId: 'dep-1', app: 'demo', restored: [], upExitCode: null, lastStep, contract: true }]);
+      expect(compose).not.toHaveBeenCalled();
+      expect(fs.files.get('/opt/demo/compose.yaml')).toBe(HISTORY['/opt/demo/compose.yaml']);
+      const entries = await journal.readAll();
+      expect(entries.find((e) => e.step === 'deploy' && e.phase === 'end')?.detail).toEqual({ state: 'failed', interrupted: true, contract: true, lastStep });
+      expect(entries.some((e) => e.step === 'recover')).toBe(false);
+      expect(await journal.unfinished()).toEqual([]);
+    });
+
+    it('a verified non-contract release is still rolled back', async () => {
+      const fs = makeMemoryFs(HISTORY);
+      const journal = new Journal(fs, 'journal.jsonl', makeClock(), makeLog().log);
+      await journal.begin({ deployId: 'dep-1', app: 'demo', step: 'deploy', detail: START_DETAIL });
+      await journal.end({ deployId: 'dep-1', app: 'demo', step: 'verify', detail: { gates: [], contract: false, images: [{ ...IMAGES[0], migration: null }] } });
+      await journal.begin({ deployId: 'dep-1', app: 'demo', step: 'soak' });
+
+      const { docker, compose } = makeDocker();
+      const [result] = await recoverInterrupted({ fs, docker, log: makeLog().log, clock: makeClock() }, journal, { historyDir: '/history' });
+
+      expect(result).toMatchObject({ restored: ['/opt/demo/compose.yaml'], upExitCode: 0, lastStep: 'soak' });
+      expect(result?.contract).toBeUndefined();
+      expect(compose).toHaveBeenCalledTimes(1);
+      expect(fs.files.get('/opt/demo/compose.yaml')).toBe('services:\n  app:\n    image: repo:old\n');
+    });
+  });
 });

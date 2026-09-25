@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import { link, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 
 import { refusal } from '@shipyard/schema';
 import type { DeployTargetState, Manifest, Refusal } from '@shipyard/schema';
 import { stringify as stringifyYaml } from 'yaml';
 
-import { checkOnce, runningDigests } from './check.js';
+import { checkOnce } from './check.js';
 import type { CheckOutcome } from './check.js';
 import { pruneAfterSuccess } from './disk.js';
 import { composeTargetOf, resolveDeployTarget } from './facts.js';
@@ -14,7 +14,7 @@ import type { Journal } from './journal.js';
 import type { Ledger } from './ledger.js';
 import type { LoadedManifests } from './manifest.js';
 import { RefusalError } from './ports.js';
-import type { ComposeTarget, Log, SequencePorts } from './ports.js';
+import type { ComposeTarget, Log, RunningContainer, SequencePorts } from './ports.js';
 import { loadSecrets, redact } from './redact.js';
 import { applyRewrite, planRewrite, restoreFromHistory } from './rewrite.js';
 import { runBackup, runMigrate } from './steps.js';
@@ -92,6 +92,10 @@ export interface MachineContext {
   onProgress?: ProgressListener;
   /** Overrides how env names present on the host are found (names only). */
   envNamesProvider?: (manifest: Manifest) => Promise<string[]>;
+  /** How often the lock's heartbeat is refreshed. Default 10 s. */
+  lockHeartbeatMs?: number;
+  /** A lock whose heartbeat is older than this is stale. Default 60 s. */
+  lockStaleMs?: number;
 }
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 120_000;
@@ -108,73 +112,164 @@ interface LockContent {
   sha: string;
   step: string;
   at: string;
+  /** Random per acquisition: who holds this lock file, independent of pid (a container's PID 1). */
+  token: string;
+  /** Refreshed every `heartbeatMs` while the holder runs. Older than `staleMs` means stale. */
+  heartbeatAt: string;
 }
+
+export type LockHolder = Omit<LockContent, 'token' | 'heartbeatAt'>;
+
+export interface LockOptions {
+  /** How often the holder refreshes `heartbeatAt`. Default 10 s. */
+  heartbeatMs?: number;
+  /** A lock whose heartbeat is older than this is stale and may be taken over. Default 60 s. */
+  staleMs?: number;
+  /** Epoch ms. Default `Date.now`. */
+  now?: () => number;
+}
+
+export const LOCK_HEARTBEAT_MS = 10_000;
+export const LOCK_STALE_MS = 60_000;
+/**
+ * The takeover guard is held for a read and a rename, milliseconds; one older than this was left
+ * by a process that died holding it.
+ */
+export const LOCK_GUARD_STALE_MS = 30_000;
 
 export function lockPath(dataRoot: string, app: string): string {
   return `${dataRoot}/agent/locks/${app}.lock`;
-}
-
-function pidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // EPERM: the process exists but belongs to someone else.
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
-  }
 }
 
 function errCode(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | undefined)?.code;
 }
 
-async function readLock(path: string): Promise<LockContent | null> {
+function tempName(path: string): string {
+  return `${path}.${randomBytes(6).toString('hex')}.tmp`;
+}
+
+async function readRaw(path: string): Promise<string | null> {
   try {
-    return JSON.parse(await readFile(path, 'utf8')) as LockContent;
+    return await readFile(path, 'utf8');
   } catch (err) {
     if (errCode(err) === 'ENOENT') return null;
-    // Unparsable: the lock is written whole before it is linked into place, so this is not a
-    // half-written live lock; treat it as held by nobody.
-    return { pid: -1, deployId: '', requesterLabel: 'unknown', sha: '', step: 'unknown', at: '' };
+    throw err;
+  }
+}
+
+function parseLock(raw: string): Partial<LockContent> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch {
+    // Written whole before it is linked or renamed into place, so never half-written by a live
+    // holder: an unparsable lock has no heartbeat and is stale.
+    return {};
+  }
+}
+
+function isStale(holder: Partial<LockContent>, now: number, staleMs: number): boolean {
+  const beat = Date.parse(typeof holder.heartbeatAt === 'string' ? holder.heartbeatAt : '');
+  return !Number.isFinite(beat) || now - beat > staleMs;
+}
+
+/**
+ * Runs `fn` holding `<lock>.guard`, the one mutex every rewrite of an *existing* lock file goes
+ * through: a takeover, a heartbeat, a step update and a release. Created with link(2), so exactly
+ * one process holds it. Returns 'busy' when another process holds it.
+ */
+async function withGuard<T>(path: string, fn: () => Promise<T>): Promise<T | 'busy'> {
+  const guard = `${path}.guard`;
+  const tmp = tempName(guard);
+  await writeFile(tmp, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
+  try {
+    let held = false;
+    for (let attempt = 0; attempt < 2 && !held; attempt++) {
+      try {
+        await link(tmp, guard);
+        held = true;
+      } catch (err) {
+        if (errCode(err) !== 'EEXIST') throw err;
+        const info = await stat(guard).catch(() => null);
+        if (info !== null && Date.now() - info.mtimeMs <= LOCK_GUARD_STALE_MS) return 'busy';
+        // Left by a process that died holding it (or just released): clear it and try once more.
+        if (info !== null) await unlink(guard).catch(() => undefined);
+      }
+    }
+    if (!held) return 'busy';
+    try {
+      return await fn();
+    } finally {
+      await unlink(guard).catch(() => undefined);
+    }
+  } finally {
+    await unlink(tmp).catch(() => undefined);
   }
 }
 
 /**
- * An exclusive per-app lock file for the host CLI. The content is written to a private temp file
- * and hard-linked into place, which fails with EEXIST exactly like an O_EXCL create but never
- * exposes a half-written lock. A lock whose pid is dead is stale and taken over once.
+ * An exclusive per-app lock file for the host CLI and the agent (SHP-REQ-032's holder names).
+ *
+ * - **Acquire**: the content is written to a private temp file and hard-linked into place, which
+ *   fails with EEXIST exactly like an O_EXCL create but never exposes a half-written lock.
+ * - **Liveness is a heartbeat**, not a pid: the holder refreshes `heartbeatAt` every 10 s, and a
+ *   lock whose heartbeat is older than 60 s is stale. A pid says nothing in a container, where a
+ *   restarted agent is PID 1 again.
+ * - **Takeover is compare-and-swap**: under the guard, the lock file is re-read, and a fresh temp
+ *   lock is renamed over it only if its content is byte-for-byte the stale content judged stale.
+ *   Two takers cannot both win: the guard admits one, and the loser's re-read no longer matches.
  */
-class AppLock {
+export class AppLock {
+  private timer: NodeJS.Timeout | null = null;
+  private queue: Promise<unknown> = Promise.resolve();
+  private released = false;
+
   private constructor(
     private readonly path: string,
     private content: LockContent,
+    private readonly now: () => number,
   ) {}
 
-  static async acquire(dataRoot: string, app: string, content: LockContent): Promise<AppLock | Refusal> {
+  static async acquire(dataRoot: string, app: string, holder: LockHolder, options: LockOptions = {}): Promise<AppLock | Refusal> {
+    const now = options.now ?? Date.now;
+    const staleMs = options.staleMs ?? LOCK_STALE_MS;
+    const heartbeatMs = options.heartbeatMs ?? LOCK_HEARTBEAT_MS;
     const path = lockPath(dataRoot, app);
     await mkdir(`${dataRoot}/agent/locks`, { recursive: true });
-    const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
+    const content: LockContent = { ...holder, token: randomBytes(16).toString('hex'), heartbeatAt: new Date(now()).toISOString() };
+    const tmp = tempName(path);
     await writeFile(tmp, JSON.stringify(content), { flag: 'wx' });
+    const won = (): AppLock => {
+      const lock = new AppLock(path, content, now);
+      lock.startHeartbeat(heartbeatMs);
+      return lock;
+    };
     try {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
           await link(tmp, path);
-          return new AppLock(path, content);
+          return won();
         } catch (err) {
           if (errCode(err) !== 'EEXIST') throw err;
         }
-        const holder = await readLock(path);
-        if (holder !== null && pidAlive(holder.pid)) {
+        const seen = await readRaw(path);
+        if (seen === null) continue; // released in between: try the link again
+        const current = parseLock(seen);
+        if (!isStale(current, now(), staleMs)) {
           return refusal(
             'locked',
-            `${app} is locked by ${holder.requesterLabel} deploying ${holder.sha.slice(0, 7)} (step ${holder.step}, deploy ${holder.deployId}).`,
+            `${app} is locked by ${current.requesterLabel ?? 'unknown'} deploying ${(current.sha ?? '').slice(0, 7)} (step ${current.step ?? 'unknown'}, deploy ${current.deployId ?? 'unknown'}).`,
           );
         }
-        // Stale: its holder is gone. Remove it and try once more.
-        await unlink(path).catch((e: unknown) => {
-          if (errCode(e) !== 'ENOENT') throw e;
+        const swapped = await withGuard(path, async () => {
+          if ((await readRaw(path)) !== seen) return false;
+          await rename(tmp, path);
+          return true;
         });
+        if (swapped === 'busy') return refusal('locked', `${app} is locked: another process is taking over its stale lock.`);
+        if (swapped) return won();
+        // The content changed after it was judged stale (a heartbeat, or another taker won): look again.
       }
       return refusal('locked', `${app} is locked and the lock could not be taken over.`);
     } finally {
@@ -182,23 +277,69 @@ class AppLock {
     }
   }
 
-  /** Best-effort: records the current step so a refused requester can see it. */
+  private startHeartbeat(heartbeatMs: number): void {
+    this.timer = setInterval(() => {
+      void this.rewrite({}).catch(() => undefined);
+    }, heartbeatMs);
+    this.timer.unref();
+  }
+
+  /**
+   * Rewrites the lock with a fresh heartbeat (and `patch`), only while it is still this holder's.
+   * Serialized within the process; across processes, by the guard.
+   */
+  private rewrite(patch: Partial<LockContent>, attempts = 1): Promise<void> {
+    const next = this.queue.then(async () => {
+      if (this.released) return;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        const done = await withGuard(this.path, async () => {
+          const current = await readRaw(this.path);
+          if (current === null || parseLock(current).token !== this.content.token) return; // lost it
+          this.content = { ...this.content, ...patch, heartbeatAt: new Date(this.now()).toISOString() };
+          const tmp = tempName(this.path);
+          try {
+            await writeFile(tmp, JSON.stringify(this.content), { flag: 'wx' });
+            await rename(tmp, this.path);
+          } catch {
+            await unlink(tmp).catch(() => undefined);
+          }
+        });
+        if (done !== 'busy') return;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    });
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
+
+  /** Best-effort: records the current step (and a heartbeat) so a refused requester can see it. */
   async setStep(step: string): Promise<void> {
-    this.content = { ...this.content, step };
-    const tmp = `${this.path}.${randomBytes(6).toString('hex')}.tmp`;
-    try {
-      await writeFile(tmp, JSON.stringify(this.content), { flag: 'wx' });
-      await rename(tmp, this.path);
-    } catch {
-      await unlink(tmp).catch(() => undefined);
-    }
+    await this.rewrite({ step }, 5).catch(() => undefined);
+  }
+
+  /** Test seam: refresh the heartbeat now. */
+  async heartbeat(): Promise<void> {
+    await this.rewrite({}, 5);
   }
 
   async release(): Promise<void> {
-    const holder = await readLock(this.path);
-    if (holder?.deployId === this.content.deployId) {
-      await unlink(this.path).catch(() => undefined);
-    }
+    if (this.timer !== null) clearInterval(this.timer);
+    this.timer = null;
+    const done = this.queue.then(async () => {
+      if (this.released) return;
+      this.released = true;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const result = await withGuard(this.path, async () => {
+          const current = await readRaw(this.path);
+          if (current !== null && parseLock(current).token === this.content.token) await unlink(this.path).catch(() => undefined);
+        });
+        if (result !== 'busy') return;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      // The guard stayed busy: leave the lock; its heartbeat stops, so it goes stale in staleMs.
+    });
+    this.queue = done.catch(() => undefined);
+    await done;
   }
 }
 
@@ -328,14 +469,22 @@ export async function runDeploy(ports: SequencePorts, ctx: MachineContext, reque
     return result(run, { ...empty, state: 'verifying', gates: resolved.gates, images: resolved.images });
   }
 
-  const acquired = await AppLock.acquire(ctx.dataRoot, request.app, {
-    pid: process.pid,
-    deployId: request.deployId,
-    requesterLabel: request.requesterLabel,
-    sha: request.sha,
-    step: 'verify',
-    at: ports.clock.now().toISOString(),
-  });
+  const acquired = await AppLock.acquire(
+    ctx.dataRoot,
+    request.app,
+    {
+      pid: process.pid,
+      deployId: request.deployId,
+      requesterLabel: request.requesterLabel,
+      sha: request.sha,
+      step: 'verify',
+      at: ports.clock.now().toISOString(),
+    },
+    {
+      ...(ctx.lockHeartbeatMs === undefined ? {} : { heartbeatMs: ctx.lockHeartbeatMs }),
+      ...(ctx.lockStaleMs === undefined ? {} : { staleMs: ctx.lockStaleMs }),
+    },
+  );
   if (!(acquired instanceof AppLock)) {
     await run.move('refused');
     return result(run, { ...empty, refusal: acquired });
@@ -386,8 +535,18 @@ async function deployLocked(ports: SequencePorts, ctx: MachineContext, run: Run,
     await run.move('refused');
     return { state: 'refused', images: [], gates: [], refusal: refused, schemaRevision: null, backupArtifact: null };
   }
+  // The verified release, recorded before anything changes: restart recovery reads `contract`
+  // from here and never auto-rolls back a contract release (SHP-REQ-017, SHP-REQ-022).
   await run.end(verifyRecord, {
-    detail: { gates: resolved.gates.map((g) => ({ gate: g.gate, pass: g.pass })), ...(resolved.refusal === null ? {} : { refused: resolved.refusal.code }) },
+    detail: {
+      gates: resolved.gates.map((g) => ({ gate: g.gate, pass: g.pass })),
+      ...(resolved.refusal === null
+        ? {
+            contract: resolved.images.some((image) => image.migration === 'contract'),
+            images: resolved.images.map((image) => ({ service: image.service, repo: image.repo, digest: image.digest, migration: image.migration })),
+          }
+        : { refused: resolved.refusal.code }),
+    },
   });
   if (resolved.refusal !== null) {
     await run.move('refused');
@@ -573,7 +732,61 @@ async function pollCheck(
   }
 }
 
-/** Keeps checking for the manifest's soak duration (SHP-REQ-025); the first failure ends it. */
+interface ContainerIdentity {
+  id: string;
+  startedAt: string | undefined;
+  restartCount: number | undefined;
+}
+
+/** service → the identity of each of its running containers now. */
+async function identities(docker: SequencePorts['docker'], target: ComposeTarget, images: VerifiedImage[]): Promise<Map<string, ContainerIdentity[]>> {
+  const containers = await docker.containers(target);
+  const out = new Map<string, ContainerIdentity[]>();
+  for (const image of images) {
+    out.set(
+      image.service,
+      containers
+        .filter((c) => c.service === image.service && c.state === 'running')
+        .map((c) => ({ id: c.id, startedAt: c.startedAt, restartCount: c.restartCount })),
+    );
+  }
+  return out;
+}
+
+/**
+ * A container that was running at the start of soak and is now gone, not running, or started again
+ * (a new StartedAt or RestartCount) crashed between two ticks, however healthy it answers now.
+ */
+async function restartDuringSoak(
+  docker: SequencePorts['docker'],
+  target: ComposeTarget,
+  baseline: Map<string, ContainerIdentity[]>,
+): Promise<Refusal | null> {
+  const containers = await docker.containers(target);
+  for (const [service, before] of baseline) {
+    for (const was of before) {
+      const now = containers.find((c) => c.id === was.id);
+      const why =
+        now === undefined
+          ? 'its container is gone'
+          : now.state !== 'running'
+            ? `its container is ${now.state}`
+            : now.startedAt !== was.startedAt
+              ? `its container started again at ${now.startedAt ?? '(unknown)'}`
+              : now.restartCount !== was.restartCount
+                ? `its restart count went from ${String(was.restartCount)} to ${String(now.restartCount)}`
+                : null;
+      if (why !== null) return refusal('health_failed', `Service "${service}" restarted during soak: ${why}.`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Keeps checking for the manifest's soak duration (SHP-REQ-025); the first failure ends it. Each
+ * tick also compares every container against the one that started the soak, so a crash and a
+ * restart between two ticks is a failure too, not a blind spot.
+ */
 async function soak(
   ports: SequencePorts,
   ctx: MachineContext,
@@ -584,9 +797,18 @@ async function soak(
   const intervalMs = ctx.soakIntervalMs ?? DEFAULT_SOAK_INTERVAL_MS;
   const probeTimeoutMs = ctx.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const end = ports.clock.now().getTime() + manifest.soakSeconds * 1000;
+  const baseline = await identities(ports.docker, target, images).catch(() => new Map<string, ContainerIdentity[]>());
+  for (const [service, running] of baseline) {
+    // Checked a moment ago, so this is a crash in between: soak has nothing to watch.
+    if (running.length === 0) {
+      return { ok: false, definitive: true, refusal: refusal('health_failed', `Service "${service}" had no running container when soak began.`) };
+    }
+  }
   let last: CheckOutcome | null = null;
   while (ports.clock.now().getTime() < end) {
     await ports.clock.sleep(Math.min(intervalMs, Math.max(0, end - ports.clock.now().getTime())));
+    const restarted = await restartDuringSoak(ports.docker, target, baseline).catch(() => null);
+    if (restarted !== null) return { ok: false, definitive: true, refusal: restarted };
     last = await checkOnce(ports.docker, target, manifest, images, { probeTimeoutMs });
     if (!last.ok) return last;
   }
@@ -628,31 +850,64 @@ async function afterSwapFailure(
 
   await run.move('rolling_back', 'rollback');
   const record = await run.begin('rollback', { detail: { historyDeployId: run.request.deployId } });
-  const upArgs = ['up', '-d', '--no-deps', ...services];
+  // Services that ran a digest before come back to it; a service that ran nothing (a first deploy)
+  // is stopped and removed, so no image that failed its check keeps running (SHP-REQ-016).
+  const previous: [string, string][] = [];
+  const fresh: string[] = [];
+  for (const service of services) {
+    const digest = live.running[service];
+    if (digest === null || digest === undefined) fresh.push(service);
+    else previous.push([service, digest]);
+  }
+  const upArgs = ['up', '-d', '--no-deps', ...previous.map(([service]) => service)];
+  const rmArgs = ['rm', '-s', '-f', ...fresh];
+  const argv = previous.length > 0 ? upArgs : rmArgs;
   try {
     const restored = await restoreFromHistory(ports.fs, ctx.historyDir, run.request.deployId);
-    const up = await ports.docker.compose(target, upArgs);
-    const previous = Object.entries(live.running).filter((entry): entry is [string, string] => entry[1] !== null);
+    let why: string | null = null;
+    let rmExitCode: number | null = null;
+    let upExitCode: number | null = null;
     let confirmed = false;
-    if (up.exitCode === 0 && previous.length > 0) confirmed = await confirmPrevious(ports, ctx, target, images, previous);
-    await run.end(record, { argv: upArgs, exitCode: up.exitCode, detail: { restored, confirmed } });
-    if (!confirmed) {
-      const why = up.exitCode !== 0 ? `compose up exited ${up.exitCode}` : previous.length === 0 ? 'there was no previous release running' : 'the previous digests did not come back';
+    if (fresh.length > 0) {
+      const rm = await ports.docker.compose(target, rmArgs);
+      rmExitCode = rm.exitCode;
+      if (rm.exitCode !== 0) why = `compose rm exited ${rm.exitCode} removing ${fresh.join(', ')}, which had no previous release`;
+    }
+    if (previous.length > 0) {
+      const up = await ports.docker.compose(target, upArgs);
+      upExitCode = up.exitCode;
+      if (up.exitCode !== 0) why ??= `compose up exited ${up.exitCode}`;
+      else {
+        confirmed = await confirmPrevious(ports, ctx, target, images, previous);
+        if (!confirmed) why ??= 'the previous digests did not come back';
+      }
+    }
+    const exitCode = upExitCode ?? rmExitCode;
+    await run.end(record, {
+      argv,
+      ...(exitCode === null ? {} : { exitCode }),
+      detail: { restored, confirmed, removed: fresh, ...(rmExitCode === null ? {} : { rmExitCode }) },
+    });
+    if (why !== null) {
       run.log.error({ why }, 'rollback failed');
       await run.move('failed');
       return { ...base, state: 'failed', backupArtifact, refusal: { ...failure, message: `${failure.message} Rollback failed: ${why}.` } };
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await run.end(record, { argv: upArgs, detail: { error: message } });
+    await run.end(record, { argv, detail: { error: message } });
     await run.move('failed');
     return { ...base, state: 'failed', backupArtifact, refusal: { ...failure, message: `${failure.message} Rollback failed: ${message}.` } };
   }
   await run.move('rolled_back');
-  return { ...base, state: 'rolled_back', backupArtifact, refusal: failure };
+  const note = fresh.length > 0 ? ` ${fresh.join(', ')} had no previous release, so ${fresh.length === 1 ? 'it was' : 'they were'} stopped and removed.` : '';
+  return { ...base, state: 'rolled_back', backupArtifact, refusal: { ...failure, message: `${failure.message}${note}` } };
 }
 
-/** Polls until every service that had a digest before is running that digest again. */
+/**
+ * Polls until every service that had a digest before is running that digest again: any of the
+ * running image's RepoDigests for the repository counts, not only the first.
+ */
 async function confirmPrevious(
   ports: SequencePorts,
   ctx: MachineContext,
@@ -663,10 +918,15 @@ async function confirmPrevious(
   const timeoutMs = ctx.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
   const intervalMs = ctx.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS;
   const deadline = ports.clock.now().getTime() + timeoutMs;
-  const repos = Object.fromEntries(images.map((image) => [image.service, { image: image.repo }]));
+  const repoOf = new Map(images.map((image) => [image.service, image.repo]));
   for (;;) {
-    const running = await runningDigests(ports.docker, target, repos).catch((): Record<string, string | null> => ({}));
-    if (previous.every(([service, digest]) => running[service] === digest)) return true;
+    const containers = await ports.docker.containers(target).catch((): RunningContainer[] => []);
+    const back = previous.every(([service, digest]) => {
+      const expected = `${repoOf.get(service) ?? ''}@${digest}`;
+      const running = containers.filter((c) => c.service === service && c.state === 'running');
+      return running.length > 0 && running.every((c) => c.repoDigests.includes(expected));
+    });
+    if (back) return true;
     if (ports.clock.now().getTime() >= deadline) return false;
     await ports.clock.sleep(intervalMs);
   }

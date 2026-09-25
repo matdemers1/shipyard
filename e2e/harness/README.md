@@ -17,6 +17,8 @@ pnpm --filter e2e test:unit       # the fake GitHub's logic only, no Docker
 | `buildToyImage({ mode, schema, revision, contract? })` | Builds `toy-app/` on the host daemon as `registry:5000/toy/app:sha-<revision>`, loads it into dind (`docker save \| docker load`), pushes it from dind, then deletes dind's copy so a deploy genuinely pulls. Returns the digest the push reported, confirmed against the registry. |
 | `deployFromManifest(manifestPath, sha)` | Reads the manifest, resolves `sha-<sha>` to its digest, renders the compose files with the image line pinned to `tag@digest`, then against dind: `pull`, the `migrate` step (`compose run --rm --no-deps <service> <argv…>`), `up -d --wait`. Reports the running container's image ID, RepoDigests, labels and `/health`. |
 | `toy-app/` | `server.mjs`, `migrate.mjs` and a `Dockerfile`. Build args pick the behaviour: `TOY_MODE` = `pass \| fail-health \| wrong-schema \| fail-migrate \| exit-mid \| print-secret`, `TOY_SCHEMA` (what `/health` reports), `TOY_REVISION` (also the `org.opencontainers.image.revision` label), `TOY_CONTRACT=1` (adds `dev.d3cloud.shipyard.migration=contract`). `manifest.yml` and `compose.yml` are the stack as a host would hold it. |
+| `harness/engine.ts` | Drives the real `@shipyard/sequence` engine against the harness: `enginePorts()` (real Docker/GitHub/registry adapters), `prepareToyDataRoot()` (a temp data root with `apps/toy.yml` and the toy compose file), `openContext()`, `linearMainState()`. Its fetch shims bridge the fake GitHub's gaps (workflow-scoped runs, `commit.message` in compare). |
+| `harness/deploy-runner.ts` | A deploy in its own process (node + tsx loader, `TSX_TSCONFIG_PATH=harness/runner.tsconfig.json`), so `tests/kill-mid-swap.test.ts` can SIGKILL it at the machine's test-only pause point. |
 | `fake-github/` | The slice of the GitHub REST API the agent uses: `GET /repos/:o/:r/actions/runs?head_sha=` and `GET /repos/:o/:r/compare/:base...:head`, in GitHub's shape. Tests drive it with `POST /_control/state` and read `GET /_control/requests` (`DELETE` clears them). All logic is in `logic.mjs` (types in `logic.d.mts`), so it is unit-tested without Docker. |
 
 ## Two routing facts worth knowing
@@ -28,6 +30,12 @@ pnpm --filter e2e test:unit       # the fake GitHub's logic only, no Docker
 - **`/health` is fetched from inside dind.** The toy stack publishes `127.0.0.1::3000` inside dind's
   network namespace; the harness asks `docker compose port` for the port and runs busybox `wget`
   in the dind container with `docker exec`.
+
+- **Engine-driven tests name the registry `registry.shipyard.test`.** The manifest schema refuses
+  an image repository containing `:`, so `registry:5000/toy/app` cannot be mapped. A second
+  `registry:2` (`registry-alias`) serves the same storage on port 80 under that name; pushes still
+  go to `registry:5000`. Images are built `--provenance=false`, one plain manifest, because the
+  registry adapter only reads `linux/amd64` out of an index.
 
 From inside the harness network the registry is `registry:5000` and the fake GitHub is
 `http://fake-github:8080`. A later phase runs the real agent as a container in dind, pointed at

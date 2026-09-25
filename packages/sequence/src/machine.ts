@@ -378,8 +378,11 @@ function asRefusal(err: unknown, code: 'step_failed' | 'backup_failed' | 'migrat
   return refusal(code, `${what}: ${message}`);
 }
 
-/** One deploy's mutable bookkeeping: state, step records, journal and progress. */
-class Run {
+/**
+ * One deploy's mutable bookkeeping: state, step records, journal and progress. Exported for the
+ * rollback path (`rollback.ts`), which joins the same execution after its own verify.
+ */
+export class Run {
   state: DeployTargetState = 'queued';
   readonly steps: StepRecord[] = [];
   lock: AppLock | null = null;
@@ -419,7 +422,7 @@ class Run {
   }
 }
 
-interface Outcome {
+export interface Outcome {
   state: DeployTargetState;
   images: VerifiedImage[];
   gates: GateResult[];
@@ -428,7 +431,7 @@ interface Outcome {
   backupArtifact: string | null;
 }
 
-function result(run: Run, outcome: Outcome): DeployResult {
+export function result(run: Run, outcome: Outcome): DeployResult {
   return {
     deployId: run.request.deployId,
     app: run.request.app,
@@ -561,11 +564,20 @@ async function deployLocked(ports: SequencePorts, ctx: MachineContext, run: Run,
   return executeTarget(ports, ctx, run, manifest, target, resolved.images, resolved.live, resolved.gates);
 }
 
+export interface ExecuteOptions {
+  /**
+   * A rollback: image-only (SHP-D-008). No backup and no migrate run, and a failed check rolls
+   * back to what was live before regardless of the target's own migration label — no migration
+   * ran, so there is nothing an image swap cannot undo.
+   */
+  imageOnly?: boolean;
+}
+
 /**
- * Everything after verify, for images already verified. A rollback (Phase 2) resolves its images
- * from the ledger and joins here.
+ * Everything after verify, for images already verified. A rollback resolves its images from the
+ * ledger and joins here with `imageOnly`; the ledger entry is recorded with `run.request.kind`.
  */
-async function executeTarget(
+export async function executeTarget(
   ports: SequencePorts,
   ctx: MachineContext,
   run: Run,
@@ -574,7 +586,9 @@ async function executeTarget(
   images: VerifiedImage[],
   live: LiveState,
   gates: GateResult[],
+  options: ExecuteOptions = {},
 ): Promise<Outcome> {
+  const imageOnly = options.imageOnly === true;
   const { docker, fs } = ports;
   const services = images.map((image) => image.service);
   const deployId = run.request.deployId;
@@ -589,7 +603,7 @@ async function executeTarget(
   const secrets = await loadSecrets(fs, manifest.envFiles).catch(() => new Map<string, string>());
 
   // ─── backup ────────────────────────────────────────────────────────────────
-  const backupStep = manifest.steps?.backup;
+  const backupStep = imageOnly ? undefined : manifest.steps?.backup;
   if (backupStep !== undefined) {
     await run.move('backing_up', 'backup');
     const record = await run.begin('backup', { argv: backupStep.argv });
@@ -605,7 +619,7 @@ async function executeTarget(
   }
 
   // ─── migrate ───────────────────────────────────────────────────────────────
-  const migrateStep = manifest.steps?.migrate;
+  const migrateStep = imageOnly ? undefined : manifest.steps?.migrate;
   if (migrateStep !== undefined) {
     await run.move('migrating', 'migrate');
     const record = await run.begin('migrate', { argv: migrateStep.argv });
@@ -679,7 +693,7 @@ async function executeTarget(
   const upOutput = redact(`${up.stdout}\n${up.stderr}`, secrets);
   await run.end(swapRecord, { argv: upArgs, exitCode: up.exitCode, output: upOutput });
   if (up.exitCode !== 0) {
-    return afterSwapFailure(ports, ctx, run, target, images, live, base, backupArtifact, refusal('step_failed', `compose up exited ${up.exitCode}.\n${upOutput}`));
+    return afterSwapFailure(ports, ctx, run, target, images, live, base, backupArtifact, imageOnly, refusal('step_failed', `compose up exited ${up.exitCode}.\n${upOutput}`));
   }
 
   // ─── check ─────────────────────────────────────────────────────────────────
@@ -688,7 +702,7 @@ async function executeTarget(
   const checked = await pollCheck(ports, ctx, manifest, target, images);
   await run.end(checkRecord, { detail: checked.ok ? { schema: checked.schema } : { refused: checked.refusal.code } });
   if (!checked.ok) {
-    return afterSwapFailure(ports, ctx, run, target, images, live, base, backupArtifact, checked.refusal);
+    return afterSwapFailure(ports, ctx, run, target, images, live, base, backupArtifact, imageOnly, checked.refusal);
   }
 
   // ─── soak ──────────────────────────────────────────────────────────────────
@@ -697,7 +711,7 @@ async function executeTarget(
   const soaked = await soak(ports, ctx, manifest, target, images);
   await run.end(soakRecord, { detail: soaked.ok ? { schema: soaked.schema } : { refused: soaked.refusal.code } });
   if (!soaked.ok) {
-    return afterSwapFailure(ports, ctx, run, target, images, live, base, backupArtifact, soaked.refusal);
+    return afterSwapFailure(ports, ctx, run, target, images, live, base, backupArtifact, imageOnly, soaked.refusal);
   }
   const schemaRevision = soaked.schema;
 
@@ -843,12 +857,13 @@ async function afterSwapFailure(
   live: LiveState,
   base: { images: VerifiedImage[]; gates: GateResult[]; schemaRevision: string | null },
   backupArtifact: string | null,
+  imageOnly: boolean,
   failure: Refusal,
 ): Promise<Outcome> {
   run.log.error({ code: failure.code, state: run.state }, failure.message);
   const services = images.map((image) => image.service);
 
-  if (images.some((image) => image.migration === 'contract')) {
+  if (!imageOnly && images.some((image) => image.migration === 'contract')) {
     run.log.error({ backupArtifact }, 'contract release failed: not rolling back; the backup is kept');
     await run.move('failed');
     return {

@@ -124,7 +124,7 @@ export async function resolveDeployTarget(
 
     const freeBytes = options.dryRun
       ? await ports.docker.freeBytes()
-      : (await ensureFreeSpace(ports, manifest, target, ledger.knownDigests(manifest.name))).freeBytes;
+      : (await ensureFreeSpace(ports, manifest, target, ledger.retainedDigests(manifest.name, manifest.retainImages))).freeBytes;
 
     const facts: GateFacts = {
       kind: 'deploy',

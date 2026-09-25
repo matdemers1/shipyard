@@ -3,7 +3,7 @@ import { ACTIVE_STATES, refusal } from '@shipyard/schema';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
-import { liveSchemaRevision, mountDrift, rollbackTargets } from './detail.js';
+import { activeFreeze, liveSchemaRevision, mountDrift, rollbackTargets } from './detail.js';
 import { recordedRelease } from './drift.js';
 
 export { assertDeployable, detectDrift, differingServices, recordedRelease } from './drift.js';
@@ -179,6 +179,8 @@ export function appsRouter(deps: ServiceDeps): Router {
       // Only the releases the agent's ledger would accept (SHP-REQ-063, SHP-D-080).
       rollbackTargets: rollback.rollbackTargets,
       needsRestore: rollback.needsRestore,
+      // The standing freeze, if any (SHP-REQ-077): new deploys are refused while it holds.
+      freeze: await activeFreeze(db, row.id),
       targets: targets.map((t) => ({
         id: t.id,
         deployId: t.deployId,

@@ -191,3 +191,51 @@ describe('resolveDeployTarget — env preflight from image-declared variable nam
     expect(resolved.refusal).toBeNull();
   });
 });
+
+describe('resolveDeployTarget — a group promotion ships the canary\'s digests or nothing (SHP-REQ-079)', () => {
+  const OTHER_DIGEST = `sha256:${'9'.repeat(64)}`;
+  const twoServices = (): Manifest =>
+    baseManifest({ services: { server: { image: 'ghcr.io/acme/demo/server' }, worker: { image: 'ghcr.io/acme/demo/worker' } } });
+
+  it('passes when every expected digest matches what the registry resolves', async () => {
+    const ports = buildPorts({ digests: { server: SERVER_DIGEST, worker: WORKER_DIGEST } });
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), twoServices(), SHA, {
+      dryRun: false,
+      expectDigests: { server: SERVER_DIGEST, worker: WORKER_DIGEST },
+    });
+    expect(resolved.refusal).toBeNull();
+    expect(resolved.images.map((i) => i.digest)).toEqual([SERVER_DIGEST, WORKER_DIGEST]);
+  });
+
+  it('refuses digest_mismatch naming the service, the expected and the resolved digest', async () => {
+    const ports = buildPorts({ digests: { server: SERVER_DIGEST, worker: WORKER_DIGEST } });
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), twoServices(), SHA, {
+      dryRun: false,
+      expectDigests: { server: SERVER_DIGEST, worker: OTHER_DIGEST },
+    });
+    expect(resolved.refusal?.code).toBe('digest_mismatch');
+    expect(resolved.refusal?.message).toContain('"worker"');
+    expect(resolved.refusal?.message).toContain(WORKER_DIGEST);
+    expect(resolved.refusal?.message).toContain(OTHER_DIGEST);
+    expect(resolved.images).toEqual([]);
+  });
+
+  it('applies to a dry run too', async () => {
+    const ports = buildPorts({ digests: { server: SERVER_DIGEST } });
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), baseManifest(), SHA, {
+      dryRun: true,
+      expectDigests: { server: OTHER_DIGEST },
+    });
+    expect(resolved.refusal?.code).toBe('digest_mismatch');
+  });
+
+  it('ignores an expected service the manifest does not map, and expects nothing of one it omits', async () => {
+    const ports = buildPorts({ digests: { server: SERVER_DIGEST, worker: WORKER_DIGEST } });
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), twoServices(), SHA, {
+      dryRun: true,
+      expectDigests: { server: SERVER_DIGEST, board: OTHER_DIGEST },
+    });
+    expect(resolved.refusal).toBeNull();
+    expect(resolved.images).toHaveLength(2);
+  });
+});

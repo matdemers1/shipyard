@@ -15,6 +15,7 @@ import type { ServiceDeps } from '../deps.js';
 import { TERMINAL_STATES } from '../deploys/service.js';
 import { sendRefusal } from '../errors.js';
 import { enqueueDeployment } from '../outbox/index.js';
+import { readGroupMeta, stopGroupAfter } from '../groups/service.js';
 import { PROGRESS_RANK, claimTarget, describeTarget, lastLines, releaseTarget } from './dispatch.js';
 import { verifyAgentRequest } from './verify.js';
 
@@ -58,8 +59,9 @@ const TARGET_SELECT = {
   state: true,
   startedAt: true,
   dispatchedAt: true,
+  result: true,
   app: { select: { name: true, agentId: true, services: true } },
-  deploy: { select: { dryRun: true } },
+  deploy: { select: { dryRun: true, groupName: true } },
 } satisfies Prisma.DeployTargetSelect;
 
 /** The target, if it exists, was dispatched, and belongs to an app this agent owns. */
@@ -239,6 +241,9 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
       return;
     }
     const dryRun = target.deploy.dryRun;
+    // A group member keeps its place in the group (deploy order, canary) alongside its result.
+    const groupMeta = target.deploy.groupName === null ? null : readGroupMeta(target.result);
+    let groupStopped: string[] = [];
 
     const recorded = await db.$transaction(async (tx) => {
       // Only once: the state guard makes a late or duplicate result a no-op, reported as 409.
@@ -247,6 +252,7 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
         data: {
           state: body.state,
           result: {
+            ...(groupMeta === null ? {} : { group: { ...groupMeta } }),
             gates: body.gates ?? [],
             // A dry run's resolved images belong on its sheet, not in target_image: that table is
             // the app's recorded release, which drift and rollbacks read.
@@ -259,6 +265,11 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
         },
       });
       if (updated.count === 0) return false;
+      // Stop at the first failure (SHP-REQ-078): every later member is cancelled in this same
+      // transaction, so no poll can ever hand one out.
+      if (target.deploy.groupName !== null && !dryRun && body.state !== 'succeeded') {
+        groupStopped = await stopGroupAfter(tx, { deployId: target.deployId, targetId: target.id, app: target.app.name, state: body.state });
+      }
       if (!dryRun && body.images.length > 0) {
         await tx.targetImage.createMany({
           data: body.images.map((image) => ({
@@ -315,11 +326,16 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
         ...(body.refusal === undefined ? {} : { refusal: body.refusal.code }),
         ...(body.schemaRevision === undefined ? {} : { schemaRevision: body.schemaRevision }),
         ...(body.backupArtifact === undefined ? {} : { backupArtifact: body.backupArtifact.path }),
+        ...(target.deploy.groupName === null ? {} : { group: target.deploy.groupName }),
+        ...(groupStopped.length === 0 ? {} : { groupStopped }),
       },
     });
     logger.info({ deployId: target.deployId, targetId: target.id, state: body.state }, 'target result recorded');
     bus.publish(`deploy:${target.deployId}`);
     bus.publish(`app:${target.app.name}`);
+    for (const name of groupStopped) bus.publish(`app:${name}`);
+    // A group member that succeeded makes the next one runnable.
+    if (target.deploy.groupName !== null && body.state === 'succeeded') bus.publish('work');
     res.json({ state: body.state, outbox });
   });
 }

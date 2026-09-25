@@ -16,12 +16,16 @@ const db: Db = createDb(databaseUrl);
 const logger = pino({ enabled: false });
 const config = loadConfig({ DATABASE_URL: databaseUrl, SHIPYARD_VERSION: 'test-version' });
 
-function initMigrationName(): string {
+/** The newest migration directory: its name is what /health must report once all are applied. */
+function latestMigrationName(): string {
   const migrationsDir = join(import.meta.dirname, '../../prisma/migrations');
-  const entries = readdirSync(migrationsDir, { withFileTypes: true });
-  const dir = entries.find((e) => e.isDirectory() && e.name.includes('init'));
-  if (dir === undefined) throw new Error('no init migration directory found');
-  return dir.name;
+  const names = readdirSync(migrationsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+  const latest = names.at(-1);
+  if (latest === undefined) throw new Error('no migration directory found');
+  return latest;
 }
 
 beforeEach(async () => {
@@ -39,7 +43,7 @@ describe('GET /api/health', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       status: 'ok',
-      schemaRevision: initMigrationName(),
+      schemaRevision: latestMigrationName(),
       version: 'test-version',
     });
   });

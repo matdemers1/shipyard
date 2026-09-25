@@ -1,0 +1,35 @@
+# D3 Auth (SHP-T-4.7): the ecosystem's OIDC provider. Every deploy needs a deployer's approval in
+# the console (SHP-REQ-060): a token-requested deploy waits, holding no lock, until approved.
+# Host-local and argv-only (SHP-D-017): the copy that counts is <data root>/apps/d3auth.yml.
+#
+# The server applies its own migrations on boot, after its own pre-migration dump, so there is no
+# migrate step. The backup is D3 Auth's own bundle (database + sealed keys), written to a local
+# directory rather than S3 so the agent can see it; the nightly S3 backup is unchanged.
+name: d3auth
+repo: matdemers1/d3-auth
+workflow: ci.yml
+compose:
+  files:
+    - /DATA/d3auth/docker-compose.yml
+    - /DATA/d3auth/docker-compose.tunnel.yml
+  project: d3auth
+services:
+  server:
+    image: ghcr.io/matdemers1/d3-auth/server
+# /health answers {ok, schema: <newest applied migration>} (AUTH-T-002).
+health:
+  service: server
+  port: 3000
+  path: /health
+soakSeconds: 120
+approval: required
+steps:
+  backup:
+    service: server
+    argv: [node, dist/cli/backup.js, --now, --dir, /backups/predeploy]
+    artifactsDir: /var/lib/docker/volumes/d3auth_backups/_data/predeploy
+envFiles:
+  - /DATA/d3auth/server.env
+foreman:
+  project: AUTH
+  environment: production

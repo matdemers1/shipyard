@@ -1,4 +1,4 @@
-import { createDockerAdapter, createGitHubAdapter, createRegistryAdapter, nodeFs, systemClock } from '@shipyard/sequence';
+import { createDockerAdapter, createGitHubAdapter, createRegistryAdapter, dockerConfigCredentials, nodeFs, systemClock } from '@shipyard/sequence';
 import type { Log, SequencePorts } from '@shipyard/sequence';
 
 /**
@@ -140,6 +140,7 @@ export function buildPorts(config: EnvConfig, stderr: Sink): SequencePorts {
       ...(bridged ? { fetch: bridgeGithubFetch() } : {}),
     }),
     registry: createRegistryAdapter({
+      credentials: dockerConfigCredentials(process.env.DOCKER_CONFIG),
       ...(plainHttpHosts.length > 0 ? { plainHttpHosts } : {}),
       ...(config.registryAlias ? { fetch: aliasFetch(config.registryAlias) } : {}),
     }),

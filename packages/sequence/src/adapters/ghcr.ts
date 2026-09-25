@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { refusal } from '@shipyard/schema';
 
 import { RefusalError, type ImageConfig, type RegistryPort } from '../ports.js';
@@ -54,6 +56,32 @@ export interface GhcrAdapterOptions {
    * come from one build, so when the index has no entry for it the first real platform is used.
    */
   architecture?: string;
+  /**
+   * Registry credentials, as a docker config.json `auths[host].auth` value (base64 `user:token`),
+   * sent only to the token endpoint of that same host. Private images need one; public images
+   * work without. Never logged, never stored beyond this closure.
+   */
+  credentials?: (host: string) => string | undefined;
+}
+
+/**
+ * The `auths` of a docker config directory (`$DOCKER_CONFIG/config.json`), so the agent verifies
+ * digests with the same read-only credential its `docker compose pull` uses — one secret, not two.
+ * A missing or unreadable file means no credentials (anonymous), never an error.
+ */
+export function dockerConfigCredentials(configDir: string | undefined): (host: string) => string | undefined {
+  if (configDir === undefined || configDir === '') return () => undefined;
+  let auths: Record<string, { auth?: unknown }> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf8')) as { auths?: Record<string, { auth?: unknown }> };
+    auths = parsed.auths ?? {};
+  } catch {
+    return () => undefined;
+  }
+  return (host) => {
+    const auth = auths[host]?.auth;
+    return typeof auth === 'string' && auth.length > 0 ? auth : undefined;
+  };
 }
 
 function parseRepo(imageRepo: string): { host: string; path: string } {
@@ -100,7 +128,7 @@ export function createRegistryAdapter(options: GhcrAdapterOptions = {}): Registr
     }
   }
 
-  /** Fetches an anonymous bearer token from the realm/service/scope in a 401's WWW-Authenticate. */
+  /** Fetches a bearer token (anonymous, or with the host's credential) from a 401's WWW-Authenticate. */
   async function fetchToken(host: string, path: string, www: string): Promise<string> {
     const realm = /realm="([^"]+)"/.exec(www)?.[1];
     const service = /service="([^"]+)"/.exec(www)?.[1];
@@ -110,9 +138,12 @@ export function createRegistryAdapter(options: GhcrAdapterOptions = {}): Registr
     const url = new URL(realm);
     if (service !== undefined) url.searchParams.set('service', service);
     url.searchParams.set('scope', `repository:${path}:pull`);
-    const tokenRes = await rawFetch(host, url.toString(), {});
+    // Credentials go only to the registry's own host: a challenge naming another realm host gets none.
+    const credential = url.host === host ? options.credentials?.(host) : undefined;
+    const tokenRes = await rawFetch(host, url.toString(), credential === undefined ? {} : { headers: { Authorization: `Basic ${credential}` } });
     if (!tokenRes.ok) {
-      throw new RefusalError(refusal('ghcr_unreachable', `${host} refused to issue an anonymous token (${String(tokenRes.status)})`));
+      const what = credential === undefined ? 'an anonymous token' : 'a token for the configured credential';
+      throw new RefusalError(refusal('ghcr_unreachable', `${host} refused to issue ${what} (${String(tokenRes.status)})`));
     }
     const body = (await tokenRes.json()) as { token?: string; access_token?: string; expires_in?: number };
     const token = body.token ?? body.access_token;

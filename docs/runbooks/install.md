@@ -24,7 +24,7 @@ Write four env files, all mode 600 (the compose file names them by absolute path
 |---|---|
 | `postgres.env` | `POSTGRES_USER=shipyard`, `POSTGRES_DB=shipyard`, `POSTGRES_PASSWORD=<random>` |
 | `server.env` | `DATABASE_URL=postgresql://shipyard:<same>@postgres:5432/shipyard`, `PORT=3300`, `PUBLIC_URL=https://<host name>`, `SESSION_SECRET=<random 32 bytes hex>`, `TRUST_PROXY_HOPS=1` (behind a tunnel or proxy; omit otherwise), `BACKUP_DIR=/backups`, optional `BACKUP_RETENTION_DAYS` (default 14; the newest three dumps are always kept), optional `FOREMAN_URL`/`FOREMAN_TOKEN` (a write-scoped Foreman token), optional `D3AUTH_ISSUER`/`D3AUTH_CLIENT_ID`/`D3AUTH_CLIENT_SECRET` |
-| `agent.env` | `SHIPYARD_SERVER_URL=http://server:3300`, `SHIPYARD_DATA_ROOT=/DATA/shipyard`, optional `GITHUB_TOKEN_AGENT` (fine-grained, read-only; public repos work without one, at 60 requests an hour) |
+| `agent.env` | `SHIPYARD_SERVER_URL=http://server:3300`, `SHIPYARD_DATA_ROOT=/DATA/shipyard`, optional `GITHUB_TOKEN_AGENT` (fine-grained, read-only; public repos work without one, at 60 requests an hour), and `DOCKER_CONFIG=<dir>` when any managed image is private (see §2) |
 | `tunnel.env` | `TUNNEL_TOKEN=<token>` if you expose the server through a Cloudflare tunnel |
 
 No shell here has `openssl`? `head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'` makes a secret.
@@ -38,6 +38,10 @@ The agent:
 
 - mounts `/DATA/shipyard/backups` **read-only at that identical path**, so the server manifest's
   backup step can see the dump it just took (`docs/manifests/shipyard.yml`, `artifactsDir`);
+- for private images, mounts the host's docker config directory read-only (e.g.
+  `/DATA/.docker:/DATA/.docker:ro`, with `DOCKER_CONFIG=/DATA/.docker` in `agent.env`): the one
+  `ghcr.io` credential there both verifies digests (G8) and pulls — a read-only `read:packages`
+  token is enough, and it never leaves the host (SHP-T-4.11);
 - mounts `/var/run/docker.sock`, `/DATA/shipyard/agent` (its key, journal, ledger), and
   `/DATA/shipyard/apps` read-only;
 - mounts **each managed stack directory at its identical host path** (e.g. `/DATA/d3auth-demo`),

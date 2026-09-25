@@ -950,6 +950,20 @@ describe('runDeploy — soak sees a restart between ticks (SHP-REQ-025)', () => 
     expect(refusalOf(result).message).toContain('its restart count went from 0 to 1');
   });
 
+  it('a crash that fails the probe itself is named as the restart, not as the probe', async () => {
+    world.opts.restartAfterProbes = 2;
+    const original = world.ports.docker.probeHealth.bind(world.ports.docker);
+    let probes = 0;
+    world.ports.docker.probeHealth = async (...args) => {
+      const response = await original(...args);
+      // The probe that sees the crash gets no answer: the container is still coming back up.
+      return ++probes === 2 ? Promise.reject(new Error('connection refused')) : response;
+    };
+    const result = await runDeploy(world.ports, world.ctx, request());
+    expect(result.state).toBe('rolled_back');
+    expect(refusalOf(result).message).toContain('Service "app" restarted during soak: its container started again at start-1-again.');
+  });
+
   it('a steady container soaks through', async () => {
     const result = await runDeploy(world.ports, world.ctx, request());
     expect(result.state).toBe('succeeded');

@@ -839,7 +839,12 @@ async function soak(
     );
     if (restarted !== null) return { ok: false, definitive: true, refusal: restarted };
     last = await checkOnce(ports.docker, target, manifest, images, { probeTimeoutMs });
-    if (!last.ok) return last;
+    if (!last.ok) {
+      // A crash between the restart check and the probe fails the probe first; the restart is the
+      // cause, so name it when it can be seen (the container may still be coming back up).
+      const cause = await restartDuringSoak(ports.docker, target, baseline).catch(() => null);
+      return cause === null ? last : { ok: false, definitive: true, refusal: cause };
+    }
   }
   return last ?? (await checkOnce(ports.docker, target, manifest, images, { probeTimeoutMs }));
 }

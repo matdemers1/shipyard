@@ -3,19 +3,27 @@
 # capture clean." Meant to run on a fresh runner (or locally, against Docker) with no state from
 # any earlier run.
 #
-# What "network capture clean" checks here, concretely:
-#   - postgres, server and a small curl "client" all run on a Docker network created with
-#     `--internal` — the Docker daemon refuses that network a default route, so any code path in
-#     the server that tried to dial an external host (GitHub, GHCR, Foreman, D3 Auth, a mail
-#     relay — all left unconfigured below) at boot, at migrate time, or during sign-in would fail
-#     outright with a connect/DNS error, not just "not be observed"; the network itself is the
-#     proof, and is why this never publishes the server's port to the host — everything, sign-in
-#     included, happens container-to-container on that same internal network, exactly as a real
-#     install with no D3AUTH_*/FOREMAN_*/GITHUB_TOKEN_SERVER/MAIL_RELAY_* set would run.
-#   - the server reaching `--wait`-healthy, migrating, and completing a full sign-in there is
-#     therefore itself the evidence that nothing on this path needs the internet.
-#   - as a second signal, the server's own logs are grepped for the connect/DNS errors an
-#     attempted-but-blocked outbound call would leave behind.
+# This exercises the documented path, not a lookalike: it copies docs/install/compose.example.yml
+# and the three *.env.example templates verbatim, sets the image tag the exact same way the
+# README's Quick start tells a reader to (the same `sed` one-liner, against a literal
+# `sha-<40hex>` tag — the compose file is never `${...}`-interpolated, see the README and
+# docs/runbooks/install.md for why), and only then layers one small `-f` override on top.
+#
+# That override does three things, and nothing else:
+#   - adds `internal: true` to the default network, so the Docker daemon refuses it a default
+#     route. Any code path in the server that tried to dial an external host (GitHub, GHCR,
+#     Foreman, D3 Auth, a mail relay — all left unconfigured below) at boot, at migrate time, or
+#     during sign-in would fail outright with a connect/DNS error, not just "not be observed"; the
+#     network itself is the proof.
+#   - resets the server's `ports:` to empty (`!reset []`), so nothing is published to the host —
+#     everything, sign-in included, happens container-to-container on that same internal network,
+#     exactly as a real install behind a tunnel (docs/runbooks/install.md) would run. This is the
+#     one place this script structurally cannot use the tunnel-free example's own port mapping,
+#     since the whole point is to prove nothing needed a route out, not to open a route in.
+#   - adds a `healthcheck` to the documented `server` service (the example file has none — a real
+#     install just polls `/api/health` by hand) and a throwaway `curl` client service, so `--wait`
+#     and every request below can run container-to-container with no host-side polling loop. A
+#     `platform: linux/amd64` pin is added too, since only that architecture is published.
 #
 # What this does NOT check: the agent (Docker socket, host stack directories) is not started here
 # — bringing it up would touch the calling machine's real Docker daemon and stacks, which the
@@ -29,6 +37,7 @@ set -euo pipefail
 image_tag="${IMAGE_TAG:-sha-457eb0b392c2c18175ec235ba3841157c9544aa3}"
 fallback_tag="sha-457eb0b392c2c18175ec235ba3841157c9544aa3"
 project="shipyard-cic-$$"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log() { printf '[clean-install-check] %s\n' "$1"; }
 
@@ -53,9 +62,10 @@ fi
 log "using image tag $image_tag"
 
 work_dir="$(mktemp -d -t shipyard-cic-XXXXXX)"
+compose_files=(-f "$work_dir/docker-compose.yml" -f "$work_dir/docker-compose.check-override.yml")
 cleanup() {
   log "tearing down (project $project)"
-  docker compose -p "$project" -f "$work_dir/docker-compose.yml" --env-file "$work_dir/postgres.env" \
+  docker compose -p "$project" "${compose_files[@]}" --env-file "$work_dir/postgres.env" \
     down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work_dir"
 }
@@ -63,49 +73,47 @@ trap cleanup EXIT
 
 random_secret() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
+# --- Steps 1–3 of "A stranger's quick start" (docs/install/README.md): copy the four documented
+# files verbatim (renamed the same way the README tells a reader to), and fill in the two
+# generated secrets the same way it tells a reader to. -----------------------------------------
+log "copying docs/install's documented files (not a rewritten lookalike)"
+cp "$repo_root/docs/install/compose.example.yml" "$work_dir/docker-compose.yml"
+cp "$repo_root/docs/install/postgres.env.example" "$work_dir/postgres.env"
+cp "$repo_root/docs/install/server.env.example" "$work_dir/server.env"
+cp "$repo_root/docs/install/agent.env.example" "$work_dir/agent.env"
+mkdir -p "$work_dir/data/apps" "$work_dir/data/agent" "$work_dir/data/backups"
+
 pg_password="$(random_secret)"
 session_secret="$(random_secret)"
 
-cat >"$work_dir/postgres.env" <<EOF
-POSTGRES_USER=shipyard
-POSTGRES_DB=shipyard
-POSTGRES_PASSWORD=${pg_password}
-EOF
+sed -i.bak "s/<random>/${pg_password}/" "$work_dir/postgres.env"
+sed -i.bak "s/<random>/${pg_password}/" "$work_dir/server.env"
+sed -i.bak "s/<random 32 bytes hex>/${session_secret}/" "$work_dir/server.env"
+rm -f "$work_dir"/*.bak
 
-cat >"$work_dir/server.env" <<EOF
-DATABASE_URL=postgresql://shipyard:${pg_password}@postgres:5432/shipyard
-SESSION_SECRET=${session_secret}
-PUBLIC_URL=http://localhost:3466
-TRUST_PROXY_HOPS=
-BACKUP_DIR=/backups
-EOF
+# The exact command the README's Quick start gives the reader, against the exact placeholder the
+# example file ships with — proves the documented tag step actually resolves both image lines.
+log "setting the image tag the same way the README's Quick start does"
+sed -i.bak "s/sha-<40hex>/${image_tag}/g" "$work_dir/docker-compose.yml" && rm -f "$work_dir/docker-compose.yml.bak"
+if grep -q 'sha-<40hex>' "$work_dir/docker-compose.yml"; then
+  echo "clean-install-check.sh: the README's sed step left an unresolved sha-<40hex> in docker-compose.yml" >&2
+  exit 1
+fi
 
-# postgres + server + a small curl-only "client", all on one --internal network. No port is
-# published to the host: every request below goes container-to-container by service name, which
-# is also why the server never sees a route off this network. The agent (Docker socket, host
-# stack directories) is intentionally not part of this — see NOTES at the bottom of this file.
-cat >"$work_dir/docker-compose.yml" <<EOF
-name: ${project}
+# The one override this check adds on top of the documented files — see the header comment.
+cat >"$work_dir/docker-compose.check-override.yml" <<EOF
 services:
   postgres:
-    image: postgres:16
     platform: linux/amd64
-    env_file: postgres.env
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U shipyard"]
-      interval: 2s
-      retries: 30
   server:
-    image: ${server_image}
     platform: linux/amd64
-    env_file: server.env
-    depends_on:
-      postgres:
-        condition: service_healthy
+    ports: !reset []
     healthcheck:
       test: ["CMD", "node", "dist/healthcheck.js"]
       interval: 2s
       retries: 30
+  agent:
+    platform: linux/amd64
   client:
     image: curlimages/curl:8.11.1
     platform: linux/amd64
@@ -119,10 +127,13 @@ networks:
 EOF
 
 compose() {
-  docker compose -p "$project" -f "$work_dir/docker-compose.yml" \
+  docker compose -p "$project" "${compose_files[@]}" \
     --env-file "$work_dir/postgres.env" "$@"
 }
 client_curl() { compose exec -T client curl -sS "$@"; }
+
+log "resolved config (documented files + the one internal-network/no-port override)"
+compose config >/dev/null
 
 log "pulling images (host-side; the internal network only governs container egress)"
 compose pull postgres server client
@@ -133,7 +144,7 @@ compose up -d --wait postgres
 log "running the Prisma migration"
 compose run --rm --no-deps server node node_modules/prisma/build/index.js migrate deploy
 
-log "starting the server and the curl client (both --wait healthy)"
+log "starting the server and the curl client (both --wait healthy; agent is not started, see NOTES)"
 compose up -d --wait server client
 
 log "GET /api/health, from the client container over the internal network"
@@ -201,7 +212,9 @@ if compose logs server 2>&1 | grep -iE 'ENOTFOUND|ECONNREFUSED.*(github|ghcr|for
   exit 1
 fi
 
-log "PASS: signed in app-natively on an --internal network with nothing configured beyond DATABASE_URL/SESSION_SECRET/PUBLIC_URL, and with no port published to the host."
+log "PASS: signed in app-natively, from docs/install's own compose file and env templates plus" \
+  "one internal-network/no-published-port override, with nothing configured beyond" \
+  "DATABASE_URL/SESSION_SECRET/PUBLIC_URL, and with no port published to the host."
 
 # NOTES
 # - The agent is not started by this script. Its own boot (Ed25519 key generation, enrolment
@@ -214,3 +227,7 @@ log "PASS: signed in app-natively on an --internal network with nothing configur
 #   me — happens container-to-container on the same --internal network as the server; nothing is
 #   published to the host, matching a real install (docs/runbooks/install.md: "publishes no
 #   ports"). That is what makes the internal network a meaningful proof rather than a formality.
+# - The override file resets the server's `ports:` and adds `internal: true` — the two things a
+#   tunnel-free *local* quick start cannot itself demonstrate are unnecessary, since it deliberately
+#   publishes the port for a browser to reach. Everything else in this run — the compose file, the
+#   three env templates, and the image-tag step — is the README's documented path, unmodified.

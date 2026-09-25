@@ -19,4 +19,13 @@ regexes = [
   # deterministic in tests (apps/server/src/auth/cookies.ts consumes it the same as any other
   # value) — never read by, or valid against, a running deployment.
   '''test-session-secret''',
+
+  # Throwaway TOTP base32 seeds for the console-e2e harness's seeded test users (SHP-T-6.2):
+  # console-e2e/harness/env.ts's `viewer` fixture and console-e2e/harness/seed.ts's `deployer`
+  # user. Both are generated afresh, written only into the `_test` database the harness migrates
+  # and wipes on every run (console-e2e/harness/serve.mjs), and are never read by, or valid
+  # against, any real deployment. Pinned to their exact literal values, not a pattern, so this
+  # allowlist entry cannot shadow a real secret that happens to also be base32.
+  '''KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU''',
+  '''GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ''',
 ]

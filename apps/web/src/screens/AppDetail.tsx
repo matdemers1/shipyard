@@ -57,6 +57,9 @@ function DetailSkeleton({ app }: { app: string }) {
     <Page aria-busy="true">
       <Stack gap="24">
         <PageHeader title={app} description="Reading what the agent last reported." />
+        <span role="status" className="shp-visually-hidden">
+          Loading {app}
+        </span>
         <Skeleton variant="text" lines={4} />
         <Skeleton variant="block" height={96} />
         <Skeleton variant="text" lines={6} />

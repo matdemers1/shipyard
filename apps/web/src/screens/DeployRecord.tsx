@@ -1,4 +1,4 @@
-import { Badge, DescriptionItem, DescriptionList, EmptyState, Link, Page, PageHeader, Section, Spinner } from '@d3cloud/ui';
+import { Badge, DescriptionItem, DescriptionList, EmptyState, Link, Page, PageHeader, Section, Skeleton, Spinner, Stack } from '@d3cloud/ui';
 import { useEffect, useState } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import { RefusalError } from '../lib/api';
@@ -80,8 +80,15 @@ export function DeployRecord() {
 
   if (loading) {
     return (
-      <Page width="narrow">
-        <Spinner label="Loading this deploy" />
+      <Page width="narrow" aria-busy="true">
+        <Stack gap="24">
+          <span role="status" className="shp-visually-hidden">
+            Loading this deploy
+          </span>
+          <Skeleton variant="text" width="60%" />
+          <Skeleton variant="text" lines={6} />
+          <Skeleton variant="block" height={96} />
+        </Stack>
       </Page>
     );
   }

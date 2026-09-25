@@ -10,6 +10,7 @@ import {
   FormActions,
   FormField,
   Input,
+  Link,
   Modal,
   Page,
   PageHeader,
@@ -39,6 +40,9 @@ import { useCan, useMe } from '../lib/auth';
  *
  * A viewer sees no action at all (SHP-REQ-105), whatever the route guard does.
  */
+
+/** Installing the server and the agent on a Docker host (docs/runbooks/install.md). */
+const INSTALL_RUNBOOK_URL = 'https://github.com/matdemers1/shipyard/blob/main/docs/runbooks/install.md';
 
 function asRefusal(error: unknown): RefusalError {
   return error instanceof RefusalError ? error : unreachableRefusal();
@@ -301,7 +305,16 @@ export function Agent() {
         )}
         {list === null && refusal === null ? <Spinner label="Loading agents" /> : null}
         {list !== null && list.length === 0 ? (
-          <EmptyState kind="empty" heading="No agent — see the install runbook" headingLevel={2}>
+          <EmptyState
+            kind="empty"
+            heading="No agent — see the install runbook"
+            headingLevel={2}
+            action={
+              <Link href={INSTALL_RUNBOOK_URL} target="_blank" rel="noreferrer">
+                Install runbook
+              </Link>
+            }
+          >
             Install the agent on the host; it enrols on first start and appears here for its fingerprint to be confirmed.
           </EmptyState>
         ) : null}

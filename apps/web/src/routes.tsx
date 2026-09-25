@@ -123,7 +123,14 @@ export function AppRoutes() {
         <Route path="deploys/:id/live" element={<DeployProgress />} />
         <Route path="timeline" element={<Timeline />} />
         <Route path="schedules" element={<Schedules />} />
-        <Route path="system" element={<System />} />
+        <Route
+          path="system"
+          element={
+            <RequireStateChange>
+              <System />
+            </RequireStateChange>
+          }
+        />
         <Route path="account" element={<Account />} />
         <Route
           path="agent"

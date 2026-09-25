@@ -136,6 +136,6 @@ describe('the restore screen', () => {
   it('says so when no deploy has taken a backup yet', async () => {
     routes('deployer', body({ candidates: [] }));
     renderAt('/apps/web/restore');
-    expect(await screen.findByText('No backups yet', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(await screen.findByText('No backups recorded for this app', {}, { timeout: 4000 })).toBeInTheDocument();
   });
 });

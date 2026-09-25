@@ -268,9 +268,14 @@ export function Tokens() {
           <DataList
             aria-label="API tokens"
             empty={
-              <EmptyState kind="empty" size="inline" heading="No tokens — create one per repo" headingLevel={2}>
-                Each repo that deploys through Claude Code gets its own token, scoped to its apps.
-              </EmptyState>
+              <Stack gap="12">
+                <EmptyState kind="empty" size="inline" heading="No tokens — create one per repo" headingLevel={2}>
+                  Each repo that deploys through Claude Code gets its own token, scoped to its apps.
+                </EmptyState>
+                <FormField label="What the repo's .mcp.json will hold" help="The token itself is shown once, when you create it.">
+                  <Mono value={mcpSnippet(window.location.origin, '<token>')} block />
+                </FormField>
+              </Stack>
             }
           >
             {list.map((t) => (

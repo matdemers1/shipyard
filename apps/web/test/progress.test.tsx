@@ -115,6 +115,11 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
       [`GET /api/deploys/${ID}/steps`]: [
         { status: 200, body: { steps: [step('verify', 0, true), step('pull', 3, false)] } },
         { status: 200, body: { steps: [step('verify', 0, true), step('pull', 3, true), step('swap', 6, false)] } },
+        // The one read after the terminal status: the stream sends `status` before `steps`.
+        {
+          status: 200,
+          body: { steps: [step('verify', 0, true), step('pull', 3, true), step('swap', 6, true), step('check', 9, true), step('soak', 12, true)] },
+        },
       ],
     });
     renderScreen();
@@ -189,10 +194,12 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
     expect(stepNames()).toEqual(['verify', 'pull', 'swap', 'check', 'soak']);
     expect(screen.getByRole('link', { name: 'Deploy record' })).toHaveAttribute('href', `/deploys/${ID}`);
 
-    // Nothing reconnects or polls after the end.
+    // Nothing reconnects or polls after the end: one last read of the steps, then silence.
     await advance(60_000);
     expect(FakeEventSource.instances).toHaveLength(2);
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
+    expect(calls[4]?.path).toBe(`/api/deploys/${ID}/steps`);
+    expect(stepNames()).toEqual(['verify', 'pull', 'swap', 'check', 'soak']);
   });
 
   it('backs off between failed reconnects while polling every three seconds', async () => {

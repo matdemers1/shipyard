@@ -64,12 +64,12 @@ step by hand). Field-by-field, against `packages/schema/src/manifest.ts`:
 | `diskFloorGb` | no | Defaults to 5 — refuses before locking when the Docker root has less free space. |
 | `retainImages` | no | Defaults to 3 — old Shipyard-deployed images kept per service after a success. |
 
-Validate before trusting it, with `shipyard-run` (`apps/cli`, `packages/sequence` directly — it is
-not one of the four compose services, so run it from a checkout on the host, built once with
-`pnpm --filter shipyard-cli build`):
+Validate before trusting it, with `shipyard-run` (`apps/cli`, `packages/sequence` directly). It ships
+inside the agent image, so run it as a one-shot container of the `agent` service, from
+`/DATA/shipyard` — it inherits the socket, the data root and every stack mount the agent has:
 
 ```bash
-SHIPYARD_DATA_ROOT=/DATA/shipyard node <repo checkout>/apps/cli/dist/index.js check-manifests
+docker compose -p shipyard run --rm --no-deps --entrypoint shipyard-run agent check-manifests
 ```
 
 It prints `<app> <file>` for every manifest that loaded, or refuses — naming the file and the exact
@@ -102,7 +102,7 @@ docker compose -p shipyard up -d agent
 Confirm the agent picked up the manifest and reports the app:
 
 ```bash
-SHIPYARD_DATA_ROOT=/DATA/shipyard node <repo checkout>/apps/cli/dist/index.js status <app>
+docker compose -p shipyard run --rm --no-deps --entrypoint shipyard-run agent status <app>
 ```
 
 (or via the console's Agent screen / app detail — it should show the app reported, not `unknown_app`.)
@@ -145,8 +145,8 @@ descendant of the SHA just adopted:
 shipyard_deploy(app: "<app>", sha: "<newer 40-hex SHA>")
 ```
 
-or the console's deploy button, or `shipyard-run deploy <app> <sha>` (`node apps/cli/dist/index.js
-deploy <app> <sha>`, as above) from the host. Verify:
+or the console's deploy button, or `shipyard-run deploy <app> <sha>` (`docker compose -p shipyard run --rm --no-deps --entrypoint shipyard-run agent deploy <app> <sha>`,
+as above) from the host. Verify:
 
 - The deploy record (console `/deploys/:id`, or `shipyard_deploy_status`) shows `succeeded` with
   the digest, `org.opencontainers.image.revision` and schema all matching, past its soak.

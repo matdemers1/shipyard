@@ -9,12 +9,14 @@ runbook, on the host, every time.
 ## 1. Pre-checks
 
 Do not upgrade the agent mid-deploy. Confirm nothing is in flight, for every app it manages, with
-`shipyard-run` (`apps/cli`; it drives `packages/sequence` directly against the host's Docker socket
-and is not one of the four compose services — run it from a checkout on the host, built once with
-`pnpm --filter shipyard-cli build`):
+`shipyard-run` (`apps/cli`; it drives `packages/sequence` directly against the host's Docker socket).
+It ships inside the agent image at `/usr/local/bin/shipyard-run`, so run it as a one-shot container
+of the `agent` service — which gives it the socket, the data root and every stack mount the agent
+has, with no checkout or Node on the host (every `docker compose -p shipyard` command here runs from
+`/DATA/shipyard`):
 
 ```bash
-SHIPYARD_DATA_ROOT=/DATA/shipyard node <repo checkout>/apps/cli/dist/index.js status <app>   # for each managed app
+docker compose -p shipyard run --rm --no-deps --entrypoint shipyard-run agent status <app>   # for each managed app
 ```
 
 or check the console (Home, or each app's detail screen — no deploy showing `running`/`starting`
@@ -26,7 +28,7 @@ tail -5 /DATA/shipyard/agent/journal.jsonl
 ```
 
 If the last line is not an `end` for its `start`, something is mid-flight or was interrupted and
-not yet recovered — run `SHIPYARD_DATA_ROOT=/DATA/shipyard node <repo checkout>/apps/cli/dist/index.js recover`
+not yet recovered — run `docker compose -p shipyard run --rm --no-deps --entrypoint shipyard-run agent recover`
 (or restart the agent, which recovers on start, see §5) before upgrading, not during.
 
 ## 2. Pull the new agent image
@@ -82,7 +84,7 @@ Expect, within a poll interval:
 Also check from the server side that it still sees the agent reporting:
 
 ```bash
-SHIPYARD_DATA_ROOT=/DATA/shipyard node <repo checkout>/apps/cli/dist/index.js status <any managed app>
+docker compose -p shipyard run --rm --no-deps --entrypoint shipyard-run agent status <any managed app>
 ```
 
 or the console's Agent screen, which should show the new version and a recent report time.

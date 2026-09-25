@@ -18,10 +18,15 @@ RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
 COPY . .
 
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm install --offline --frozen-lockfile --filter shipyard-agent...
+    pnpm install --offline --frozen-lockfile --filter shipyard-agent... --filter shipyard-cli...
 
 RUN pnpm --filter @shipyard/schema build
+RUN pnpm --filter @shipyard/sequence build
 RUN pnpm --filter shipyard-agent build
+# The host CLI (SHP-T-1.12) rides along in the agent image too, so a session already on the box
+# can run `shipyard-run` without a separate install — it drives the same `@shipyard/sequence` the
+# agent does, never its own deploy logic.
+RUN pnpm --filter shipyard-cli build
 
 # `minimum-release-age`/`trustPolicy` gate *resolving* new versions; this step only reproduces an
 # already-vetted lockfile onto disk, so the policy is switched off here and only here.
@@ -29,6 +34,10 @@ RUN pnpm --filter shipyard-agent deploy --prod \
     --config.minimum-release-age=0 \
     --config.inject-workspace-packages=true \
     /out
+RUN pnpm --filter shipyard-cli deploy --prod \
+    --config.minimum-release-age=0 \
+    --config.inject-workspace-packages=true \
+    /cli-out
 
 FROM node:22-trixie-slim AS runtime
 
@@ -48,6 +57,13 @@ RUN chmod +x /usr/libexec/docker/cli-plugins/docker-compose
 
 WORKDIR /app
 COPY --from=build /out ./
+
+# The host CLI, deployed alongside the agent (SHP-T-1.12, SHP-REQ-032) — its own directory, not on
+# the agent's own module path, with a thin launcher so it reads as the image's own bin, not a
+# second request surface.
+COPY --from=build /cli-out /cli
+RUN printf '#!/bin/sh\nexec node /cli/dist/index.js "$@"\n' > /usr/local/bin/shipyard-run \
+    && chmod +x /usr/local/bin/shipyard-run
 
 # No EXPOSE — the agent opens no port. No `USER node` — it runs as root for socket access, in
 # this phase (SHP-ADR-003); the socket mount itself is what grants root-equivalent access, not

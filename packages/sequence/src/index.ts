@@ -16,3 +16,4 @@ export * from './ledger.js';
 export * from './disk.js';
 export * from './machine.js';
 export * from './rollback.js';
+export * from './restore.js';

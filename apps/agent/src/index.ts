@@ -12,6 +12,7 @@ import {
   recoverInterrupted,
   runArgv,
   runDeploy,
+  runRestore,
   runRollback,
   systemClock,
   type Log,
@@ -136,6 +137,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     engine: {
       deploy: (ctx, request) => runDeploy(ports, ctx, request),
       rollback: (ctx, request) => runRollback(ports, ctx, request),
+      restore: (ctx, request) => runRestore(ports, ctx, request),
     },
     context: async () => ({
       dataRoot: config.dataRoot,

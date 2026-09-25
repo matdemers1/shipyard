@@ -88,8 +88,17 @@ const PollTarget = z
     app: z.string().min(1),
     sha: z.string().regex(/^[0-9a-f]{40}$/, 'exactly 40 lowercase hex characters'),
     dryRun: z.boolean(),
-    /** A rollback's target deploy; the agent resolves its digests from its own ledger (SHP-D-080). */
+    /**
+     * A rollback's target deploy; the agent resolves its digests from its own ledger (SHP-D-080).
+     * For a restore: the deploy whose backup is restored — the agent finds the artifact in its own
+     * ledger and never takes a path from the server (SHP-REQ-085).
+     */
     toDeployId: z.string().min(1).optional(),
+    /**
+     * A group's promotion (SHP-D-047): the digests the canary soaked, per service. The agent refuses
+     * (digest_mismatch) if what it resolves for this SHA differs, so the rest get the same bits.
+     */
+    expectDigests: z.record(z.string().min(1), Digest).optional(),
     /** The requester label, for the agent's logs and lock file. Display only. */
     requesterLabel: z.string().max(200).optional(),
   })

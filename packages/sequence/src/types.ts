@@ -25,6 +25,8 @@ export interface DeployRequest {
   dryRun: boolean;
   /** Free-text requester label, for logs and lock refusals only. */
   requesterLabel: string;
+  /** A group promotion's expected digests per service (SHP-D-047); a mismatch refuses. */
+  expectDigests?: Record<string, Digest>;
 }
 
 /** One service's image as verified. */

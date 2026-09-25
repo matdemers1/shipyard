@@ -296,7 +296,7 @@ export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerP
     return Promise.all(
       list.map(async (c) => {
         const image = await docker.getImage(c.ImageID).inspect();
-        return {
+        const found: RunningContainer = {
           id: c.Id,
           service: c.Labels['com.docker.compose.service'] ?? '',
           repoDigests: image.RepoDigests,
@@ -304,6 +304,17 @@ export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerP
           state: c.State,
           networks: Object.keys(c.NetworkSettings.Networks),
         };
+        // When it last started and how often Docker restarted it: soak compares these between
+        // ticks, so a crash and a restart in between is seen. A container removed since the list
+        // simply has neither.
+        try {
+          const info = await docker.getContainer(c.Id).inspect();
+          if (typeof info.State.StartedAt === 'string' && info.State.StartedAt !== '') found.startedAt = info.State.StartedAt;
+          if (typeof info.RestartCount === 'number') found.restartCount = info.RestartCount;
+        } catch (err) {
+          if (statusCodeOf(err) !== 404) throw err;
+        }
+        return found;
       }),
     );
   };

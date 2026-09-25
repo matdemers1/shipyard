@@ -10,13 +10,19 @@ import { restoreFromHistory } from './rewrite.js';
  *
  * Backed by a JSONL file: one `JournalEntry` per line, appended in order. A `deploy` step
  * brackets a whole deploy — its `start` line's `detail` carries `{ historyDeployId,
- * composeFiles, project }`, and its `end` line's `detail` carries `{ state, ... }`.
+ * composeFiles, project }`, and its `end` line's `detail` carries `{ state, ... }`. The deploy
+ * starts before its release is known; the `verify` step's `end` line records the verified release,
+ * `{ contract, images }`, before anything changes.
  */
 
 export interface UnfinishedDeploy {
   deployId: string;
   app: string;
-  /** The `detail` of the deploy's `start` line, e.g. `{ historyDeployId, composeFiles, project }`. */
+  /**
+   * The `detail` of the deploy's `start` line, e.g. `{ historyDeployId, composeFiles, project }`,
+   * with the verified release's `{ contract, images }` from the `verify` end line merged in once
+   * verify passed.
+   */
   detail: Record<string, unknown> | undefined;
   /** The name of the last step that started without an end line, if any (e.g. `swap`). */
   lastStep: string | undefined;
@@ -111,9 +117,13 @@ export class Journal {
         order.push(entry.deployId);
       }
 
+      if (entry.step === 'verify' && entry.phase === 'end' && typeof entry.detail?.['contract'] === 'boolean') {
+        state.detail = { ...state.detail, contract: entry.detail['contract'], images: entry.detail['images'] };
+      }
+
       if (entry.step === 'deploy') {
         if (entry.phase === 'start') {
-          state.detail = entry.detail;
+          state.detail = state.detail === undefined ? entry.detail : { ...state.detail, ...entry.detail };
         } else {
           state.ended = true;
         }
@@ -158,6 +168,8 @@ export interface RecoveryResult {
   restored: string[];
   upExitCode: number | null;
   lastStep: string | undefined;
+  /** True when the release carried the contract label: it was left exactly as it was. */
+  contract?: boolean;
   /** Present only when recovering this one deploy failed; the others still ran. */
   error?: string;
 }
@@ -182,8 +194,10 @@ function historyDeployIdFromDetail(detail: Record<string, unknown> | undefined, 
 
 /**
  * Rolls each unfinished deploy back to its last verified-good compose file and marks it
- * interrupted (SHP-REQ-022, SHP-D-081). Never resumes forward. A failure recovering one deploy
- * is logged and reported; it does not stop the others.
+ * interrupted (SHP-REQ-022, SHP-D-081). Never resumes forward. A contract-labelled release is
+ * never auto-rolled back (SHP-REQ-017): it is marked failed + interrupted and the stack is left
+ * exactly as it is. A failure recovering one deploy is logged and reported; it does not stop the
+ * others.
  */
 export async function recoverInterrupted(
   ports: RecoverPorts,
@@ -220,6 +234,20 @@ async function recoverOne(
   deploy: UnfinishedDeploy,
 ): Promise<RecoveryResult> {
   const { fs, docker, log } = ports;
+
+  if (deploy.detail?.['contract'] === true) {
+    log.error(
+      { deployId: deploy.deployId, app: deploy.app, lastStep: deploy.lastStep },
+      'recovery: interrupted contract release is not rolled back; fix forward or restore its backup',
+    );
+    await journal.end({
+      deployId: deploy.deployId,
+      app: deploy.app,
+      step: 'deploy',
+      detail: { state: 'failed', interrupted: true, contract: true, lastStep: deploy.lastStep },
+    });
+    return { deployId: deploy.deployId, app: deploy.app, restored: [], upExitCode: null, lastStep: deploy.lastStep, contract: true };
+  }
 
   await journal.begin({ deployId: deploy.deployId, app: deploy.app, step: 'recover' });
 

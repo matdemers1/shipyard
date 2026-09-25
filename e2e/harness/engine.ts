@@ -124,7 +124,16 @@ export interface ToyDataRoot {
  * A temp data root holding `apps/toy.yml` (absolute compose path, port 3000, no `expectSchema`, so
  * the image's schema label is what /health must report) and the toy stack's compose file.
  */
-export async function prepareToyDataRoot(options: { soakSeconds?: number } = {}): Promise<ToyDataRoot> {
+export interface ToyDataRootOptions {
+  soakSeconds?: number;
+  /**
+   * More compose files for the stack, after `compose.yml`, in order: file name → content. Each is
+   * written beside `compose.yml` and listed in the manifest's `compose.files`.
+   */
+  extraComposeFiles?: Record<string, string>;
+}
+
+export async function prepareToyDataRoot(options: ToyDataRootOptions = {}): Promise<ToyDataRoot> {
   const root = await mkdtemp(join(tmpdir(), 'shp-e2e-engine-'));
   const dataRoot = join(root, 'data');
   const stackDir = join(root, 'stack');
@@ -136,13 +145,19 @@ export async function prepareToyDataRoot(options: { soakSeconds?: number } = {})
   const toyCompose = await readFile(join(TOY_APP_DIR, 'compose.yml'), 'utf8');
   await writeFile(composePath, toyCompose.replaceAll(`${INTERNAL_REGISTRY}/toy/app`, `${MANIFEST_REGISTRY}/toy/app`), 'utf8');
   const project = `toy-${randomBytes(3).toString('hex')}`;
+  const composeFiles = [composePath];
+  for (const [name, content] of Object.entries(options.extraComposeFiles ?? {})) {
+    const path = join(stackDir, name);
+    await writeFile(path, content, 'utf8');
+    composeFiles.push(path);
+  }
 
   const manifest = {
     name: 'toy',
     repo: 'example/toy',
     defaultBranch: 'main',
     workflow: 'ci.yml',
-    compose: { files: [composePath], project },
+    compose: { files: composeFiles, project },
     services: { app: { image: `${MANIFEST_REGISTRY}/toy/app` } },
     health: { service: 'app', port: 3000, path: '/health' },
     soakSeconds: options.soakSeconds ?? 3,

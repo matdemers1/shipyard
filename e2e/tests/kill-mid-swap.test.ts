@@ -130,6 +130,7 @@ describe('kill mid-swap', () => {
     const exited = new Promise((r) => child?.once('exit', r));
     child.kill('SIGKILL');
     await exited;
+    const killedAt = Date.now();
 
     // Restart: the journal shows an unfinished deploy whose last open step is the swap.
     const journal = new Journal(ports.fs, dataRoot().journalPath, ports.clock, ports.log);
@@ -164,7 +165,16 @@ describe('kill mid-swap', () => {
     const ctx = await openContext(ports, dataRoot());
     expect(ctx.ledger.last('toy')?.sha).toBe(c1);
 
-    // Its stale lock (the killed pid) does not block the next deploy, which now goes through.
+    // The killed holder's lock is judged by its heartbeat, not its pid: fresh, it still refuses…
+    const early = await runDeploy(ports, ctx, { deployId: 'dep-early', kind: 'deploy', app: 'toy', sha: c2, dryRun: false, requesterLabel: 'e2e' });
+    expect(early.state).toBe('refused');
+    expect(early.refusal?.code).toBe('locked');
+    expect(early.refusal?.message).toContain('kill-mid-swap runner');
+    // …and once its heartbeat is older than the staleness window (shortened here from 60 s), it is
+    // taken over and the next deploy goes through.
+    ctx.lockStaleMs = 1_500;
+    const wait = killedAt + 2_000 - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     const retry = await runDeploy(ports, ctx, { deployId: 'dep-retry', kind: 'deploy', app: 'toy', sha: c2, dryRun: false, requesterLabel: 'e2e' });
     expect(retry.refusal, JSON.stringify(retry.refusal)).toBeNull();
     expect(retry.state).toBe('succeeded');

@@ -64,6 +64,12 @@ log "using image tag $image_tag"
 work_dir="$(mktemp -d -t shipyard-cic-XXXXXX)"
 compose_files=(-f "$work_dir/docker-compose.yml" -f "$work_dir/docker-compose.check-override.yml")
 cleanup() {
+  local status=$?
+  if [ "$status" -ne 0 ]; then
+    log "failed (exit $status); the server's log follows"
+    docker compose -p "$project" "${compose_files[@]}" --env-file "$work_dir/postgres.env" \
+      logs --no-color server 2>&1 | tail -40 || true
+  fi
   log "tearing down (project $project)"
   docker compose -p "$project" "${compose_files[@]}" --env-file "$work_dir/postgres.env" \
     down -v --remove-orphans >/dev/null 2>&1 || true

@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
 /** `.env.example` ships optional values blank; a blank string means "unset", not "set to ''". */
+/** A blank numeric variable (`KEY=` in an env file) means "use the default", not zero. */
+const blankAsUnset = (value: unknown): unknown => (typeof value === 'string' && value.trim() === '' ? undefined : value);
+
 const optionalString = z.preprocess(
   (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
   z.string().min(1).optional(),
@@ -13,7 +16,7 @@ const optionalString = z.preprocess(
 export const Config = z
   .object({
     DATABASE_URL: z.string().min(1),
-    PORT: z.coerce.number().int().positive().default(3300),
+    PORT: z.preprocess(blankAsUnset, z.coerce.number().int().positive().default(3300)),
     PUBLIC_URL: optionalString,
     SESSION_SECRET: optionalString,
     LOG_LEVEL: z.string().min(1).default('info'),
@@ -42,10 +45,11 @@ export const Config = z
     MAIL_RELAY_TOKEN: optionalString,
     ALERT_TO: optionalString,
     // The agent is stale after this long without a report or a poll (SHP-REQ-093: five minutes).
-    HEARTBEAT_STALE_MINUTES: z.coerce.number().int().min(1).max(1440).default(5),
+    HEARTBEAT_STALE_MINUTES: z.preprocess(blankAsUnset, z.coerce.number().int().min(1).max(1440).default(5)),
     // Shipyard's own nightly pg_dump and restore drill (SHP-D-035, SHP-T-6.3).
-    BACKUP_DIR: z.string().min(1).default('./backups'),
-    BACKUP_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(14),
+    // The image creates /backups for the node user; mount a host directory there to keep dumps.
+    BACKUP_DIR: z.preprocess(blankAsUnset, z.string().min(1).default('/backups')),
+    BACKUP_RETENTION_DAYS: z.preprocess(blankAsUnset, z.coerce.number().int().min(1).max(365).default(14)),
   })
   .transform((c) => ({
     ...c,

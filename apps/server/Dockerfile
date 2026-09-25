@@ -59,6 +59,8 @@ ENV SHIPYARD_VERSION=$REVISION \
 WORKDIR /app
 COPY --from=build --chown=root:root /out ./
 COPY --from=build --chown=root:root /repo/apps/web/dist ./public
+# Shipyard's own dumps (BACKUP_DIR); a host directory is normally mounted over it.
+RUN mkdir -p /backups && chown node:node /backups
 
 USER node
 

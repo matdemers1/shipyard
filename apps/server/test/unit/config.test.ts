@@ -33,4 +33,12 @@ describe('loadConfig', () => {
     expect(config.SESSION_SECRET).toBe('shh');
     expect(config.SHIPYARD_VERSION).toBe('abc1234');
   });
+
+  it('reads a blank numeric variable (KEY= in an env file) as unset, so the default applies', () => {
+    const c = loadConfig({ DATABASE_URL: 'postgresql://x', PORT: '', BACKUP_RETENTION_DAYS: '', HEARTBEAT_STALE_MINUTES: ' ', BACKUP_DIR: '' });
+    expect(c.PORT).toBe(3300);
+    expect(c.BACKUP_RETENTION_DAYS).toBe(14);
+    expect(c.HEARTBEAT_STALE_MINUTES).toBe(5);
+    expect(c.BACKUP_DIR).toBe('/backups');
+  });
 });

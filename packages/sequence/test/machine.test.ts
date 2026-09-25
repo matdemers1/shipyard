@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, utimes, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -715,8 +715,20 @@ describe('AppLock — heartbeat and race-safe takeover', () => {
     expect(laterBeat).toBeGreaterThan(firstBeat);
 
     // Taken over (it looked stale to someone): the old holder neither refreshes nor releases it.
+    // A real taker swaps under the guard file, as the heartbeat does, so the two never interleave;
+    // writing without it would race a beat already in flight rather than test the holder.
     const theirs = holderLock({ ageMs: 0, deployId: 'dep-new-holder' });
+    const guard = `${path}.guard`;
+    for (;;) {
+      try {
+        await writeFile(guard, '{}', { flag: 'wx' });
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
     await writeFile(path, theirs, 'utf8');
+    await unlink(guard);
     await lock.heartbeat();
     await lock.setStep('soak');
     await new Promise((r) => setTimeout(r, 60));

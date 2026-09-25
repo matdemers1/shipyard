@@ -15,7 +15,7 @@ import { Bus } from './events.js';
 import { mcpRouter } from './mcp/index.js';
 import { openapiRouter } from './openapi.js';
 import { tokensRouter } from './tokens/index.js';
-import { approvalsRouter } from './approvals/index.js';
+import { approvalsRouter, pendingApprovalsRouter } from './approvals/index.js';
 import { commitsRouter } from './apps/commits.js';
 import { deployEventsRouter } from './deploys/events.js';
 import { usersRouter } from './users/index.js';
@@ -87,6 +87,7 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/deploys', approvalsRouter(serviceDeps));
   app.use('/api/deploys', deploysRouter(serviceDeps));
   app.use('/api', usersRouter(serviceDeps));
+  app.use('/api', pendingApprovalsRouter(serviceDeps));
   app.use('/api/tokens', tokensRouter(serviceDeps));
   app.use('/mcp', mcpRouter(serviceDeps));
 

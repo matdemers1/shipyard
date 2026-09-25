@@ -137,8 +137,10 @@ docker compose -p shipyard exec postgres psql -U postgres -c 'ALTER ROLE shipyar
 ## Installed on the D3 Cloud host (2026-09-25)
 
 `shipyard.d3cloud.io` behind its own tunnel (`shipyard`, id `2bd6239d-44bd-4699-8dee-010992593367`,
-remotely managed: ingress `shipyard.d3cloud.io → http://server:3300`). Images
-`sha-d86d57687295879d50c9d30699bd21d358d1a330`, schema `20260925061243_agent_pat_expiry`. Agent
+remotely managed: ingress `shipyard.d3cloud.io → http://server:3300`). Server and agent
+`sha-fc4f928ff4811d2da56cf260b2b5da813c5234db`, schema `20260925061243_agent_pat_expiry`. The server
+is now deployed by Shipyard itself (`apps/shipyard.yml`; the agent mounts `/DATA/shipyard` at its
+identical path); the agent is still upgraded by hand (`upgrade-agent.md`). Agent
 `SHA256:3EyGWyLaNLLVUpapKEJr2Gn1+pyB4nlHQmr/uZH6gcA` confirmed via `host-admin`; the outbox posts to
 Foreman with a token issued by Foreman's own `issue-token` ("shipyard outbox", read+write).
 
@@ -147,7 +149,7 @@ Foreman with a token issued by Foreman's own `issue-token` ("shipyard outbox", r
 - The agent mounts `/DATA/.docker` read-only with `DOCKER_CONFIG=/DATA/.docker` in `agent.env`, for
   the private Foreman, Bindery and D3 Auth images (SHP-T-4.11).
 - Managed stacks, each mounted at its identical path: d3auth-demo, foreman-board, foreman, bindery,
-  d3auth (d3auth needs a console approval for every deploy).
+  d3auth, and shipyard (its server) (d3auth needs a console approval for every deploy).
 - Sign in with D3 Auth (the other half of dual login): in D3 Auth's console, **Apps → Add an app**,
   upload `docs/d3auth/shipyard.d3auth.json`; put the issued client secret with
   `D3AUTH_ISSUER=https://auth.d3cloud.io`, `D3AUTH_CLIENT_ID=shipyard`, `D3AUTH_CLIENT_SECRET=…` in

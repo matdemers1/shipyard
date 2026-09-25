@@ -91,6 +91,10 @@ export interface RunningContainer {
   labels: Record<string, string>;
   state: string;
   networks: string[];
+  /** When the container last started (ISO). A change between two looks means it restarted. */
+  startedAt?: string;
+  /** Docker's restart count for the container. */
+  restartCount?: number;
 }
 
 export interface HealthResponse {

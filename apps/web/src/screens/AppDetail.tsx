@@ -315,6 +315,12 @@ export function AppDetail() {
           </Link>
         </Section>
 
+        <Section title="Schedules" description="Deploy a named SHA at a set time; every gate re-runs when it fires.">
+          <Link asChild>
+            <RouterLink to="/schedules">See and schedule deploys</RouterLink>
+          </Link>
+        </Section>
+
         <Section title="History" description="The last twenty deploys, rollbacks and dry runs.">
           <DataList
             aria-label="History"

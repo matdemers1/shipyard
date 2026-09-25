@@ -446,7 +446,11 @@ export async function listDeploys(db: Db, options: ListDeploysOptions): Promise<
         : [options.app]
       : [...options.apps].filter((n) => options.app === undefined || n === options.app);
   const rows = await db.deployTarget.findMany({
-    where: names === undefined ? {} : { app: { name: { in: names } } },
+    where: {
+      ...(names === undefined ? {} : { app: { name: { in: names } } }),
+      // A scheduled deploy that has not fired is not history yet; it lives on the Schedules screen.
+      deploy: { OR: [{ schedule: { is: null } }, { schedule: { is: { firedAt: { not: null } } } }] },
+    },
     select: STATUS_SELECT,
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: options.limit,

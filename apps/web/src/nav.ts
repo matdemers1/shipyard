@@ -13,7 +13,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { to: '/', label: 'Home', Icon: House, needsStateChange: false },
   { to: '/timeline', label: 'Timeline', Icon: History, needsStateChange: false },
   { to: '/schedules', label: 'Schedules', Icon: CalendarClock, needsStateChange: false },
-  { to: '/system', label: 'System', Icon: Server, needsStateChange: false },
+  { to: '/system', label: 'System', Icon: Server, needsStateChange: true },
   { to: '/agent', label: 'Agent', Icon: Bot, needsStateChange: true },
   { to: '/tokens', label: 'API tokens', Icon: KeyRound, needsStateChange: true },
   { to: '/users', label: 'Users', Icon: Users, needsStateChange: true },

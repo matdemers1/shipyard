@@ -47,6 +47,8 @@ export interface PendingApproval {
   requester: { label: string; repo: string | null; branch: string | null };
   requestedAt: string;
   expiresAt: string;
+  /** Set for a scheduled deploy: when it fires once approved (SHP-D-051). */
+  fireAt?: string | null;
 }
 
 /** `GET /api/agent` — one row per enrolled agent. */

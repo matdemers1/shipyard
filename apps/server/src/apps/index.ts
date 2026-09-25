@@ -3,13 +3,15 @@ import { ACTIVE_STATES, refusal } from '@shipyard/schema';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
+import { liveSchemaRevision, mountDrift, rollbackTargets } from './detail.js';
 import { recordedRelease } from './drift.js';
 
 export { assertDeployable, detectDrift, differingServices, recordedRelease } from './drift.js';
 
 /**
  * GET /api/apps and /api/apps/:app — the read-only mirror of what the agent reported (SHP-D-060).
- * Nothing here writes: app rows change only through the agent's report (SHP-REQ-104).
+ * App rows change only through the agent's report (SHP-REQ-104); the one write mounted here is
+ * drift resolution (`detail.ts`), which records a release and resolves an event, never the app's mirror.
  */
 
 const APP_SELECT = {
@@ -139,7 +141,7 @@ export function appsRouter(deps: ServiceDeps): Router {
       sendRefusal(res, notFound);
       return;
     }
-    const [summary, targets] = await Promise.all([
+    const [summary, targets, rollback, live] = await Promise.all([
       summarise(db, row),
       db.deployTarget.findMany({
         where: { appId: row.id },
@@ -157,7 +159,10 @@ export function appsRouter(deps: ServiceDeps): Router {
           images: { select: { service: true, repo: true, sha: true, digest: true } },
         },
       }),
+      rollbackTargets(db, row.id),
+      recordedRelease(db, row.id),
     ]);
+    const schemaRevision = await liveSchemaRevision(db, live?.targetId);
     let manifest: unknown;
     try {
       manifest = JSON.parse(row.manifestYaml) as unknown;
@@ -168,6 +173,12 @@ export function appsRouter(deps: ServiceDeps): Router {
     res.json({
       ...summary,
       manifest,
+      liveDeployId: live?.deployId ?? null,
+      liveEndedAt: live?.endedAt?.toISOString() ?? null,
+      schemaRevision,
+      // Only the releases the agent's ledger would accept (SHP-REQ-063, SHP-D-080).
+      rollbackTargets: rollback.rollbackTargets,
+      needsRestore: rollback.needsRestore,
       targets: targets.map((t) => ({
         id: t.id,
         deployId: t.deployId,
@@ -184,6 +195,8 @@ export function appsRouter(deps: ServiceDeps): Router {
       })),
     });
   });
+
+  mountDrift(router, deps, readerOrRefuse);
 
   return router;
 }

@@ -14,6 +14,11 @@ export const TOY_MANIFEST = join(TOY_APP_DIR, 'manifest.yml');
 
 /** How the registry is named from inside the harness network (dind, and anything it runs). */
 export const INTERNAL_REGISTRY = 'registry:5000';
+/**
+ * The same registry storage under a name the manifest schema accepts (no port), served on :80 to
+ * dind as an insecure registry. The host reaches it through `registryHostPort`.
+ */
+export const MANIFEST_REGISTRY = 'registry.shipyard.test';
 /** How the fake GitHub is named from inside the harness network. */
 export const INTERNAL_FAKE_GITHUB = 'http://fake-github:8080';
 
@@ -29,6 +34,11 @@ export interface ToyBuild {
   contract?: boolean;
   /** Repository path in the registry. Default `toy/app`. */
   repository?: string;
+  /**
+   * The OCI revision label (and TOY_REVISION) baked into the image, when it should differ from the
+   * `revision` the image is tagged with — an image that lies about its commit.
+   */
+  labelRevision?: string;
 }
 
 export interface ToyImage {
@@ -191,6 +201,10 @@ export async function startHarness(): Promise<Harness> {
 
     const dindContainerId = (await run('docker', composeArgs(project, 'ps', '-q', 'dind'))).stdout.trim();
     if (dindContainerId === '') throw new Error('dind container id not found');
+    await pollUntil(`${MANIFEST_REGISTRY} from dind`, async () => {
+      const r = await runRaw('docker', ['exec', dindContainerId, 'wget', '-q', '-O', '-', `http://${MANIFEST_REGISTRY}/v2/`]);
+      return r.code === 0;
+    });
 
     const registryDigest = async (repository: string, tag: string): Promise<string> => {
       const res = await fetch(`${registryUrl}/v2/${repository}/manifests/${tag}`, {
@@ -214,12 +228,16 @@ export async function startHarness(): Promise<Harness> {
         [
           'build',
           '--quiet',
+          // One plain image manifest, no attestation index: the registry adapter picks linux/amd64
+          // out of an index, and this image is built for the machine running the tests.
+          '--provenance=false',
+          '--sbom=false',
           '--build-arg',
           `TOY_MODE=${opts.mode}`,
           '--build-arg',
           `TOY_SCHEMA=${opts.schema}`,
           '--build-arg',
-          `TOY_REVISION=${opts.revision}`,
+          `TOY_REVISION=${opts.labelRevision ?? opts.revision}`,
           '--build-arg',
           `TOY_CONTRACT=${opts.contract === true ? '1' : '0'}`,
           '--tag',

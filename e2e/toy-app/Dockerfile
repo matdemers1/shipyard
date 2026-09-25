@@ -12,7 +12,8 @@ ENV NODE_ENV=production \
     TOY_SCHEMA=${TOY_SCHEMA} \
     TOY_REVISION=${TOY_REVISION}
 LABEL org.opencontainers.image.revision=${TOY_REVISION} \
-      org.opencontainers.image.title=shipyard-toy
+      org.opencontainers.image.title=shipyard-toy \
+      dev.d3cloud.shipyard.schema=${TOY_SCHEMA}
 WORKDIR /app
 COPY server.mjs migrate.mjs ./
 USER node

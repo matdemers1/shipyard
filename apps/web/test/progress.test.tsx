@@ -254,6 +254,57 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
     expect(screen.getByLabelText('Output of check')).toHaveTextContent('HTTP 500');
   });
 
+  it("shows a group deploy's members in order, with the stopped member's group_stopped reason (SHP-T-5.11)", async () => {
+    mockFetch({
+      [`GET /api/deploys/${ID}`]: {
+        status: 200,
+        body: status('failed', {
+          app: 'bravo',
+          refusal: { code: 'health_failed', gate: 'none', message: 'bravo answered 500 on /health.', fix: 'Fix the release and deploy again.' },
+          endedAt: '2026-09-24T10:01:00.000Z',
+          group: {
+            name: 'trio',
+            members: [
+              { app: 'alpha', state: 'succeeded', refusal: null, canary: true, position: 0, targetId: 't1' },
+              {
+                app: 'bravo',
+                state: 'failed',
+                refusal: { code: 'health_failed', gate: 'none', message: 'bravo answered 500 on /health.', fix: 'Fix the release and deploy again.' },
+                canary: false,
+                position: 1,
+                targetId: 't2',
+              },
+              {
+                app: 'charlie',
+                state: 'cancelled',
+                refusal: {
+                  code: 'group_stopped',
+                  gate: 'none',
+                  message: 'The group deploy stopped at bravo (failed); this member was not touched.',
+                  fix: 'x',
+                },
+                canary: false,
+                position: 2,
+                targetId: 't3',
+              },
+            ],
+          },
+        }),
+      },
+      [`GET /api/deploys/${ID}/steps`]: { status: 200, body: { steps: [] } },
+    });
+    renderScreen(null);
+    await advance(0);
+    expect(screen.getByText('trio — deployed in order, canary first')).toBeInTheDocument();
+    expect(screen.getByText('Canary')).toBeInTheDocument();
+    expect(screen.getByText(/The group deploy stopped at bravo/)).toBeInTheDocument();
+    const group = screen.getByText('alpha').closest('dl');
+    expect(group).not.toBeNull();
+    if (group === null) throw new Error('no group list');
+    const rows = within(group).getAllByRole('term');
+    expect(rows.map((r) => r.textContent)).toEqual(['alpha', 'bravo', 'charlie']);
+  });
+
   it('a refusal ends progress with its message', async () => {
     mockFetch({
       [`GET /api/deploys/${ID}`]: {

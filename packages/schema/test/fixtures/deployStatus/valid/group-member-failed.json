@@ -1,0 +1,56 @@
+{
+  "deployId": "d2",
+  "kind": "deploy",
+  "app": "web",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dryRun": false,
+  "state": "failed",
+  "currentStep": null,
+  "requester": {
+    "label": "matt (console)",
+    "repo": null,
+    "branch": null
+  },
+  "images": [],
+  "schemaRevision": null,
+  "refusal": {
+    "code": "health_failed",
+    "gate": "none",
+    "message": "web answered 500 on /health.",
+    "fix": "Fix the release and deploy again."
+  },
+  "gates": [],
+  "createdAt": "2026-09-25T00:00:00Z",
+  "endedAt": "2026-09-25T00:05:00Z",
+  "group": {
+    "name": "core",
+    "members": [
+      {
+        "app": "web",
+        "state": "failed",
+        "refusal": {
+          "code": "health_failed",
+          "gate": "none",
+          "message": "web answered 500 on /health.",
+          "fix": "Fix the release and deploy again."
+        },
+        "canary": true,
+        "position": 0,
+        "targetId": "t1"
+      },
+      {
+        "app": "api",
+        "state": "cancelled",
+        "refusal": {
+          "code": "group_stopped",
+          "gate": "none",
+          "message": "The group deploy stopped at web (failed); this member was not touched.",
+          "fix": "Deploy the group again once web is fixed."
+        },
+        "canary": false,
+        "position": 1,
+        "targetId": "t2"
+      }
+    ]
+  }
+}

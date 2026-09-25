@@ -34,7 +34,7 @@ export type SystemAgent = z.infer<typeof SystemAgent>;
 
 export const SystemOutbox = z
   .strictObject({
-    /** Rows not yet delivered to Foreman. */
+    /** Deploys with a row not yet delivered to Foreman (one row per image; counted per deploy target). */
     unsent: z.int().min(0),
     /** Of those, the ones created more than an hour ago (SHP-REQ-095). */
     unsentOverHour: z.int().min(0),

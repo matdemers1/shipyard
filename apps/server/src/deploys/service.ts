@@ -490,3 +490,13 @@ export async function waitForChange(
     await woken;
   }
 }
+
+/**
+ * The apps a deploy's status names: every member of a group deploy, else its one app. A token may
+ * read a deploy only when it is scoped to all of them (SHP-REQ-047) — a group's status carries
+ * every member's state and refusal, and creating a group deploy already needs scope over every
+ * member, so the token that asked can always read it.
+ */
+export function appsOf(status: DeployStatus): string[] {
+  return status.group === undefined ? [status.app] : status.group.members.map((m) => m.app);
+}

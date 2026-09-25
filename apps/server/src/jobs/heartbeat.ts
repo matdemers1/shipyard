@@ -89,7 +89,9 @@ export async function checkHeartbeat(
     `What to do: check the agent container on the host — ${docker()}`,
   ].join('\n');
 
-  const result = await mailer.send({ kind: 'agent-stale', subject, body });
+  // This job already sends once per stale episode; the mailer's hourly suppression must not
+  // swallow a second episode that starts within the hour.
+  const result = await mailer.send({ kind: 'agent-stale', subject, body }, { repeat: true });
   state.alerted = true;
 
   await db.auditEvent.create({

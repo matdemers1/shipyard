@@ -52,6 +52,15 @@ describe('createMailer (SHP-T-6.4)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('sends again within the hour when the caller says each send is its own episode', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    const mailer = createMailer(CONFIGURED, logger, { fetch: fetchMock as unknown as typeof fetch });
+    const alert = { kind: 'agent-stale' as const, subject: 'stale', body: 'b' };
+    expect((await mailer.send(alert, { repeat: true })).sent).toBe(true);
+    expect((await mailer.send(alert, { repeat: true })).sent).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('dedupes a successful send for the same kind within the hour, but not a different kind', async () => {
     const now = { value: new Date('2026-09-25T00:00:00.000Z') };
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));

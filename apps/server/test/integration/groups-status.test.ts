@@ -9,6 +9,7 @@ import { SESSION_COOKIE, createSession } from '../../src/auth/index.js';
 import { loadConfig } from '../../src/config.js';
 import { createDb, type Db } from '../../src/db.js';
 import { Bus } from '../../src/events.js';
+import { generateToken } from '../../src/tokens/tokens.js';
 
 /**
  * `GET /api/deploys/:id` for a group deploy (SHP-T-5.11, SHP-REQ-078, SHP-REQ-079): the plain
@@ -175,6 +176,29 @@ describe('GET /api/deploys/:id for a group deploy (SHP-T-5.11)', () => {
     expect(charlie?.refusal?.code).toBe('group_stopped');
     expect(charlie?.refusal?.message).toContain('bravo');
     expect(status.group?.members[0]?.refusal).toBeNull();
+  });
+
+  it('a token scoped to only some members cannot read the group, over REST or the event stream (SHP-REQ-047)', async () => {
+    const created = await request(app).post('/api/deploys').set('Cookie', cookie).send({ kind: 'deploy', group: 'trio', sha: SHA });
+    const { deployId } = created.body as DeployAccepted;
+    const tokenFor = async (apps: string[]): Promise<string> => {
+      const user = await db.user.create({ data: { email: `tok-${randomUUID()}@example.com`, displayName: 'tok', role: 'deployer' } });
+      const { token, hash, prefix } = generateToken();
+      const rows = await db.app.findMany({ where: { name: { in: apps } }, select: { id: true } });
+      await db.apiToken.create({ data: { userId: user.id, label: 'claude', tokenHash: hash, prefix, apps: { create: rows.map((r) => ({ appId: r.id })) } } });
+      return token;
+    };
+    const partial = await tokenFor(['alpha']);
+    const rest = await request(app).get(`/api/deploys/${deployId}`).set('Authorization', `Bearer ${partial}`);
+    expect(rest.status).toBe(403);
+    expect(JSON.stringify(rest.body)).not.toContain('charlie');
+    const stream = await request(app).get(`/api/deploys/${deployId}/events`).set('Authorization', `Bearer ${partial}`);
+    expect(stream.status).toBe(403);
+
+    const full = await tokenFor(['alpha', 'bravo', 'charlie']);
+    const ok = await request(app).get(`/api/deploys/${deployId}`).set('Authorization', `Bearer ${full}`);
+    expect(ok.status).toBe(200);
+    expect((ok.body as DeployStatus).group?.members.map((m) => m.app)).toEqual(['alpha', 'bravo', 'charlie']);
   });
 
   it('is absent for a single-app deploy', async () => {

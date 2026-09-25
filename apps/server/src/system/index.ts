@@ -94,8 +94,12 @@ export function systemRouter(deps: ServiceDeps): Router {
             : 'none';
 
     const [unsent, unsentOverHour, oldest, latestErrored] = await Promise.all([
-      db.outbox.count({ where: { deliveredAt: null } }),
-      db.outbox.count({ where: { deliveredAt: null, createdAt: { lt: new Date(now.getTime() - OUTBOX_STALE_MS) } } }),
+      // Deploys, not rows: the outbox holds one row per image, and the console counts deploys
+      // (SHP-REQ-095). A deploy's rows share its target.
+      db.outbox.groupBy({ by: ['targetId'], where: { deliveredAt: null } }).then((g) => g.length),
+      db.outbox
+        .groupBy({ by: ['targetId'], where: { deliveredAt: null, createdAt: { lt: new Date(now.getTime() - OUTBOX_STALE_MS) } } })
+        .then((g) => g.length),
       db.outbox.findFirst({ where: { deliveredAt: null }, orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
       db.outbox.findFirst({
         where: { deliveredAt: null, lastError: { not: null } },

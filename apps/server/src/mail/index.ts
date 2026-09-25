@@ -26,7 +26,11 @@ export interface MailResult {
 }
 
 export interface Mailer {
-  send(alert: Alert): Promise<MailResult>;
+  /**
+   * `repeat: true` skips the hourly per-kind suppression, for a caller that already sends once
+   * per episode (the stale-agent alert: a second episode within the hour must still be told).
+   */
+  send(alert: Alert, options?: { repeat?: boolean }): Promise<MailResult>;
 }
 
 const REPEAT_AFTER_MS = 60 * 60 * 1000;
@@ -41,14 +45,14 @@ export function createMailer(
   const lastSent = new Map<AlertKind, number>();
 
   return {
-    async send(alert) {
+    async send(alert, options = {}) {
       const { MAIL_RELAY_URL: url, MAIL_RELAY_TOKEN: token, ALERT_TO: to } = config;
       if (url === undefined || token === undefined || to === undefined) {
         logger.warn({ kind: alert.kind, subject: alert.subject }, 'alert not emailed: no mail relay is configured');
         return { sent: false, reason: 'no mail relay is configured' };
       }
       const previous = lastSent.get(alert.kind);
-      if (previous !== undefined && now().getTime() - previous < REPEAT_AFTER_MS) {
+      if (options.repeat !== true && previous !== undefined && now().getTime() - previous < REPEAT_AFTER_MS) {
         return { sent: false, reason: 'already alerted about this recently' };
       }
       try {

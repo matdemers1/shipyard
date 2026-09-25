@@ -131,32 +131,29 @@ describe('GET /api/system', () => {
     expect((res.body as SystemStatus).agent?.stale).toBe(false);
   });
 
-  it('counts the outbox backlog and flags rows unsent for over an hour (SHP-REQ-095)', async () => {
+  it('counts unsent deploys, not rows, and flags those unsent for over an hour (SHP-REQ-095)', async () => {
     const { cookie } = await signIn('deployer');
     const agent = await db.agent.create({ data: { publicKey: 'key', fingerprint: `fp-${randomUUID()}` } });
     const appRow = await db.app.create({
       data: { name: 'web', agentId: agent.id, manifestYaml: 'name: web\n', manifestSha256: '0'.repeat(64) },
     });
-    const deploy = await db.deploy.create({
-      data: { requestedSha: 'a'.repeat(40), requesterLabel: 'test' },
-    });
-    const target = await db.deployTarget.create({ data: { deployId: deploy.id, appId: appRow.id, state: 'succeeded' } });
+    const target = async () => {
+      const deploy = await db.deploy.create({ data: { requestedSha: 'a'.repeat(40), requesterLabel: 'test' } });
+      return (await db.deployTarget.create({ data: { deployId: deploy.id, appId: appRow.id, state: 'succeeded' } })).id;
+    };
+    const stuck = await target();
+    const recent = await target();
+    const done = await target();
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
-    await db.outbox.create({
-      data: {
-        targetId: target.id,
-        idempotencyKey: 'old-unsent',
-        payload: {},
-        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
-        lastError: 'connection refused',
-      },
-    });
-    await db.outbox.create({
-      data: { targetId: target.id, idempotencyKey: 'recent-unsent', payload: {}, createdAt: new Date() },
-    });
-    await db.outbox.create({
-      data: { targetId: target.id, idempotencyKey: 'delivered', payload: {}, deliveredAt: new Date() },
-    });
+    // One stuck deploy of a two-image app: two rows, one deploy.
+    for (const service of ['server', 'worker']) {
+      await db.outbox.create({
+        data: { targetId: stuck, idempotencyKey: `${stuck}:${service}`, payload: {}, createdAt: twoHoursAgo, lastError: 'connection refused' },
+      });
+    }
+    await db.outbox.create({ data: { targetId: recent, idempotencyKey: `${recent}:server`, payload: {}, createdAt: new Date() } });
+    await db.outbox.create({ data: { targetId: done, idempotencyKey: `${done}:server`, payload: {}, deliveredAt: new Date() } });
 
     const res = await request(app).get('/api/system').set('Cookie', cookie);
     const body = res.body as SystemStatus;

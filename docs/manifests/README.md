@@ -39,3 +39,36 @@ being silently dropped.
 G9 is only ever evaluated when env names were actually gathered for the request; an image-only
 rollback does not re-derive this from the target release's image and so is never blocked by it —
 current behaviour, preserved.
+
+## Guided restore: `steps.restore` (SHP-T-5.6, SHP-REQ-083..085)
+
+A manifest that wants the console's **Restore** names the app's own restore command beside its
+backup step. Like every step it is an argv array in a named compose service, exec'd in the running
+container with `docker compose exec -T` — never a shell — and its output is never stored
+(SHP-D-082):
+
+```yaml
+steps:
+  backup:
+    service: db
+    artifactsDir: /DATA/apps/foreman/backups        # host path; the backup lands here
+    argv: [pg_dump, --format=custom, --file=/backups/foreman.dump, foreman]
+  restore:
+    service: db
+    argv: [pg_restore, --clean, --if-exists, --dbname=foreman, "/backups/{artifact}"]
+```
+
+- `{artifact}` is replaced by the chosen backup's **file name** only. The backup step's artifact is
+  a host path under `artifactsDir`; the container sees its own mount of that directory, so the argv
+  names its own path to it (`/backups/…` above). The name must match `[A-Za-z0-9._-]+` or the
+  restore is refused. At least one argv entry must contain `{artifact}`.
+- `steps.restore` without `steps.backup` is invalid: a restore only ever uses an artifact the backup
+  step took, and it takes a fresh safety backup first.
+- The agent restores only backups recorded in **its own ledger** (every backup is recorded the moment
+  it is taken, so the backup a failed contract release took before migrating is restorable), at
+  most once per app per 24 hours, and then runs the release whose images were running when that
+  backup was taken — swapping them back, image-only, if something else runs now. Order: verify →
+  safety backup → restore → pull → swap → check → soak. A failure after the restore command ran
+  stops `failed`; Shipyard never restores or rolls back a second time on its own.
+- Requested from the console only (Restore on the app, the app's name typed to confirm). Tokens and
+  MCP cannot start one.

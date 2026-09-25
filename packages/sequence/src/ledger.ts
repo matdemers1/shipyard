@@ -13,12 +13,65 @@ import type { FsPort } from './ports.js';
 
 const GENESIS_HASH = '0'.repeat(64);
 
+/**
+ * A backup a deploy (or a restore) took, recorded the moment it was taken — whatever that deploy
+ * does next (SHP-REQ-085). A contract release that fails its check never reaches the ledger as a
+ * release, but the backup it took first is exactly the one a guided restore needs.
+ */
+export interface BackupRecord {
+  kind: 'backup';
+  app: string;
+  /** The deploy (or restore) that took it. */
+  deployId: string;
+  /** Absolute host path of the artifact. */
+  backupArtifact: string;
+  /**
+   * The ledger release whose images were running when the backup was taken — the code that matches
+   * this data, which a restore of it runs. Null when what ran was not a release in this ledger.
+   */
+  release: string | null;
+  at: string;
+}
+
+/**
+ * A completed guided restore (SHP-T-5.6, SHP-D-038). Not a release: when the restore also put a
+ * different release's images back, that is recorded beside it as a `rollback` entry with the same
+ * deploy ID, so `last`, `recent` and the rollback candidates keep describing releases only.
+ */
+export interface RestoreRecord {
+  kind: 'restore';
+  app: string;
+  /** The restore's own ID. */
+  deployId: string;
+  /** The deploy whose backup was restored. */
+  backupOf: string;
+  /** The artifact restored (absolute host path). */
+  restoredFrom: string;
+  /** The ledger release running after the restore. */
+  release: string;
+  sha: string;
+  images: LedgerEntry['images'];
+  /** The safety backup taken just before restoring, if any. */
+  backupArtifact: string | null;
+  at: string;
+}
+
+/** Anything the ledger chain holds: a release (deploy or rollback), a backup, or a restore. */
+export type LedgerRecord = LedgerEntry | BackupRecord | RestoreRecord;
+
 /** One physical line of the ledger file. */
 interface LedgerLine {
   seq: number;
   prev: string;
-  entry: LedgerEntry;
+  entry: LedgerRecord;
   hash: string;
+}
+
+/** How long one completed restore blocks the next restore of the same app (SHP-REQ-084). */
+export const RESTORE_LIMIT_MS = 24 * 60 * 60 * 1000;
+
+function isRelease(entry: LedgerRecord): entry is LedgerEntry {
+  return entry.kind === 'deploy' || entry.kind === 'rollback';
 }
 
 export class LedgerTamperedError extends Error {
@@ -55,9 +108,36 @@ function canonicalJSON(value: unknown): string {
   return JSON.stringify(canonicalize(value));
 }
 
-function computeHash(prev: string, seq: number, entry: LedgerEntry): string {
+function computeHash(prev: string, seq: number, entry: LedgerRecord): string {
   const payload = `${prev}\n${canonicalJSON({ seq, entry })}`;
   return createHash('sha256').update(payload).digest('hex');
+}
+
+function validateImages(images: LedgerEntry['images']): void {
+  if (!Array.isArray(images) || images.length === 0) throw new LedgerEntryInvalidError('images must be non-empty');
+  for (const image of images) {
+    if (!image.service || image.service.length === 0) throw new LedgerEntryInvalidError('image.service must not be empty');
+    if (!image.repo || image.repo.length === 0) throw new LedgerEntryInvalidError('image.repo must not be empty');
+    if (!DIGEST_RE.test(image.digest)) throw new LedgerEntryInvalidError(`invalid digest: ${image.digest}`);
+  }
+}
+
+function validateRecord(entry: LedgerRecord): void {
+  if (!entry.app || entry.app.length === 0) throw new LedgerEntryInvalidError('app must not be empty');
+  if (!entry.deployId || entry.deployId.length === 0) throw new LedgerEntryInvalidError('deployId must not be empty');
+  if (!entry.at || Number.isNaN(Date.parse(entry.at))) throw new LedgerEntryInvalidError(`invalid at: ${entry.at}`);
+  if (entry.kind === 'backup') {
+    if (!entry.backupArtifact.startsWith('/')) throw new LedgerEntryInvalidError(`backupArtifact must be an absolute path: ${entry.backupArtifact}`);
+    if (entry.release !== null && entry.release.length === 0) throw new LedgerEntryInvalidError('release must be null or a deploy ID');
+    return;
+  }
+  if (entry.kind === 'restore') {
+    if (!entry.backupOf || !entry.restoredFrom || !entry.release) throw new LedgerEntryInvalidError('a restore names backupOf, restoredFrom and release');
+    if (!SHA40_RE.test(entry.sha)) throw new LedgerEntryInvalidError(`sha must be 40 lowercase hex characters: ${entry.sha}`);
+    validateImages(entry.images);
+    return;
+  }
+  validateEntry(entry);
 }
 
 function validateEntry(entry: LedgerEntry): void {
@@ -103,6 +183,8 @@ export interface BackupArtifactRecord {
   deployId: string;
   backupArtifact: string;
   at: string;
+  /** The ledger release that matches this backup's data (see `BackupRecord.release`), or null. */
+  release: string | null;
 }
 
 export class Ledger {
@@ -166,9 +248,9 @@ export class Ledger {
   }
 
   /** Validates, chains and appends one entry; serialized against concurrent callers. */
-  append(entry: LedgerEntry): Promise<void> {
+  append(entry: LedgerRecord): Promise<void> {
     try {
-      validateEntry(entry);
+      validateRecord(entry);
     } catch (err) {
       return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }
@@ -187,9 +269,38 @@ export class Ledger {
     return task;
   }
 
-  /** All entries for `app`, oldest first. */
+  /** All release entries (deploys and rollbacks) for `app`, oldest first. Backups and restores are not releases. */
   entries(app: string): LedgerEntry[] {
-    return this.lines.filter((l) => l.entry.app === app).map((l) => l.entry);
+    return this.lines.flatMap((l) => (l.entry.app === app && isRelease(l.entry) ? [l.entry] : []));
+  }
+
+  /** Records a backup the moment it is taken (SHP-REQ-085). */
+  recordBackup(record: Omit<BackupRecord, 'kind'>): Promise<void> {
+    return this.append({ kind: 'backup', ...record });
+  }
+
+  /**
+   * The release running now, as far as this ledger can vouch for it: the last release, when every
+   * one of its images is the digest `running` reports for its service. Null otherwise — nothing
+   * recorded yet, or something other than the recorded release is running (a failed contract
+   * release left in place, or drift).
+   */
+  releaseRunning(app: string, running: Record<string, string | null>): string | null {
+    const last = this.last(app);
+    if (last === null) return null;
+    return last.images.every((image) => running[image.service] === image.digest) ? last.deployId : null;
+  }
+
+  /** Completed restores of `app`, oldest first. */
+  restores(app: string): RestoreRecord[] {
+    return this.lines.flatMap((l) => (l.entry.app === app && l.entry.kind === 'restore' ? [l.entry] : []));
+  }
+
+  /** The last restore of `app` that completed within `RESTORE_LIMIT_MS` of `now`, or null (SHP-REQ-084). */
+  restoreWithinLimit(app: string, now: Date): RestoreRecord | null {
+    const last = this.restores(app).at(-1);
+    if (last === undefined) return null;
+    return now.getTime() - Date.parse(last.at) < RESTORE_LIMIT_MS ? last : null;
   }
 
   /** The most recent entry for `app`, or null when there is none. */
@@ -220,11 +331,28 @@ export class Ledger {
     return entries.slice(index + 1);
   }
 
-  /** Backup artifacts this ledger recorded for `app`, oldest first — the only ones restore may use. */
+  /**
+   * Backup artifacts this ledger recorded for `app`, oldest first — the only ones restore may use.
+   * A backup record carries its own release; a release entry that names a backup with no record of
+   * its own (written before backups were recorded as they were taken) matches the release before it.
+   */
   backupArtifacts(app: string): BackupArtifactRecord[] {
-    return this.entries(app)
-      .filter((e): e is LedgerEntry & { backupArtifact: string } => e.backupArtifact !== null)
-      .map((e) => ({ app: e.app, deployId: e.deployId, backupArtifact: e.backupArtifact, at: e.at }));
+    const out: BackupArtifactRecord[] = [];
+    const recorded = new Set<string>();
+    let previousRelease: string | null = null;
+    for (const { entry } of this.lines) {
+      if (entry.app !== app) continue;
+      if (entry.kind === 'backup') {
+        recorded.add(`${entry.deployId}\u0000${entry.backupArtifact}`);
+        out.push({ app, deployId: entry.deployId, backupArtifact: entry.backupArtifact, at: entry.at, release: entry.release });
+      } else if (isRelease(entry)) {
+        if (entry.backupArtifact !== null && !recorded.has(`${entry.deployId}\u0000${entry.backupArtifact}`)) {
+          out.push({ app, deployId: entry.deployId, backupArtifact: entry.backupArtifact, at: entry.at, release: previousRelease });
+        }
+        previousRelease = entry.deployId;
+      }
+    }
+    return out;
   }
 
   /** Every digest this ledger has ever recorded for `app`, for image pruning. */

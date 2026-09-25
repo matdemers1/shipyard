@@ -252,6 +252,18 @@ describe('approve and deny (console only)', () => {
     expect(err(again).code).toBe('conflict');
   });
 
+  it('approving a held deploy of an app that drifted while it waited is refused drift_unresolved (G3)', async () => {
+    const token = await tokenFor('claude', ['d3auth']);
+    const { deployId } = await agentDeploy(token, 'd3auth');
+    const drifted = await db.app.update({ where: { name: 'd3auth' }, data: { driftedAt: new Date() } });
+    await db.driftEvent.create({ data: { appId: drifted.id, observed: { server: 'sha256:b' }, recorded: { server: 'sha256:a' } } });
+    const deployer = await signIn('deployer');
+    const res = await request(app).post(`/api/deploys/${deployId}/approve`).set('Cookie', deployer.cookie);
+    expect(res.status).toBe(409);
+    expect((res.body as { error: { code: string; gate: string } }).error).toMatchObject({ code: 'drift_unresolved', gate: 'G3' });
+    expect((await targetOf(deployId)).state).toBe('awaiting_approval');
+  });
+
   it('approving while another deploy holds the app is refused locked, naming the holder, and stays awaiting', async () => {
     const token = await tokenFor('claude', ['d3auth']);
     const { deployId } = await agentDeploy(token, 'd3auth');

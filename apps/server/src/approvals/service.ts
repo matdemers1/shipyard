@@ -3,6 +3,7 @@ import type { Actor, AuditEventInput } from '../audit.js';
 import type { Role } from '../auth/scope.js';
 import type { ServiceDeps } from '../deps.js';
 import { callerCanActOn, isUniqueViolation, lockRefusal, type DeployCaller } from '../deploys/service.js';
+import { assertDeployable } from '../apps/drift.js';
 
 /**
  * Approvals (SHP-T-3.6). A token-requested deploy of an app whose manifest says
@@ -136,6 +137,10 @@ export async function approveDeploy(deps: ServiceDeps, decider: Decider, deployI
   if ('code' in pending) return pending;
   const denied = assertCanDecide(decider, pending.target.app.name);
   if (denied !== null) return denied;
+  // The server's pre-checks (unknown app, drift) apply when a held deploy is released, not only
+  // when it was requested: drift can open during the hour it waits (SHP-REQ-054).
+  const blocked = await assertDeployable(deps.db, pending.target.app.name);
+  if (blocked !== null) return blocked;
   const userId = decider.actor?.id;
 
   let outcome: 'ok' | 'raced';
@@ -188,6 +193,10 @@ export async function denyDeploy(deps: ServiceDeps, decider: Decider, deployId: 
   if ('code' in pending) return pending;
   const denied = assertCanDecide(decider, pending.target.app.name);
   if (denied !== null) return denied;
+  // The server's pre-checks (unknown app, drift) apply when a held deploy is released, not only
+  // when it was requested: drift can open during the hour it waits (SHP-REQ-054).
+  const blocked = await assertDeployable(deps.db, pending.target.app.name);
+  if (blocked !== null) return blocked;
   const userId = decider.actor?.id;
   const label = decider.actor?.label ?? 'a deployer';
 

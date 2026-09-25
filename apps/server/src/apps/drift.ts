@@ -118,6 +118,9 @@ export interface DriftOutcome {
  * running digests equal the recorded release again (SHP-REQ-066). An app with a target in flight
  * is skipped — its digests are mid-swap, not drifted.
  */
+/** The pending redeploy's rollback deploy id, as the redeploy route writes it into the event's reason. */
+const PENDING_DEPLOY_RE = /as deploy ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
 export async function detectDrift(
   tx: Prisma.TransactionClient,
   app: { id: string },
@@ -139,9 +142,19 @@ export async function detectDrift(
 
   if (services.length === 0) {
     if (open?.resolution === 'redeploy_recorded' && matchesRecorded(recorded.digests, observed, mapped)) {
-      await tx.driftEvent.update({ where: { id: open.id }, data: { resolvedAt: new Date() } });
+      // Resolved as a redeploy only when the release now recorded is that redeploy's own rollback.
+      // If something else shipped over the drift, what runs matches a record again, but the
+      // redeploy did not do it: close the event without claiming a resolution it did not have.
+      const pendingDeployId = PENDING_DEPLOY_RE.exec(open.reason ?? '')?.[1] ?? null;
+      const byTheRedeploy = pendingDeployId !== null && recorded.deployId === pendingDeployId;
+      await tx.driftEvent.update({
+        where: { id: open.id },
+        data: byTheRedeploy
+          ? { resolvedAt: new Date() }
+          : { resolvedAt: new Date(), resolution: null, reason: `${open.reason ?? ''} — closed: deploy ${recorded.deployId} shipped over the drift, not the redeploy` },
+      });
       await tx.app.update({ where: { id: app.id }, data: { driftedAt: null } });
-      return { opened: false, resolved: true, services };
+      return { opened: false, resolved: byTheRedeploy, services };
     }
     return { opened: false, resolved: false, services };
   }

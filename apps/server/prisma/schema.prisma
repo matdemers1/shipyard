@@ -471,3 +471,15 @@ model Invite {
   @@index([email])
   @@map("invite")
 }
+
+/// Settings an admin changes in the console instead of server.env (SHP-REQ-110). One row per key;
+/// a secret inside `value` is AES-256-GCM ciphertext (src/settings/crypto.ts), never plaintext.
+/// `updated_by_id` is a plain column, not a relation: a setting outlives the account that set it.
+model Setting {
+  key         String   @id
+  value       Json
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  updatedById String?  @map("updated_by_id") @db.Uuid
+
+  @@map("setting")
+}

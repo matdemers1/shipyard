@@ -59,6 +59,12 @@ import {
   SetupStartRequest,
   SetupStarted,
   SetupCompleteRequest,
+  IssuerUrl,
+  D3AuthSource,
+  D3AuthSettingsUpdate,
+  D3AuthTestRequest,
+  D3AuthTestResult,
+  D3AuthSettings,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -130,6 +136,12 @@ const SCHEMAS: Record<string, ZodType> = {
   setupStartRequest: SetupStartRequest,
   setupStarted: SetupStarted,
   setupCompleteRequest: SetupCompleteRequest,
+  issuerUrl: IssuerUrl,
+  d3AuthSource: D3AuthSource,
+  d3AuthSettingsUpdate: D3AuthSettingsUpdate,
+  d3AuthTestRequest: D3AuthTestRequest,
+  d3AuthTestResult: D3AuthTestResult,
+  d3AuthSettings: D3AuthSettings,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

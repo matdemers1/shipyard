@@ -24,7 +24,7 @@ Write four env files, all mode 600 (the compose file names them by absolute path
 | File | Contents |
 |---|---|
 | `postgres.env` | `POSTGRES_USER=shipyard`, `POSTGRES_DB=shipyard`, `POSTGRES_PASSWORD=<random>` |
-| `server.env` | `DATABASE_URL=postgresql://shipyard:<same>@postgres:5432/shipyard`, `PORT=3300`, `PUBLIC_URL=https://<host name>`, `SESSION_SECRET=<random 32 bytes hex>`, `TRUST_PROXY_HOPS=1` (behind a tunnel or proxy; omit otherwise), `BACKUP_DIR=/backups`, optional `BACKUP_RETENTION_DAYS` (default 14; the newest three dumps are always kept), optional `FOREMAN_URL`/`FOREMAN_TOKEN` (a write-scoped Foreman token), optional `D3AUTH_ISSUER`/`D3AUTH_CLIENT_ID`/`D3AUTH_CLIENT_SECRET` |
+| `server.env` | `DATABASE_URL=postgresql://shipyard:<same>@postgres:5432/shipyard`, `PORT=3300`, `PUBLIC_URL=https://<host name>`, `SESSION_SECRET=<random 32 bytes hex>`, `TRUST_PROXY_HOPS=1` (behind a tunnel or proxy; omit otherwise), `BACKUP_DIR=/backups`, optional `BACKUP_RETENTION_DAYS` (default 14; the newest three dumps are always kept), optional `FOREMAN_URL`/`FOREMAN_TOKEN` (a write-scoped Foreman token), optional `D3AUTH_ISSUER`/`D3AUTH_CLIENT_ID`/`D3AUTH_CLIENT_SECRET` (or leave them out and configure D3 Auth in the console's Settings; set here, they win) |
 | `agent.env` | `SHIPYARD_SERVER_URL=http://server:3300`, `SHIPYARD_DATA_ROOT=/DATA/shipyard`, optional `GITHUB_TOKEN_AGENT` (fine-grained, read-only; public repos work without one, at 60 requests an hour), and `DOCKER_CONFIG=<dir>` when any managed image is private (see §2) |
 | `tunnel.env` | `TUNNEL_TOKEN=<token>` if you expose the server through a Cloudflare tunnel |
 
@@ -169,9 +169,15 @@ Foreman with a token issued by Foreman's own `issue-token` ("shipyard outbox", r
 - Managed stacks, each mounted at its identical path: d3auth-demo, foreman-board, foreman, bindery,
   d3auth, and shipyard (its server) (d3auth needs a console approval for every deploy).
 - Sign in with D3 Auth (the other half of dual login): in D3 Auth's console, **Apps → Add an app**,
-  upload `docs/d3auth/shipyard.d3auth.json`; put the issued client secret with
-  `D3AUTH_ISSUER=https://auth.d3cloud.io`, `D3AUTH_CLIENT_ID=shipyard`, `D3AUTH_CLIENT_SECRET=…` in
-  `server.env`, then `docker compose -p shipyard up -d server`. A D3 Auth identity signs in only once
-  it is linked to an existing Shipyard account (Account screen) — it never creates one.
+  upload `docs/d3auth/shipyard.d3auth.json` (or the manifest Shipyard's **Settings** screen
+  downloads, which carries this server's own redirect URI). Then either, as an admin, open
+  **Settings → Sign in with D3 Auth** in Shipyard's console, enter the issuer
+  (`https://auth.d3cloud.io`), client ID (`shipyard`) and the issued client secret, **Test**, and
+  **Save** — live at once, no restart; the secret is stored AES-256-GCM encrypted under a key
+  derived from `SESSION_SECRET`, so `SESSION_SECRET` must be set and must not change. Or put
+  `D3AUTH_ISSUER`, `D3AUTH_CLIENT_ID` and `D3AUTH_CLIENT_SECRET` in `server.env` and
+  `docker compose -p shipyard up -d server`; env vars win, and Settings then shows them read-only.
+  A D3 Auth identity signs in only once it is linked to an existing Shipyard account (Account
+  screen) — it never creates one.
 - Not configured yet: `MAIL_RELAY_URL`/`MAIL_RELAY_TOKEN`/`ALERT_TO` (stale-agent and backup-failure
   email; until then they are logged only).

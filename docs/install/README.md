@@ -9,7 +9,7 @@ full walkthrough (a tunnel, a real data root, backups, onboarding apps, issuing 
 |---|---|---|
 | `compose.example.yml` | `docker-compose.yml` | `postgres` + `server` + `agent`, no tunnel service, server's port published locally for a browser to reach |
 | `postgres.env.example` | `postgres.env` | The database's own credentials |
-| `server.env.example` | `server.env` | Everything the server reads — `D3AUTH_*` left blank on purpose |
+| `server.env.example` | `server.env` | Everything the server reads — `D3AUTH_*` left blank on purpose (configure D3 Auth later in the console's Settings, if at all) |
 | `agent.env.example` | `agent.env` | Everything the agent reads |
 
 ## What "clean-machine install" means here

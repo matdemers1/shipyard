@@ -1,0 +1,1 @@
+{ "ok": true, "issuer": "https://auth.d3cloud.io", "discoveredIssuer": "https://auth.d3cloud.io", "issuerMatches": true, "authorizationEndpoint": "https://auth.d3cloud.io/oidc/auth", "tokenEndpoint": "https://auth.d3cloud.io/oidc/token", "jwksUri": "https://auth.d3cloud.io/oidc/jwks", "error": null }

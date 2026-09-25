@@ -1,0 +1,1 @@
+{ "source": "settings", "issuer": "https://auth.d3cloud.io", "clientId": "shipyard", "clientSecretSet": true, "redirectUri": "https://shipyard.d3cloud.io/api/auth/oidc/callback", "available": true, "reachable": true, "canStoreSecret": true, "problem": null, "manifest": { "client_id": "shipyard" }, "updatedAt": "2026-09-25T12:00:00.000Z" }

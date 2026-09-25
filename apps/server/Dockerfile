@@ -21,6 +21,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm install --offline --frozen-lockfile --filter shipyard-server... --filter shipyard-web...
 
 RUN pnpm --filter @shipyard/schema build
+RUN pnpm --filter @shipyard/sequence build
 RUN pnpm --filter shipyard-server build
 # The console, served by the server from /app/public (one origin, one cookie).
 RUN pnpm --filter shipyard-web build

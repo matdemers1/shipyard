@@ -2,6 +2,11 @@ import { refusal } from '@shipyard/schema';
 import { RefusalError } from '../ports.js';
 import type { Comparison, CompareStatus, GitHubPort, WorkflowRun } from '../ports.js';
 
+// The server's entry point (`@shipyard/sequence/github`): it reads GitHub through this adapter and
+// must not load the Docker adapter along with the barrel — the server never touches Docker.
+export { RefusalError } from '../ports.js';
+export type { GitHubPort } from '../ports.js';
+
 /**
  * The `GitHubPort` adapter (SHP-T-1.2, SHP-REQ-008/009/010/029). Talks to `api.github.com` (or a
  * compatible base URL, for tests and GitHub Enterprise) over the global `fetch`. Every failure

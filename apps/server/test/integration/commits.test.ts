@@ -4,7 +4,7 @@ import pino from 'pino';
 import request from 'supertest';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { fingerprintOf, signingString, type AgentReport } from '@shipyard/schema';
-import type { GitHubPort } from '@shipyard/sequence';
+import type { GitHubPort } from '@shipyard/sequence/github';
 import { agentRouter } from '../../src/agent/index.js';
 import { appsRouter } from '../../src/apps/index.js';
 import { commitsRouter } from '../../src/apps/commits.js';
@@ -225,7 +225,7 @@ describe('GET /api/apps/:app/commits', () => {
 
   it('answers unavailable, never a 500, when GitHub is unreachable', async () => {
     await recordRelease('web', SHA_LIVE);
-    const { RefusalError } = await import('@shipyard/sequence');
+    const { RefusalError } = await import('@shipyard/sequence/github');
     github.compareError = new RefusalError({ code: 'github_unreachable', gate: 'none', message: 'GitHub is unreachable', fix: 'Retry.' });
 
     const { cookie } = await signIn();

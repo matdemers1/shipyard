@@ -79,11 +79,23 @@ const OOB: Reply = {
   body: { months: [{ month: '2026-08', count: 1 }, { month: '2026-09', count: 3 }] },
 };
 
-function agentRoutes(role: Role, agents: AgentSummary[]) {
+/** A `GET /api/system` reply naming no PAT warning, for tests that do not care about it. */
+const NO_SYSTEM: Reply = {
+  status: 200,
+  body: {
+    versions: { server: 'dev', agent: null, compose: null, engineApi: null },
+    agent: null,
+    outbox: { unsent: 0, unsentOverHour: 0, oldestUnsentAt: null, lastError: null },
+    backups: { lastBackup: null, lastDrill: null },
+  },
+};
+
+function agentRoutes(role: Role, agents: AgentSummary[], system: Reply = NO_SYSTEM) {
   return {
     'GET /api/auth/me': meReply(role),
     'GET /api/agent': { status: 200, body: agents },
     'GET /api/stats/out-of-band': OOB,
+    'GET /api/system': system,
   };
 }
 
@@ -212,6 +224,36 @@ describe('agent heartbeat', () => {
     mockFetch(agentRoutes('deployer', []));
     wrap(<Agent />);
     expect(await screen.findByText('No agent — see the install runbook')).toBeInTheDocument();
+  });
+
+  it('shows a warning when the agent\'s PAT expires within 30 days, and an error once expired (SHP-REQ-106)', async () => {
+    const soloAgent = agent();
+    const expiringSystem: Reply = {
+      status: 200,
+      body: {
+        versions: { server: 'dev', agent: null, compose: null, engineApi: null },
+        agent: { fingerprint: soloAgent.fingerprint, lastHeartbeatAt: soloAgent.lastHeartbeatAt, stale: false, patExpiresAt: minutesAgo(-10 * 24 * 60), patWarning: 'expiring' },
+        outbox: { unsent: 0, unsentOverHour: 0, oldestUnsentAt: null, lastError: null },
+        backups: { lastBackup: null, lastDrill: null },
+      },
+    };
+    mockFetch(agentRoutes('deployer', [soloAgent], expiringSystem));
+    const { unmount } = wrap(<Agent />);
+    expect(await screen.findByText('Expiring')).toBeInTheDocument();
+    expect(screen.getByText("The agent's GitHub token expires within 30 days")).toBeInTheDocument();
+    unmount();
+
+    const expiredSystem: Reply = {
+      ...expiringSystem,
+      body: {
+        ...(expiringSystem.body as Record<string, unknown>),
+        agent: { ...(expiringSystem.body as { agent: Record<string, unknown> }).agent, patWarning: 'expired' },
+      },
+    };
+    mockFetch(agentRoutes('deployer', [soloAgent], expiredSystem));
+    wrap(<Agent />);
+    expect(await screen.findByText('Expired')).toBeInTheDocument();
+    expect(screen.getByText("The agent's GitHub token has expired")).toBeInTheDocument();
   });
 
   it('a fingerprint mismatch shows the refusal and its fix', async () => {

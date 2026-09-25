@@ -190,6 +190,19 @@ describe('POST /api/agent/report', () => {
     expect(res.status).toBe(400);
     expect(await db.app.count()).toBe(0);
   });
+
+  it('persists the reported PAT expiry (SHP-T-6.5, SHP-REQ-094)', async () => {
+    const expiresAt = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+    const withExpiry: AgentReport = { ...report([]), patExpiresAt: expiresAt.toISOString() };
+    await send(withExpiry);
+    const agent = await db.agent.findUniqueOrThrow({ where: { id: agentId } });
+    expect(agent.patExpiresAt?.toISOString()).toBe(expiresAt.toISOString());
+
+    // A later report with no token clears it rather than leaving the stale value.
+    await send(report([]));
+    const cleared = await db.agent.findUniqueOrThrow({ where: { id: agentId } });
+    expect(cleared.patExpiresAt).toBeNull();
+  });
 });
 
 describe('drift', () => {

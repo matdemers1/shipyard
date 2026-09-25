@@ -28,6 +28,7 @@ import {
   type OutOfBandMonth,
 } from '../lib/admin';
 import { RefusalError, unreachableRefusal } from '../lib/api';
+import { system as systemApi } from '../lib/system';
 import { useCan, useMe } from '../lib/auth';
 
 /**
@@ -106,18 +107,26 @@ function ConfirmForm({ agent, onDone }: { agent: AgentSummary; onDone: (a: Agent
   );
 }
 
+interface PatInfo {
+  fingerprint: string;
+  patExpiresAt: string | null;
+  patWarning: 'none' | 'expiring' | 'expired';
+}
+
 function AgentCard({
   agent,
   can,
   isAdmin,
   now,
   onChanged,
+  pat,
 }: {
   agent: AgentSummary;
   can: boolean;
   isAdmin: boolean;
   now: number;
   onChanged: (a: AgentSummary) => void;
+  pat: PatInfo | null;
 }) {
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -168,7 +177,24 @@ function AgentCard({
           <DescriptionItem term="Agent">{agent.agentVersion ?? 'Not reported'}</DescriptionItem>
           <DescriptionItem term="Compose">{agent.composeVersion ?? 'Not reported'}</DescriptionItem>
           <DescriptionItem term="Engine API">{agent.engineApiVersion ?? 'Not reported'}</DescriptionItem>
+          {pat === null ? null : (
+            <DescriptionItem term="GitHub token expires">
+              {pat.patExpiresAt === null ? 'Not reported' : shortDate(pat.patExpiresAt)}{' '}
+              {pat.patWarning === 'expiring' ? <Badge tone="attention">Expiring</Badge> : null}
+              {pat.patWarning === 'expired' ? <Badge tone="danger">Expired</Badge> : null}
+            </DescriptionItem>
+          )}
         </DescriptionList>
+        {pat?.patWarning === 'expired' ? (
+          <Alert tone="danger" title="The agent's GitHub token has expired">
+            Replace it on the host; deploys keep running, but changelog and commit checks stop working.
+          </Alert>
+        ) : null}
+        {pat?.patWarning === 'expiring' ? (
+          <Alert tone="warning" title="The agent's GitHub token expires within 30 days">
+            Replace it on the host before it does.
+          </Alert>
+        ) : null}
         {can && !agent.confirmed ? <ConfirmForm agent={agent} onDone={onChanged} /> : null}
         {can && isAdmin && agent.confirmed ? (
           <FormActions align="start">
@@ -219,6 +245,7 @@ export function Agent() {
   const isAdmin = useMe()?.role === 'admin';
   const [list, setList] = useState<AgentSummary[] | null>(null);
   const [months, setMonths] = useState<OutOfBandMonth[] | null>(null);
+  const [pat, setPat] = useState<PatInfo | null>(null);
   const [refusal, setRefusal] = useState<RefusalError | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
@@ -231,6 +258,18 @@ export function Agent() {
       setRefusal(null);
     } catch (error) {
       setRefusal(asRefusal(error));
+    }
+    // The PAT warning comes from /api/system, read separately so its own refusal (a role that
+    // cannot see it) never blocks the agent list above.
+    try {
+      const status = await systemApi.status();
+      setPat(
+        status.agent === null
+          ? null
+          : { fingerprint: status.agent.fingerprint, patExpiresAt: status.agent.patExpiresAt, patWarning: status.agent.patWarning },
+      );
+    } catch {
+      setPat(null);
     }
   }, []);
 
@@ -275,7 +314,15 @@ export function Agent() {
           </Alert>
         ) : null}
         {(list ?? []).map((agent) => (
-          <AgentCard key={agent.id} agent={agent} can={can} isAdmin={isAdmin} now={now} onChanged={replace} />
+          <AgentCard
+            key={agent.id}
+            agent={agent}
+            can={can}
+            isAdmin={isAdmin}
+            now={now}
+            onChanged={replace}
+            pat={pat?.fingerprint === agent.fingerprint ? pat : null}
+          />
         ))}
         {months === null ? null : (
           <Section

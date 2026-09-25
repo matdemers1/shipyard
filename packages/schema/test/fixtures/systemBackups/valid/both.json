@@ -1,0 +1,11 @@
+{
+  "lastBackup": {
+    "at": "2026-09-25T03:00:00.000Z",
+    "ok": true,
+    "file": "shipyard-2026-09-25.sql.gz",
+    "bytes": 10485760,
+    "durationMs": 4200,
+    "error": null
+  },
+  "lastDrill": null
+}

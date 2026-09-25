@@ -133,6 +133,7 @@ async function seedSucceeded(app: string): Promise<string> {
         create: {
           appId: appIds.get(app) ?? '',
           state: 'succeeded',
+          dispatchedAt: new Date(),
           schemaRevision: '20260920_add_widgets',
           endedAt: new Date(),
           images: {

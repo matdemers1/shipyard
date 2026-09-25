@@ -267,10 +267,11 @@ describe('runArgv (the default process runner)', () => {
 
   it('kills a process that runs past its timeout and reports 124', async () => {
     const started = Date.now();
-    const r = await runArgv(node, ['-e', 'console.log("started"); setTimeout(() => {}, 60000)'], { env, timeoutMs: 300 });
+    // Long enough for a loaded machine to start node and print; far shorter than the 60 s it would run.
+    const r = await runArgv(node, ['-e', 'console.log("started"); setTimeout(() => {}, 60000)'], { env, timeoutMs: 3000 });
     expect(r.exitCode).toBe(124);
     expect(r.stdout).toContain('started');
-    expect(Date.now() - started).toBeLessThan(5000);
+    expect(Date.now() - started).toBeLessThan(20000);
   });
 
   it('reports a missing binary as 127, not a throw', async () => {

@@ -163,7 +163,9 @@ export async function createDeploy(
   if (input.kind === 'rollback') {
     const toDeployId = input.toDeployId ?? '';
     const earlier = await db.deployTarget.findFirst({
-      where: { deployId: toDeployId, appId: app.id, state: 'succeeded', deploy: { dryRun: false } },
+      // Only a release the agent itself executed (dispatched) is in its ledger; an adopt-live record
+      // is not, and the agent would refuse it (SHP-D-080).
+      where: { deployId: toDeployId, appId: app.id, state: 'succeeded', dispatchedAt: { not: null }, deploy: { dryRun: false } },
       select: { deploy: { select: { requestedSha: true } } },
     });
     if (earlier === null) {

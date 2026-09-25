@@ -702,10 +702,17 @@ describe('AppLock — heartbeat and race-safe takeover', () => {
     const path = lockPath(dataRoot, 'toy');
     const lock = await AppLock.acquire(dataRoot, 'toy', HOLDER, { heartbeatMs: 20 });
     if (!isLock(lock)) throw new Error('not acquired');
-    const firstBeat = (JSON.parse(await readFile(path, 'utf8')) as { heartbeatAt: string }).heartbeatAt;
-    await new Promise((r) => setTimeout(r, 150));
-    const laterBeat = (JSON.parse(await readFile(path, 'utf8')) as { heartbeatAt: string }).heartbeatAt;
-    expect(Date.parse(laterBeat)).toBeGreaterThan(Date.parse(firstBeat));
+    const beatOf = async (): Promise<number> =>
+      Date.parse((JSON.parse(await readFile(path, 'utf8')) as { heartbeatAt: string }).heartbeatAt);
+    const firstBeat = await beatOf();
+    // Wait for a newer beat rather than a fixed time: a loaded machine delays timers.
+    const deadline = Date.now() + 5000;
+    let laterBeat = firstBeat;
+    while (laterBeat <= firstBeat && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+      laterBeat = await beatOf();
+    }
+    expect(laterBeat).toBeGreaterThan(firstBeat);
 
     // Taken over (it looked stale to someone): the old holder neither refreshes nor releases it.
     const theirs = holderLock({ ageMs: 0, deployId: 'dep-new-holder' });

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
 
 /**
@@ -34,6 +34,10 @@ class ResizeObserverStub {
     /* no layout in jsdom */
   }
 }
+
+// The whole workspace's tests run at once in CI and in `pnpm test`; under that load jsdom renders
+// slowly enough that the default 1 s wait for `findBy…` times out on a correct screen.
+configure({ asyncUtilTimeout: 5000 });
 
 Object.defineProperty(window, 'matchMedia', { writable: true, configurable: true, value: matchMedia });
 vi.stubGlobal('ResizeObserver', ResizeObserverStub);

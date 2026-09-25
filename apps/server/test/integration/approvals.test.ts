@@ -184,7 +184,7 @@ describe('holding agent-requested deploys (SHP-REQ-060)', () => {
 
   it('a token rollback of an approval-required app is held too', async () => {
     const earlier = await db.deploy.create({
-      data: { requestedSha: SHA_B, requesterLabel: 'earlier', targets: { create: { appId: appIds.get('d3auth') ?? '', state: 'succeeded', endedAt: new Date() } } },
+      data: { requestedSha: SHA_B, requesterLabel: 'earlier', targets: { create: { appId: appIds.get('d3auth') ?? '', state: 'succeeded', endedAt: new Date(), dispatchedAt: new Date() } } },
       select: { id: true },
     });
     const token = await tokenFor('claude', ['d3auth']);

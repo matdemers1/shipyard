@@ -352,7 +352,12 @@ describe('progress, steps and result', () => {
       gates: [{ gate: 'G8', pass: true, reason: 'digests present' }],
     });
     expect(ok.status).toBe(200);
-    expect(await getDeployStatus(db, dry.deployId)).toMatchObject({ state: 'succeeded', images: [], gates: [{ gate: 'G8', pass: true }] });
+    expect(await getDeployStatus(db, dry.deployId)).toMatchObject({
+      state: 'succeeded',
+      // A dry run never writes target_image (SHP-REQ-050); its images come from the stored result.
+      images: [{ service: 'web', sha: SHA, digest: DIGEST_WEB, migration: null }],
+      gates: [{ gate: 'G8', pass: true }],
+    });
     expect(await db.outbox.count()).toBe(0);
   });
 

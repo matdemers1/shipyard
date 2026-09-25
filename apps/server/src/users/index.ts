@@ -14,8 +14,8 @@ import { sendRefusal } from '../errors.js';
  * SHP-D-085). Mounted at `/api`, so every route here names its own guard: a router-level
  * middleware would run for every other `/api` request too.
  *
- * Nothing creates a user except the bootstrap-admin CLI and the invite accept/confirm pair below
- * (SHP-REQ-101). An invite is consumed only once its new user has confirmed a first TOTP code,
+ * Nothing creates a user except the bootstrap-admin CLI, first-run setup while no account exists
+ * (src/setup, SHP-REQ-109) and the invite accept/confirm pair below (SHP-REQ-101). An invite is consumed only once its new user has confirmed a first TOTP code,
  * because native sign-in requires TOTP; until then the accept step may be restarted.
  */
 

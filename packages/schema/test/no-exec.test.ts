@@ -21,6 +21,8 @@ import {
   FreezeRequest,
   RestoreRequest,
   ScheduleRequest,
+  SetupStartRequest,
+  SetupCompleteRequest,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -71,6 +73,8 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   FreezeRequest,
   RestoreRequest,
   ScheduleRequest,
+  SetupStartRequest,
+  SetupCompleteRequest,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -93,6 +97,8 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   FreezeRequest: 'freezeRequest',
   RestoreRequest: 'restoreRequest',
   ScheduleRequest: 'scheduleRequest',
+  SetupStartRequest: 'setupStartRequest',
+  SetupCompleteRequest: 'setupCompleteRequest',
 };
 
 describe('request schema coverage', () => {

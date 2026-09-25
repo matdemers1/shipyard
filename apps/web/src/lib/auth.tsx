@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { auth, setSessionGoneHandler, type Me, type RefusalError, type Role } from './api';
+import { auth, setSessionGoneHandler, setup, type Me, type RefusalError, type Role } from './api';
 
 /**
  * Who is signed in, as the server says. The answer comes from `GET /api/auth/me` and nothing held
@@ -8,7 +8,11 @@ import { auth, setSessionGoneHandler, type Me, type RefusalError, type Role } fr
 
 export type AuthState =
   | { status: 'loading' }
-  | { status: 'signed-out' }
+  /**
+   * `setupAvailable`: the server has no account at all, so the console offers first-run setup
+   * instead of sign-in (SHP-REQ-109). Absent means false.
+   */
+  | { status: 'signed-out'; setupAvailable?: boolean }
   | { status: 'signed-in'; me: Me }
   | { status: 'unreachable'; error: RefusalError };
 
@@ -34,7 +38,16 @@ export function AuthProvider({ children }: { children?: ReactNode }) {
   const refresh = useCallback(async () => {
     try {
       const me = await auth.me();
-      setState(me === null ? { status: 'signed-out' } : { status: 'signed-in', me });
+      if (me !== null) {
+        setState({ status: 'signed-in', me });
+        return;
+      }
+      // Not knowing is the same as "not available": the sign-in screen is the safe default.
+      const setupAvailable = await setup
+        .status()
+        .then((s) => s.available)
+        .catch(() => false);
+      setState({ status: 'signed-out', setupAvailable });
     } catch (error) {
       setState({ status: 'unreachable', error: error as RefusalError });
     }

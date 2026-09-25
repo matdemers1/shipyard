@@ -189,6 +189,52 @@ function buildPaths(): Record<string, unknown> {
         },
       },
     },
+    '/setup': {
+      get: {
+        summary: 'Whether first-run setup is open (only while no account exists)',
+        operationId: 'getSetup',
+        security: [],
+        responses: {
+          '200': {
+            description: 'available is true only while the server has no account at all.',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/SetupStatus' } } },
+          },
+        },
+      },
+    },
+    '/setup/start': {
+      post: {
+        summary: 'Begin creating the first admin: details, then an authenticator to enrol',
+        operationId: 'postSetupStart',
+        security: [],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/SetupStartRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Nothing is written yet; the ticket finishes setup within ten minutes.',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/SetupStarted' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+    '/setup/complete': {
+      post: {
+        summary: 'Finish first-run setup with a code from the new authenticator',
+        operationId: 'postSetupComplete',
+        security: [],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/SetupCompleteRequest' } } },
+        },
+        responses: {
+          '201': { description: 'The first admin exists and is signed in; a session is established.' },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
     '/auth/oidc/start': {
       get: {
         summary: 'Begin Sign in with D3 Auth',

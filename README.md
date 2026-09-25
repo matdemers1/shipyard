@@ -81,7 +81,19 @@ docker compose -p shipyard up -d
 curl -s http://localhost:3466/api/health   # {"status":"ok","schemaRevision":"…","version":"<sha>"}
 ```
 
-Create the first (and only) account — a deliberate human act, never a signup form:
+Now open `http://localhost:3466` and create the first account in the browser. While Shipyard has
+no account at all, the console shows a Setup screen instead of sign-in: your email, a display name
+and a password (12+ characters), then an authenticator to add (a link that opens your authenticator
+app, and the setup key to type) and one six-digit code to confirm it. That creates an admin, signs
+you in, and closes setup for good — once any account exists the server refuses that path, and
+everyone after you is invited from the Users screen.
+
+> **Claim it right after the first start.** There is no setup code: until the first account
+> exists, whoever reaches this URL can create it. Do it before the address is reachable by anyone
+> else (before you point a tunnel at it, for example).
+
+On a headless host with no browser to hand, the CLI does the same thing instead (it refuses once
+any account exists, too):
 
 ```bash
 docker compose -p shipyard exec server node dist/cli/bootstrap-admin.js \
@@ -99,8 +111,8 @@ docker compose -p shipyard logs agent | grep -m1 'NOT YET CONFIRMED'
 docker compose -p shipyard exec server node dist/cli/host-admin.js confirm-agent --fingerprint 'SHA256:…'
 ```
 
-Sign in at `http://localhost:3466` with the email, password and the six-digit code from your
-authenticator. See `docs/install/README.md` for the full example files and what each variable
+Later sign-ins at `http://localhost:3466` take the email, password and the six-digit code from
+your authenticator. See `docs/install/README.md` for the full example files and what each variable
 means; see `docs/runbooks/install.md` for the same install with a tunnel and a real data root, and
 the parts specific to the D3 Cloud host at its end (skip those — they are not needed here).
 

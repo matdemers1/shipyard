@@ -55,6 +55,10 @@ import {
   SystemBackupRun,
   SystemBackups,
   SystemStatus,
+  SetupStatus,
+  SetupStartRequest,
+  SetupStarted,
+  SetupCompleteRequest,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -122,6 +126,10 @@ const SCHEMAS: Record<string, ZodType> = {
   systemBackupRun: SystemBackupRun,
   systemBackups: SystemBackups,
   systemStatus: SystemStatus,
+  setupStatus: SetupStatus,
+  setupStartRequest: SetupStartRequest,
+  setupStarted: SetupStarted,
+  setupCompleteRequest: SetupCompleteRequest,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

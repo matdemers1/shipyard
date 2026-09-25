@@ -28,7 +28,9 @@ export function mockFetch(routes: Record<string, Reply | Handler | Reply[]>): Ca
     const method = init?.method ?? 'GET';
     const key = `${method} ${path}`;
     calls.push({ method, path, body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });
-    const route = routes[key];
+    // A signed-out console asks whether first-run setup is open; unless a test says otherwise, the
+    // server already has accounts.
+    const route = routes[key] ?? (key === 'GET /api/setup' ? SETUP_CLOSED : undefined);
     if (route === undefined) throw new Error(`unexpected request: ${key}`);
     let reply: Reply;
     if (typeof route === 'function') reply = route(init);
@@ -49,6 +51,9 @@ export function mockFetch(routes: Record<string, Reply | Handler | Reply[]>): Ca
   vi.stubGlobal('fetch', fn);
   return calls;
 }
+
+export const SETUP_CLOSED: Reply = { status: 200, body: { available: false } };
+export const SETUP_OPEN: Reply = { status: 200, body: { available: true } };
 
 export const NOT_SIGNED_IN: Reply = {
   status: 401,

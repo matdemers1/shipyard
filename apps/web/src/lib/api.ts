@@ -1,4 +1,14 @@
-import type { ErrorCode, Gate, LoginRequest, Refusal, TotpRequest } from '@shipyard/schema';
+import type {
+  ErrorCode,
+  Gate,
+  LoginRequest,
+  Refusal,
+  SetupCompleteRequest,
+  SetupStartRequest,
+  SetupStarted,
+  SetupStatus,
+  TotpRequest,
+} from '@shipyard/schema';
 
 /**
  * The console's one way to talk to the server.
@@ -144,6 +154,18 @@ export const auth = {
   totp: (body: TotpRequest): Promise<Pick<Me, 'id' | 'email' | 'displayName' | 'role'>> =>
     request('/api/auth/totp', { method: 'POST', body, sessionBearing: false }),
   logout: (): Promise<{ ok: true }> => request('/api/auth/logout', { method: 'POST', sessionBearing: false }),
+};
+
+// ── First-run setup (SHP-REQ-109) ───────────────────────────────────────
+
+export const setup = {
+  /** Open only while the server has no account at all. */
+  status: (): Promise<SetupStatus> => request<SetupStatus>('/api/setup', { sessionBearing: false }),
+  start: (body: SetupStartRequest): Promise<SetupStarted> =>
+    request('/api/setup/start', { method: 'POST', body, sessionBearing: false }),
+  /** Creates the first admin and signs them in. */
+  complete: (body: SetupCompleteRequest): Promise<Pick<Me, 'id' | 'email' | 'displayName' | 'role'>> =>
+    request('/api/setup/complete', { method: 'POST', body, sessionBearing: false }),
 };
 
 /** A browser navigation, not a fetch: the server answers with a 302 to D3 Auth. */

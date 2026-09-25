@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { axeViolations, expectTheme, forceTheme, settle, type Theme } from '../harness/a11y.js';
+import { enterZeroUserWorld, restoreAccounts } from '../harness/accounts.js';
 import { withDb } from '../harness/db.js';
 import { USERS, storageStateFor, type RoleName } from '../harness/env.js';
 import { fixture, reseedWorld, type Fixture } from '../harness/seed.js';
@@ -26,6 +27,8 @@ interface Screen {
   act?: (page: Page, fx: Fixture) => Promise<void>;
   /** Phone width (the console is phone-first, 375 px). */
   phone?: boolean;
+  /** Runs in a server with no account at all (first-run setup), then puts the accounts back. */
+  zeroUsers?: boolean;
 }
 
 const h1 = (page: Page, name: string | RegExp) => expect(page.getByRole('heading', { level: 1, name })).toBeVisible();
@@ -459,6 +462,31 @@ const SCREENS: Screen[] = [
     path: () => `/invite/inv_${'x'.repeat(43)}`,
     ready: (p) => h1(p, 'Join Shipyard'),
   },
+  // First-run setup (SHP-REQ-109), on a server with no account — the form and its authenticator step.
+  {
+    name: 'first-run setup',
+    as: null,
+    zeroUsers: true,
+    phone: true,
+    path: () => '/',
+    ready: (p) => h1(p, 'Set up Shipyard'),
+  },
+  {
+    name: 'first-run setup, authenticator step',
+    as: null,
+    zeroUsers: true,
+    phone: true,
+    path: () => '/setup',
+    ready: (p) => h1(p, 'Set up Shipyard'),
+    act: async (p) => {
+      await p.getByRole('textbox', { name: 'Email' }).fill('first-admin@shipyard.test');
+      await p.getByRole('textbox', { name: 'Display name' }).fill('Fay First');
+      await p.getByLabel('Password', { exact: true }).fill('console-e2e-first-admin-password');
+      await p.getByLabel('Confirm password', { exact: true }).fill('console-e2e-first-admin-password');
+      await p.getByRole('button', { name: 'Continue' }).click();
+      await expect(p.getByRole('heading', { level: 1, name: 'Add your authenticator' })).toBeVisible();
+    },
+  },
   // Not found.
   {
     name: 'not found',
@@ -478,26 +506,36 @@ for (const theme of ['light', 'dark'] as const satisfies readonly Theme[]) {
         });
 
         test(`${screen.name} has no serious or critical violations`, async ({ page }) => {
-          const fx = fixture();
-          await forceTheme(page, theme);
-          await page.goto(screen.path(fx));
-          await expectTheme(page, theme);
-          await screen.ready(page, fx);
-          await settle(page);
-          if (screen.act !== undefined) {
-            await screen.act(page, fx);
-            await settle(page);
+          const snapshot = screen.zeroUsers === true ? await withDb((db) => enterZeroUserWorld(db)) : undefined;
+          try {
+            await check(page, screen, theme);
+          } finally {
+            if (snapshot !== undefined) await withDb((db) => restoreAccounts(db, snapshot));
           }
-
-          const { blocking, other } = await axeViolations(page);
-          if (other.length > 0) {
-            test.info().annotations.push({ type: 'axe (moderate/minor)', description: other.join('\n') });
-          }
-          expect(blocking, `${screen.name} (${theme}):\n  ${blocking.join('\n  ')}`).toEqual([]);
         });
       });
     }
   });
+}
+
+/** One screen in one theme: go there, wait for it, open what it is about, run axe. */
+async function check(page: Page, screen: Screen, theme: Theme): Promise<void> {
+  const fx = fixture();
+  await forceTheme(page, theme);
+  await page.goto(screen.path(fx));
+  await expectTheme(page, theme);
+  await screen.ready(page, fx);
+  await settle(page);
+  if (screen.act !== undefined) {
+    await screen.act(page, fx);
+    await settle(page);
+  }
+
+  const { blocking, other } = await axeViolations(page);
+  if (other.length > 0) {
+    test.info().annotations.push({ type: 'axe (moderate/minor)', description: other.join('\n') });
+  }
+  expect(blocking, `${screen.name} (${theme}):\n  ${blocking.join('\n  ')}`).toEqual([]);
 }
 
 /**

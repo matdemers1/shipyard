@@ -13,6 +13,7 @@ import { Home } from './screens/Home';
 import { NotFound } from './screens/NotFound';
 import { Restore } from './screens/Restore';
 import { Schedules } from './screens/Schedules';
+import { Setup } from './screens/Setup';
 import { SignIn } from './screens/SignIn';
 import { System } from './screens/System';
 import { Timeline } from './screens/Timeline';
@@ -28,10 +29,21 @@ interface FromState {
   from?: string;
 }
 
-/** Signed-out visitors go to sign-in, remembering where they were going. */
+/** True while the server has no account at all: the console offers first-run setup (SHP-REQ-109). */
+function useSetupAvailable(): boolean {
+  const { state } = useAuth();
+  return state.status === 'signed-out' && state.setupAvailable === true;
+}
+
+/**
+ * Signed-out visitors go to sign-in, remembering where they were going — or, on a server with no
+ * account yet, to first-run setup.
+ */
 function RequireSession({ children }: { children: ReactNode }) {
   const { state } = useAuth();
   const location = useLocation();
+  const setupAvailable = useSetupAvailable();
+  if (setupAvailable) return <Navigate to="/setup" replace />;
   if (state.status !== 'signed-in') {
     const from = `${location.pathname}${location.search}`;
     return <Navigate to="/signin" replace state={{ from } satisfies FromState} />;
@@ -64,7 +76,17 @@ function SignInRoute() {
     const from = (location.state as FromState | null)?.from;
     return <Navigate to={from !== undefined && from.startsWith('/') && from !== '/signin' ? from : '/'} replace />;
   }
+  // A fresh install has nobody to sign in as: create the first account instead.
+  if (state.status === 'signed-out' && state.setupAvailable === true) return <Navigate to="/setup" replace />;
   return <SignIn onSignedIn={refresh} />;
+}
+
+/** Public, and only while no account exists; otherwise it is sign-in's (or home's) job. */
+function SetupRoute() {
+  const { state, refresh } = useAuth();
+  if (state.status === 'signed-in') return <Navigate to="/" replace />;
+  if (state.status !== 'signed-out' || state.setupAvailable !== true) return <Navigate to="/signin" replace />;
+  return <Setup onSignedIn={refresh} onClosed={refresh} />;
 }
 
 export function AppRoutes() {
@@ -107,6 +129,7 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/signin" element={<SignInRoute />} />
+      <Route path="/setup" element={<SetupRoute />} />
       {/* Public: an invite link is opened by someone who has no account yet (SHP-REQ-067). */}
       <Route path="/invite/:token" element={<AcceptInvite />} />
       <Route

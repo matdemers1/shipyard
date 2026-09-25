@@ -42,6 +42,12 @@
     padding: var(--space-8) var(--page-pad) 0;
   }
 
+  /* A setup key shown to copy: wraps anywhere rather than widening a 375 px page. */
+  .shp-secret {
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+
   .shp-center {
     display: flex;
     justify-content: center;

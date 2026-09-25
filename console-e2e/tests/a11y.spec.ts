@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { axeViolations, expectTheme, forceTheme, settle, type Theme } from '../harness/a11y.js';
 import { enterZeroUserWorld, restoreAccounts } from '../harness/accounts.js';
+import { clearD3AuthSetting } from '../harness/d3auth.js';
 import { withDb } from '../harness/db.js';
 import { USERS, storageStateFor, type RoleName } from '../harness/env.js';
 import { fixture, reseedWorld, type Fixture } from '../harness/seed.js';
@@ -434,6 +435,47 @@ const SCREENS: Screen[] = [
       await expect(p.getByText('0.6.0').first()).toBeVisible();
     },
   },
+  // S16 Settings (admin only) — the form, a failed Test, the turn-off confirm, and a viewer refused.
+  {
+    name: 'S16 settings',
+    as: 'admin',
+    path: () => '/settings',
+    ready: async (p) => {
+      await h1(p, 'Settings');
+      await expect(p.getByRole('button', { name: 'Download app manifest', exact: true })).toBeVisible();
+    },
+  },
+  {
+    name: 'S16 settings, a failed test',
+    as: 'admin',
+    path: () => '/settings',
+    ready: (p) => h1(p, 'Settings'),
+    act: async (p) => {
+      await p.getByRole('textbox', { name: 'Issuer' }).fill('http://127.0.0.1:9');
+      await p.getByRole('button', { name: 'Test', exact: true }).click();
+      await expect(p.getByText('The issuer did not pass')).toBeVisible();
+    },
+  },
+  {
+    name: 'S16 settings, turn-off confirm',
+    as: 'admin',
+    path: () => '/settings',
+    ready: (p) => h1(p, 'Settings'),
+    act: async (p) => {
+      // An issuer nothing answers: saved, the button stays off, and Turn off appears.
+      await p.getByRole('textbox', { name: 'Issuer' }).fill('http://127.0.0.1:9');
+      await p.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(p.getByText('Configured, but the D3 Auth button is off')).toBeVisible();
+      await p.getByRole('button', { name: 'Turn off', exact: true }).click();
+      await dialog(p, 'Turn off Sign in with D3 Auth?');
+    },
+  },
+  {
+    name: 'S16 settings as a viewer, denied',
+    as: 'viewer',
+    path: () => '/settings',
+    ready: (p) => expect(p.getByRole('heading', { name: 'This page needs the admin role' })).toBeVisible(),
+  },
   // Invite acceptance — the form, its authenticator step, and a dead link.
   {
     name: 'invite acceptance',
@@ -546,6 +588,9 @@ async function check(page: Page, screen: Screen, theme: Theme): Promise<void> {
  */
 test.afterAll(async () => {
   await withDb((db) => reseedWorld(db));
+  // The turn-off-confirm scenario leaves a (dead) issuer saved; clearing it through the API also
+  // swaps the server's live client back.
+  await clearD3AuthSetting();
 });
 
 /** The sweep above passing means nothing unless axe would have failed it: prove the check bites. */

@@ -1,5 +1,5 @@
 import { createApp } from './app.js';
-import { createOidcClient } from './auth/index.js';
+import { OidcSettings } from './auth/index.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db.js';
 import { Bus } from './events.js';
@@ -14,10 +14,12 @@ import { createMailer } from './mail/index.js';
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);
 const db = createDb(config.DATABASE_URL);
-// Never throws: an unreachable D3 Auth leaves password login working (SHP-REQ-001).
-const oidc = await createOidcClient(config, logger);
+// Sign in with D3 Auth from server.env, else from Settings (SHP-REQ-110). Never throws: an
+// unreachable or misconfigured D3 Auth leaves password login working (SHP-REQ-001).
+const oidcSettings = new OidcSettings({ db, logger, config });
+await oidcSettings.load();
 const bus = new Bus();
-const app = createApp({ db, logger, config, oidc, bus });
+const app = createApp({ db, logger, config, oidcSettings, bus });
 const outbox = startOutbox({ db, logger, config, bus });
 // Unanswered approvals expire after an hour (SHP-REQ-061).
 const approvalExpiry = startApprovalExpiry({ db, logger, config, bus });

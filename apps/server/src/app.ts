@@ -7,7 +7,7 @@ import type { Config } from './config.js';
 import { auditContext, type AuditContextOptions } from './audit.js';
 import type { Db } from './db.js';
 import { errorHandler, sendRefusal } from './errors.js';
-import { authenticate, authRouter, type OidcClient } from './auth/index.js';
+import { authenticate, authRouter, OidcSettings, type OidcClient } from './auth/index.js';
 import { agentRouter } from './agent/index.js';
 import { appsRouter } from './apps/index.js';
 import { deploysRouter } from './deploys/index.js';
@@ -26,13 +26,19 @@ import { schedulesRouter } from './schedules/index.js';
 import { restoreRouter } from './restore/index.js';
 import { systemRouter } from './system/index.js';
 import { setupRouter, type SetupDeps } from './setup/index.js';
+import { settingsRouter } from './settings/index.js';
 
 export interface AppDeps {
   db: Db;
   logger: Logger;
   config: Config;
   onUnauditedMutation?: AuditContextOptions['onUnauditedMutation'];
-  /** Sign in with D3 Auth, built at boot by `createOidcClient`; null or absent means password only. */
+  /**
+   * Sign in with D3 Auth, live: built at boot from server.env or Settings and swapped by a save
+   * (SHP-REQ-110). Takes precedence over `oidc`.
+   */
+  oidcSettings?: OidcSettings;
+  /** A fixed OIDC client (tests); null or absent, with no `oidcSettings`, means password only until Settings saves one. */
   oidc?: OidcClient | null;
   /** Long-poll wake-ups; one per process. Tests may pass their own to observe or trigger it. */
   bus?: Bus;
@@ -49,7 +55,8 @@ export interface AppDeps {
 /** Builds the Express app (SHP-T-0.4). Later tasks mount routers in the section marked below. */
 export function createApp(deps: AppDeps): Express {
   const { db, logger, config, onUnauditedMutation, testRouter } = deps;
-  const authDeps = { db, logger, config, oidc: deps.oidc ?? null };
+  const oidc = deps.oidcSettings ?? new OidcSettings({ db, logger, config }, deps.oidc ?? null);
+  const authDeps = { db, logger, config, oidc };
   const serviceDeps = { db, logger, config, bus: deps.bus ?? new Bus() };
 
   const app = express();
@@ -104,6 +111,8 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api', usersRouter(serviceDeps));
   app.use('/api', pendingApprovalsRouter(serviceDeps));
   app.use('/api/tokens', tokensRouter(serviceDeps));
+  // Admin-only: Sign in with D3 Auth configured from the console (SHP-REQ-110).
+  app.use('/api/settings', settingsRouter({ ...serviceDeps, oidc }));
   app.use('/mcp', mcpRouter(serviceDeps));
 
   // The console is served by the server itself: one origin, one cookie, no CORS. In development

@@ -2,7 +2,7 @@ import { Button, EmptyState, Page, Spinner } from '@d3cloud/ui';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Shell } from './components/Shell';
-import { useAuth, useCan } from './lib/auth';
+import { useAuth, useCan, useIsAdmin } from './lib/auth';
 import { AcceptInvite } from './screens/AcceptInvite';
 import { Account } from './screens/Account';
 import { Agent } from './screens/Agent';
@@ -13,6 +13,7 @@ import { Home } from './screens/Home';
 import { NotFound } from './screens/NotFound';
 import { Restore } from './screens/Restore';
 import { Schedules } from './screens/Schedules';
+import { Settings } from './screens/Settings';
 import { Setup } from './screens/Setup';
 import { SignIn } from './screens/SignIn';
 import { System } from './screens/System';
@@ -62,6 +63,21 @@ function RequireStateChange({ children }: { children: ReactNode }) {
       <Page>
         <EmptyState kind="no-access" heading="This page needs the deployer role" headingLevel={2}>
           Your role is viewer, which can read but not change anything. Ask an admin for the deployer role.
+        </EmptyState>
+      </Page>
+    );
+  }
+  return children;
+}
+
+/** Settings are an admin's alone; the nav hides them from everyone else, and this covers a typed-in address. */
+function RequireAdmin({ children }: { children: ReactNode }) {
+  const isAdmin = useIsAdmin();
+  if (!isAdmin) {
+    return (
+      <Page>
+        <EmptyState kind="no-access" heading="This page needs the admin role" headingLevel={2}>
+          Settings change how everyone signs in, so only an admin can see them. Ask an admin if something here needs changing.
         </EmptyState>
       </Page>
     );
@@ -177,6 +193,14 @@ export function AppRoutes() {
             <RequireStateChange>
               <Users />
             </RequireStateChange>
+          }
+        />
+        <Route
+          path="settings"
+          element={
+            <RequireAdmin>
+              <Settings />
+            </RequireAdmin>
           }
         />
         <Route path="*" element={<NotFound />} />

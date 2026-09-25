@@ -33,7 +33,11 @@ Shipyard does only those things.
 
 This works on a clean Linux machine with Docker Engine and Compose v2.2x or v5 — nothing here
 assumes ZimaOS or any particular dashboard. Sign in with D3 Auth is entirely optional; leaving the
-`D3AUTH_*` variables unset gives you app-native password + TOTP login only.
+`D3AUTH_*` variables unset gives you app-native password + TOTP login only. To add it later, an
+admin configures it in the console under **Settings → Sign in with D3 Auth** (issuer, client ID,
+client secret — the secret encrypted at rest with a key derived from `SESSION_SECRET`), and it takes
+effect without a restart. `D3AUTH_*` variables in `server.env` still work, and when set they win:
+the Settings screen then shows them read-only.
 
 ```bash
 mkdir shipyard-install && cd shipyard-install

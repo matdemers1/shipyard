@@ -96,3 +96,8 @@ export function useMe(): Me | null {
 export function useCan(): boolean {
   return canChangeState(useMe()?.role);
 }
+
+/** Whether the signed-in user is an admin: Settings is theirs alone (SHP-REQ-110). */
+export function useIsAdmin(): boolean {
+  return useMe()?.role === 'admin';
+}

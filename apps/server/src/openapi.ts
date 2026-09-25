@@ -235,6 +235,62 @@ function buildPaths(): Record<string, unknown> {
         },
       },
     },
+    '/settings/d3auth': {
+      get: {
+        summary: 'Sign in with D3 Auth as configured (admin only; never the client secret)',
+        operationId: 'getSettingsD3Auth',
+        responses: {
+          '200': {
+            description: 'Where it is configured, whether it is live, the redirect URI and the app manifest.',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/D3AuthSettings' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+      put: {
+        summary: 'Save the D3 Auth issuer, client ID and client secret; takes effect without a restart',
+        operationId: 'putSettingsD3Auth',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/D3AuthSettingsUpdate' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Saved and applied. 409 when server.env sets D3AUTH_* (env wins).',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/D3AuthSettings' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+      delete: {
+        summary: 'Clear the D3 Auth setting: the D3 Auth button turns off',
+        operationId: 'deleteSettingsD3Auth',
+        responses: {
+          '200': {
+            description: 'Cleared. 409 when server.env sets D3AUTH_* (env wins).',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/D3AuthSettings' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+    '/settings/d3auth/test': {
+      post: {
+        summary: "Fetch an issuer's OpenID discovery document and report what it says",
+        operationId: 'postSettingsD3AuthTest',
+        requestBody: {
+          required: false,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/D3AuthTestRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: 'The result, reachable or not.',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/D3AuthTestResult' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
     '/auth/oidc/start': {
       get: {
         summary: 'Begin Sign in with D3 Auth',

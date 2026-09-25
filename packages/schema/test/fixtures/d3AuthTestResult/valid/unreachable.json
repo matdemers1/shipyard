@@ -1,0 +1,1 @@
+{ "ok": false, "issuer": "https://auth.example.com", "discoveredIssuer": null, "issuerMatches": false, "authorizationEndpoint": null, "tokenEndpoint": null, "jwksUri": null, "error": "Could not connect to the issuer." }

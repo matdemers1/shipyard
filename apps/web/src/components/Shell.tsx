@@ -80,7 +80,8 @@ export function Shell({ children }: { children?: ReactNode }) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
 
-  const items = NAV_ITEMS.filter((item) => !item.needsStateChange || can);
+  const isAdmin = me?.role === 'admin';
+  const items = NAV_ITEMS.filter((item) => (!item.needsStateChange || can) && (item.needsAdmin !== true || isAdmin));
   const systemWarnings = useSystemWarnings(can);
   const email = me?.email ?? '';
 

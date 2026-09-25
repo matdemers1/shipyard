@@ -35,6 +35,9 @@ cd "$repo_root"
 #   - localhost / 127.0.0.1          local dev only
 # Anything else — FOREMAN_URL, D3AUTH_ISSUER, MAIL_RELAY_URL, the agent's own SHIPYARD_SERVER_URL —
 # is read from configuration (apps/*/src/config.ts) and never appears as a literal host in source.
+# The D3 Auth issuer may instead be one an admin typed into Settings (SHP-REQ-110, stored in the
+# `setting` table): the server fetches only that issuer's discovery document and the endpoints it
+# names — the operator's own sign-in provider, never a host Shipyard chose.
 #   - *.example.com                  RFC 2606 placeholder used only in doc comments (e.g.
 #                                     apps/agent/src/config.ts's `https://shipyard.example.com`)
 # The bundle-only allowlist below adds hosts that appear in the built console but are never

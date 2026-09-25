@@ -82,6 +82,21 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
   });
 }
 
+/** What a client is built from: server.env, or the console's Settings (SHP-REQ-110). */
+export interface OidcParams {
+  issuer: string;
+  clientId: string;
+  /** Absent for a public client (PKCE alone). */
+  clientSecret?: string;
+  /** PUBLIC_URL: the redirect URI is built from it. */
+  publicUrl: string;
+}
+
+/** The redirect URI D3 Auth must have registered for this server. */
+export function oidcRedirectUri(publicUrl: string): string {
+  return new URL('/api/auth/oidc/callback', publicUrl).toString();
+}
+
 /**
  * Discovers the provider and builds a client, or returns `null` when OIDC is not configured or the
  * issuer is unreachable. Never throws: a provider that is down is a Shipyard with one login path,
@@ -89,16 +104,35 @@ function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<
  */
 export async function createOidcClient(config: Config, logger?: Logger): Promise<OidcClient | null> {
   if (!config.oidcConfigured) return null;
-  const issuer = config.D3AUTH_ISSUER ?? '';
-  const redirectUri = new URL('/api/auth/oidc/callback', config.PUBLIC_URL).toString();
+  return buildOidcClient(
+    {
+      issuer: config.D3AUTH_ISSUER ?? '',
+      clientId: config.D3AUTH_CLIENT_ID ?? '',
+      ...(config.D3AUTH_CLIENT_SECRET !== undefined ? { clientSecret: config.D3AUTH_CLIENT_SECRET } : {}),
+      publicUrl: config.PUBLIC_URL ?? '',
+    },
+    logger,
+  );
+}
+
+/** {@link createOidcClient} from explicit parameters. Never throws; `null` when discovery fails. */
+export async function buildOidcClient(params: OidcParams, logger?: Logger): Promise<OidcClient | null> {
+  const { issuer } = params;
+  let redirectUri: string;
+  try {
+    redirectUri = oidcRedirectUri(params.publicUrl);
+  } catch {
+    logger?.warn('PUBLIC_URL is not a URL; Sign in with D3 Auth is unavailable, password login is unaffected');
+    return null;
+  }
 
   let client: AuthClient;
   try {
     client = await withTimeout(
       createAuthClient({
         issuer,
-        clientId: config.D3AUTH_CLIENT_ID ?? '',
-        ...(config.D3AUTH_CLIENT_SECRET !== undefined ? { clientSecret: config.D3AUTH_CLIENT_SECRET } : {}),
+        clientId: params.clientId,
+        ...(params.clientSecret !== undefined ? { clientSecret: params.clientSecret } : {}),
         redirectUri,
         scope: 'openid profile email d3:roles',
         ssoMode: 'optional',

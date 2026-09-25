@@ -33,6 +33,9 @@ const ALL_TABLES = [
   'agent',
   'audit_event',
   'invite',
+  // Settings → D3 Auth (SHP-REQ-110). The server holds the live client in memory: a spec that saves
+  // one also clears it through the API (harness/d3auth.ts), which is what swaps the client back.
+  'setting',
   'session',
   'identity',
   'user',

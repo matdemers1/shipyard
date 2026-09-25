@@ -18,6 +18,7 @@ import {
   verifyMfaTicket,
 } from './cookies.js';
 import { OIDC_TX_TTL_MS, OidcError, type OidcClient } from './oidc.js';
+import type { OidcSource } from './oidc-settings.js';
 import { verifyAgainstDummy, verifyPassword } from './passwords.js';
 import { SESSION_TTL_MS, createSession, hashSessionToken, resolveSession } from './sessions.js';
 import { MfaTickets } from './tickets.js';
@@ -31,6 +32,7 @@ export { hashPassword, verifyPassword } from './passwords.js';
 export { generateTotpSecret, totpCode, totpUri, verifyTotp, TotpReplayGuard } from './totp.js';
 export { createSession, hashSessionToken, resolveSession, SESSION_TTL_MS } from './sessions.js';
 export { createOidcClient, OidcError, PendingSignIns, type CompletedSignIn, type OidcClient } from './oidc.js';
+export { OidcSettings, type OidcSource } from './oidc-settings.js';
 export { SESSION_COOKIE, MFA_COOKIE, OIDC_TX_COOKIE } from './cookies.js';
 export { Throttle, DEFAULT_ACCOUNT_LIMITS, DEFAULT_IP_LIMITS, type ThrottleLimits } from './throttle.js';
 export { assertCanActOn, assertCanChangeState, requireRole, STATE_CHANGING_ROLES, type Role } from './scope.js';
@@ -39,8 +41,11 @@ export interface AuthDeps {
   db: Db;
   logger: Logger;
   config: Config;
-  /** Sign in with D3 Auth, or null when it is unconfigured or discovery failed at boot. */
-  oidc: OidcClient | null;
+  /**
+   * Sign in with D3 Auth: a fixed client, or a source read per request (the console's Settings swap
+   * it without a restart, SHP-REQ-110). Null, or a source yielding null, means password only.
+   */
+  oidc: OidcClient | OidcSource | null;
   /** Failed-attempt throttling (SHP-REQ-108). Defaults apply when absent; tests pass small limits and a clock. */
   throttle?: {
     account?: ThrottleLimits;
@@ -79,7 +84,7 @@ const TOTP_NOT_ENROLLED = refusal(
 const OIDC_UNAVAILABLE = refusal(
   'invalid_request',
   'Sign in with D3 Auth is not available on this server.',
-  'Sign in with your password and authenticator code, or set D3AUTH_ISSUER, D3AUTH_CLIENT_ID and PUBLIC_URL and restart.',
+  'Sign in with your password and authenticator code. An admin can configure D3 Auth in Settings.',
 );
 const NOT_LINKED = refusal(
   'unauthenticated',
@@ -159,9 +164,17 @@ export const requireUser: RequestHandler = (req, res, next) => {
   next();
 };
 
+/** A fixed client (or none) as a source, so every route reads D3 Auth the same way. */
+export function oidcSourceOf(oidc: AuthDeps['oidc']): OidcSource {
+  if (oidc === null) return { current: () => null };
+  if ('current' in oidc) return oidc;
+  return { current: () => oidc };
+}
+
 /** Mounted at `/api/auth`. There is no signup route, by design (SHP-REQ-101). */
 export function authRouter(deps: AuthDeps): Router {
-  const { db, logger, config, oidc } = deps;
+  const { db, logger, config } = deps;
+  const oidcSource = oidcSourceOf(deps.oidc);
   const secret = resolveSessionSecret(config, logger);
   const replay = new TotpReplayGuard();
   const mfaAttempts = new Map<string, { count: number; expiresAt: number }>();
@@ -393,7 +406,7 @@ export function authRouter(deps: AuthDeps): Router {
   // The D3 Auth button is shown only when the OIDC client exists, so a server without it never
   // offers a button that leads to a refusal. The password form is always available.
   router.get('/methods', (_req, res) => {
-    res.json({ password: true, d3auth: oidc !== null });
+    res.json({ password: true, d3auth: oidcSource.current() !== null });
   });
 
   // ── Session ─────────────────────────────────────────────────────────
@@ -430,6 +443,7 @@ export function authRouter(deps: AuthDeps): Router {
 
   // ── Sign in with D3 Auth ────────────────────────────────────────────
   router.get('/oidc/start', async (req, res) => {
+    const oidc = oidcSource.current();
     if (oidc === null) {
       sendRefusal(res, OIDC_UNAVAILABLE);
       return;
@@ -449,6 +463,7 @@ export function authRouter(deps: AuthDeps): Router {
   });
 
   router.get('/oidc/callback', async (req, res) => {
+    const oidc = oidcSource.current();
     if (oidc === null) {
       sendRefusal(res, OIDC_UNAVAILABLE);
       return;

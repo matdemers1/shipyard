@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Shell } from './components/Shell';
 import { useAuth, useCan } from './lib/auth';
+import { AcceptInvite } from './screens/AcceptInvite';
 import { Account } from './screens/Account';
 import { Agent } from './screens/Agent';
 import { AppDetail } from './screens/AppDetail';
@@ -106,6 +107,8 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/signin" element={<SignInRoute />} />
+      {/* Public: an invite link is opened by someone who has no account yet (SHP-REQ-067). */}
+      <Route path="/invite/:token" element={<AcceptInvite />} />
       <Route
         element={
           <RequireSession>

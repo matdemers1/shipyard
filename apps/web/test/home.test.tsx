@@ -1,8 +1,16 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { DryRunSheetProps } from '../src/components/DryRunSheet';
 import { App } from '../src/App';
 import { meReply, mockFetch } from './fetch';
+
+// Home's job is to open the sheet with the right action; the sheet has its own tests
+// (dryrun.test.tsx). A stub that shows the action it was given keeps these tests about Home.
+vi.mock('../src/components/DryRunSheet', () => ({
+  DryRunSheet: ({ open, action }: DryRunSheetProps) =>
+    open && action !== null ? <div role="dialog">{`${action.kind} ${action.app} ${action.sha}`}</div> : null,
+}));
 
 /** S2 Home (SHP-T-3.2): the approvals banner, and one card per app with a live SHA, commits
  * waiting, lock state, last result and a deploy action (SHP-REQ-056, SHP-REQ-059, SHP-D-071). */

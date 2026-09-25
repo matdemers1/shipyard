@@ -313,6 +313,15 @@ describe('runRollback — execution', () => {
     expect(journal.find((e) => e.step === 'verify' && e.phase === 'end')?.detail).toMatchObject({ contract: false });
   });
 
+  it('repairs drift: the live release is a target when something else is running (redeploy recorded)', async () => {
+    // Someone changed the running image by hand: the ledger's live entry (7) is no longer what runs.
+    w.running.set('app', digestOf(3));
+    const result = await runRollback(w.ports, w.ctx, rollback(idOf(7)));
+    expect(result.refusal).toBeNull();
+    expect(result.state).toBe('succeeded');
+    expect(w.running.get('app')).toBe(digestOf(7));
+  });
+
   it('never calls GitHub', async () => {
     const result = await runRollback(w.ports, w.ctx, rollback(idOf(3)));
     expect(result.state).toBe('succeeded');

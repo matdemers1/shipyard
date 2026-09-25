@@ -59,9 +59,11 @@ docker compose -p shipyard exec server node dist/cli/bootstrap-admin.js --email 
 It prompts for a password (12+ characters; never pass it as an argument) and prints an `otpauth://`
 URI once — add it to an authenticator. It refuses a second run. There is no signup.
 
-## 5. Confirm the agent (a person compares the fingerprint)
+## 5. Enrolling the agent (a person compares the fingerprint)
 
-The agent logs its fingerprint until it is confirmed:
+The agent generates its Ed25519 identity on first start (the key lands at
+`/DATA/shipyard/agent/agent.key`, mode 0600) and enrols itself against the server automatically —
+there is no separate enrolment step to run. It logs its fingerprint until a person confirms it:
 
 ```bash
 docker compose -p shipyard logs agent | grep -m1 'NOT YET CONFIRMED'
@@ -73,7 +75,10 @@ Confirm it in the console (Agent screen, type the fingerprint), or on the host:
 docker compose -p shipyard exec server node dist/cli/host-admin.js confirm-agent --fingerprint 'SHA256:…'
 ```
 
-Within a poll the agent logs `agent enrolled and confirmed` and reports its manifests.
+Within a poll the agent logs `agent enrolled and confirmed` and reports its manifests. This
+fingerprint is permanent for this host's agent: upgrading the agent's image later
+(`upgrade-agent.md`) reuses the same key and needs no re-enrolment or re-confirmation, because the
+key lives on the host bind mount, not in the image.
 
 ## 6. A token for Claude Code sessions
 
@@ -88,7 +93,10 @@ with header `Authorization: Bearer <token>` (Streamable HTTP; no OAuth, SHP-D-07
 ## 7. Onboard apps
 
 See `onboard-app.md`: a manifest in `/DATA/shipyard/apps/<app>.yml`, the stack directory mounted into
-the agent at its identical path, then a dry run.
+the agent at its identical path, then a dry run and adopt-live before any deploy.
+
+The server upgrades itself through its own manifest once onboarded; the agent never does — see
+`upgrade-agent.md` for upgrading it by hand.
 
 ## Installed on the D3 Cloud host (2026-09-25)
 

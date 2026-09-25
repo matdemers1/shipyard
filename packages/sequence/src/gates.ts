@@ -34,15 +34,26 @@ function evaluateDisk(facts: GateFacts): GateResult {
 }
 
 function evaluateG5(facts: GateFacts): GateResult {
-  const runs = facts.workflowRuns;
+  let runs = facts.workflowRuns;
   if (runs === undefined) {
     throw new Error('G5 requires workflowRuns on deploy facts');
   }
   const sha7 = short(facts.sha);
-  if (runs.length === 0) {
-    const message = `no run of ${facts.manifest.workflow} for ${sha7} (absent is not green)`;
+  const branch = facts.manifest.defaultBranch;
+  // Only a push to the default branch publishes images; a pull-request run of the same SHA proves
+  // the code, not that an image exists. (Runs that do not say — older fixtures — count.)
+  const all = runs;
+  const pushRuns = all.filter(
+    (run) => (run.event === undefined || run.event === 'push') && (run.headBranch === undefined || run.headBranch === branch),
+  );
+  if (pushRuns.length === 0) {
+    const message =
+      all.length === 0
+        ? `no run of ${facts.manifest.workflow} for ${sha7} (absent is not green)`
+        : `no push run of ${facts.manifest.workflow} on ${branch} for ${sha7}: only ${[...new Set(all.map((r) => r.event ?? 'unknown'))].join(', ')} runs, which publish no images — deploy the commit that landed on ${branch} (a merge commit, for a merged pull request)`;
     return { gate: 'G5', pass: false, reason: message, refusal: refusal('ci_not_green', message) };
   }
+  runs = pushRuns;
   if (runs.some((run) => run.conclusion === 'success')) {
     return { gate: 'G5', pass: true, reason: `${facts.manifest.workflow} succeeded for ${sha7}` };
   }

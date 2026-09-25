@@ -160,7 +160,7 @@ export async function resolveDeployTarget(
       sha,
       manifest,
       live,
-      workflowRuns: workflowRuns.map((run) => ({ conclusion: run.conclusion, status: run.status })),
+      workflowRuns: workflowRuns.map((run) => ({ conclusion: run.conclusion, status: run.status, event: run.event, headBranch: run.headBranch })),
       onDefaultBranch: onDefaultBranch === null ? null : { status: onDefaultBranch.status },
       aheadOfLive: aheadOfLive === null ? null : { status: aheadOfLive.status },
       digests,

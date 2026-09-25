@@ -170,7 +170,7 @@ async function computeCommits(
   const toCheck = commits.slice(-MAX_COMMITS_FOR_CI);
   const entries: CommitEntry[] = await Promise.all(
     toCheck.map(async (c) => {
-      const ci = workflow === null ? 'none' : await ciStateFor(github, repo, workflow, c.sha);
+      const ci = workflow === null ? 'none' : await ciStateFor(github, repo, workflow, c.sha, defaultBranch);
       return { sha: c.sha, message: c.message, ci, taskIds: taskIdsIn(c.message) };
     }),
   );
@@ -191,8 +191,10 @@ async function computeCommits(
   return value;
 }
 
-async function ciStateFor(github: GitHubPort, repo: string, workflow: string, sha: string): Promise<CiState> {
-  const runs = await github.workflowRuns(repo, workflow, sha);
+async function ciStateFor(github: GitHubPort, repo: string, workflow: string, sha: string, branch: string): Promise<CiState> {
+  // Only a push to the default branch publishes images, so only such a run makes a commit
+  // deployable — the same rule as the agent's G5. A pull-request-only commit shows as 'none'.
+  const runs = (await github.workflowRuns(repo, workflow, sha)).filter((run) => run.event === 'push' && run.headBranch === branch);
   if (runs.length === 0) return 'none';
   // Newest first per the port's contract; the first run for this SHA is the one that matters.
   const run = runs[0];

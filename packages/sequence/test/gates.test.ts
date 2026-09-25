@@ -186,6 +186,32 @@ describe('refusal shape and specificity', () => {
     });
   }
 
+  it('G5 refuses a SHA whose only green run was a pull request: no image was published for it', () => {
+    const facts = { ...baseFactsForKind('deploy'), workflowRuns: [{ status: 'completed', conclusion: 'success', event: 'pull_request', headBranch: 'fix/zap' }] };
+    const result = evaluateGates(facts).find((r) => r.gate === 'G5');
+    expect(result?.pass).toBe(false);
+    expect(result?.refusal?.code).toBe('ci_not_green');
+    expect(result?.reason).toContain('no push run of');
+    expect(result?.reason).toContain('pull_request');
+  });
+
+  it('G5 passes on a green push run on the default branch, beside a pull-request run', () => {
+    const branch = baseFactsForKind('deploy').manifest.defaultBranch;
+    const facts = {
+      ...baseFactsForKind('deploy'),
+      workflowRuns: [
+        { status: 'completed', conclusion: 'success', event: 'pull_request', headBranch: 'feature' },
+        { status: 'completed', conclusion: 'success', event: 'push', headBranch: branch },
+      ],
+    };
+    expect(evaluateGates(facts).find((r) => r.gate === 'G5')?.pass).toBe(true);
+  });
+
+  it('G5 refuses a push run on another branch', () => {
+    const facts = { ...baseFactsForKind('deploy'), workflowRuns: [{ status: 'completed', conclusion: 'success', event: 'push', headBranch: 'feature' }] };
+    expect(evaluateGates(facts).find((r) => r.gate === 'G5')?.pass).toBe(false);
+  });
+
   it('G5 refusal messages name the workflow and the short SHA', () => {
     const facts = buildFacts({ workflowRuns: [] });
     const result = evaluateGates(facts).find((r) => r.gate === 'G5');

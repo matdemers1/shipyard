@@ -74,7 +74,7 @@ export interface GateFacts {
   manifest: Manifest;
   live: LiveState;
   /** Runs of the manifest's workflow for `sha`. Undefined for a rollback (G5 skipped). */
-  workflowRuns?: { conclusion: string | null; status: string }[];
+  workflowRuns?: { conclusion: string | null; status: string; event?: string; headBranch?: string | null }[];
   /** compare(sha...defaultBranch). null = SHA unknown to GitHub. Undefined for rollback. */
   onDefaultBranch?: { status: 'ahead' | 'behind' | 'identical' | 'diverged' } | null;
   /** compare(liveSha...sha). null when there is no live SHA yet. Undefined for rollback. */

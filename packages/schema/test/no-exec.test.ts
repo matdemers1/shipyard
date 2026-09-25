@@ -100,6 +100,27 @@ describe('request schema coverage', () => {
     }
   });
 
+  it('finds no command-like field in ANY exported schema, whatever it is named', () => {
+    // The naming guard above only sees *Request/*Input. A request-shaped schema named otherwise
+    // (FooPayload) must not slip past, so every exported schema is walked too.
+    const exported = (Object.entries(schemaExports) as [string, unknown][]).filter(
+      (entry): entry is [string, ZodType] => entry[1] instanceof z.ZodType,
+    );
+    const violations = exported.flatMap(([name, schema]) =>
+      findCommandLikeFields(z.toJSONSchema(schema, { unrepresentable: 'any' }) as JsonSchemaNode, name),
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it('catches camelCase and kebab-case command words', () => {
+    for (const name of ['runCmd', 'shellExec', 'pre-script', 'hook_command', 'Entrypoint']) {
+      expect(isCommandLike(name), name).toBe(true);
+    }
+    for (const name of ['requester', 'running', 'binding', 'description', 'schemaRevision', 'dryRun']) {
+      expect(isCommandLike(name), name).toBe(false);
+    }
+  });
+
   it('names every MCP_TOOLS value', () => {
     const toolSchemas = new Set(Object.values(MCP_TOOLS));
     const listedSchemas = new Set(Object.values(REQUEST_SCHEMAS));
@@ -120,7 +141,28 @@ const COMMAND_LIKE = /(^|_)(cmd|command|commands|exec|execute|shell|script|scrip
  * reporting what it already ran. Anything else matching COMMAND_LIKE is a
  * violation.
  */
-const ALLOWED_COMMAND_LIKE_PATHS = new Set(['Manifest.steps.backup.argv', 'Manifest.steps.migrate.argv', 'StepJournal.argv']);
+const ALLOWED_COMMAND_LIKE_PATHS = new Set([
+  'Manifest.steps.backup.argv',
+  'Manifest.steps.migrate.argv',
+  'StepJournal.argv',
+  // The manifest's step primitive itself (host-local; see Manifest.steps above).
+  'Step.argv',
+]);
+
+/**
+ * Command-like when the whole name, or any camelCase / snake_case / kebab-case word of it, is a
+ * command word — so `runCmd`, `shell_exec` and `pre-script` are caught, not only `cmd`.
+ */
+function isCommandLike(name: string): boolean {
+  if (COMMAND_LIKE.test(name)) return true;
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[\s_-]+/)
+    .filter((w) => w.length > 0);
+  // `run` alone is a command field; inside a compound (`dryRun`, `runId`) it almost never is.
+  return words.some((w) => COMMAND_WORD.test(w));
+}
+const COMMAND_WORD = /^(cmd|command|commands|exec|execute|shell|script|scripts|entrypoint|args|argv|program|binary|bin)$/i;
 
 interface JsonSchemaNode {
   $ref?: string;
@@ -186,7 +228,7 @@ function findCommandLikeFields(schema: JsonSchemaNode, rootName: string): Violat
     if (node.properties !== undefined) {
       for (const [propName, propSchema] of Object.entries(node.properties)) {
         const propPath = `${path}.${propName}`;
-        if (COMMAND_LIKE.test(propName)) {
+        if (isCommandLike(propName)) {
           if (ALLOWED_COMMAND_LIKE_PATHS.has(propPath)) {
             if (propName.toLowerCase() === 'argv') {
               const resolved = propSchema.$ref !== undefined ? resolveRef(propSchema.$ref, defs) : propSchema;

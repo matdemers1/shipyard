@@ -127,7 +127,12 @@ async function alreadyDelivered(
   const body: unknown = await res.json();
   const parsed = ForemanListResponse.safeParse(body);
   if (!parsed.success) return false;
-  return parsed.data.items.some((item) => item.note !== undefined && item.note.includes(idempotencyKey));
+  // The note is `shipyard <key> deploy <id>`: compare the key token exactly. A substring match
+  // would let `t1:web` find the note of `t1:web2` and mark an image delivered that never was.
+  return parsed.data.items.some((item) => {
+    const words = (item.note ?? '').split(/\s+/);
+    return words[0] === 'shipyard' && words[1] === idempotencyKey;
+  });
 }
 
 interface PostResult {

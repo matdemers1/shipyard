@@ -305,6 +305,32 @@ describe('drainOnce', () => {
     expect(fake.gets.length).toBeGreaterThan(0);
   });
 
+  it('a key that is a prefix of another is never taken as delivered by the other one', async () => {
+    fake = new FakeForeman();
+    await fake.start();
+    // web2 lands on the first try; web fails once, so its retry consults Foreman's notes.
+    const agentId = await makeAgent();
+    const appId = await makeApp(agentId);
+    const deployId = await makeDeploy();
+    const targetId = await makeSucceededTarget(appId, deployId, [
+      { service: 'web', repo: 'ghcr.io/x/web', sha: 'a'.repeat(40), digest: 'sha256:aaa' },
+      { service: 'web2', repo: 'ghcr.io/x/web2', sha: 'a'.repeat(40), digest: 'sha256:bbb' },
+    ]);
+    await enqueueDeployment(db, targetId);
+    const d = deps(fake.url);
+
+    // Deliver web2 alone first, and make web's first attempt fail.
+    await db.outbox.updateMany({ where: { targetId, idempotencyKey: `${targetId}:web` }, data: { nextAt: new Date(Date.now() + 60_000) } });
+    await drainOnce(d, { now: new Date() });
+    await db.outbox.updateMany({ where: { targetId, idempotencyKey: `${targetId}:web` }, data: { nextAt: new Date(0), attempts: 1 } });
+
+    await drainOnce(d, { now: new Date() });
+    const web = await db.outbox.findFirstOrThrow({ where: { idempotencyKey: `${targetId}:web` } });
+    expect(web.deliveredAt).not.toBeNull();
+    // web was really posted — not "found" through web2's note.
+    expect(fake.deployments.map((x) => x.imageSha).sort()).toEqual(['sha256:aaa', 'sha256:bbb']);
+  });
+
   it('two concurrent drainOnce calls post each row exactly once', async () => {
     fake = new FakeForeman();
     await fake.start();

@@ -3,6 +3,7 @@ import { AppName } from '@shipyard/schema';
 import { loadConfig } from '../config.js';
 import { createDb, type Db } from '../db.js';
 import { createLogger } from '../logger.js';
+import { runBackupJob, runDrillJob } from '../jobs/backup.js';
 import { generateToken } from '../tokens/tokens.js';
 
 /**
@@ -13,6 +14,8 @@ import { generateToken } from '../tokens/tokens.js';
  *
  *   node dist/cli/host-admin.js confirm-agent --fingerprint SHA256:…
  *   node dist/cli/host-admin.js issue-token --email you@example.com --label "claude: foreman" --apps foreman,foreman-board
+ *   node dist/cli/host-admin.js backup    # Shipyard's own pg_dump now; also its manifest's backup step
+ *   node dist/cli/host-admin.js drill     # restore the newest dump into a scratch database and check it
  */
 
 const ACTOR = { actorType: 'system' as const, actorLabel: 'host-admin' };
@@ -105,7 +108,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       process.stdout.write(`token (shown once): ${issued.token}\nprefix: ${issued.prefix}\n`);
       return 0;
     }
-    throw new HostAdminError('commands: confirm-agent, issue-token');
+    if (command === 'backup') {
+      // On demand, and as the server's own manifest backup step before every self-deploy. Audited
+      // like the nightly run; not emailed, because whoever ran it is watching its exit code.
+      const outcome = await runBackupJob({ db, logger, config }, undefined, { actorLabel: ACTOR.actorLabel });
+      if (!outcome.ok) throw new HostAdminError(`backup failed: ${outcome.error ?? 'unknown error'}`);
+      process.stdout.write(`backup: ${outcome.file ?? ''} (${String(outcome.bytes ?? 0)} bytes)\n`);
+      return 0;
+    }
+    if (command === 'drill') {
+      const outcome = await runDrillJob({ db, logger, config }, undefined, { actorLabel: ACTOR.actorLabel });
+      if (!outcome.ok) throw new HostAdminError(`drill failed: ${outcome.error ?? 'unknown error'}`);
+      process.stdout.write(`drill passed: ${outcome.file ?? ''} restored ${String(outcome.tables ?? 0)} tables at ${outcome.migration ?? ''}\n`);
+      return 0;
+    }
+    throw new HostAdminError('commands: confirm-agent, issue-token, backup, drill');
   } catch (err) {
     logger.error({ err: err instanceof Error ? err.message : String(err) }, 'host-admin failed');
     process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);

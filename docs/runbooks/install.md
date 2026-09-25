@@ -12,7 +12,8 @@ root; substitute your own.
 ## 1. Directory and secrets
 
 ```bash
-mkdir -p /DATA/shipyard/apps /DATA/shipyard/agent && chmod 700 /DATA/shipyard
+mkdir -p /DATA/shipyard/apps /DATA/shipyard/agent /DATA/shipyard/backups && chmod 700 /DATA/shipyard
+chown 1000:1000 /DATA/shipyard/backups   # the server runs as `node` (uid 1000) and writes its dumps here
 cd /DATA/shipyard && umask 077
 ```
 
@@ -22,7 +23,7 @@ Write four env files, all mode 600 (the compose file names them by absolute path
 | File | Contents |
 |---|---|
 | `postgres.env` | `POSTGRES_USER=shipyard`, `POSTGRES_DB=shipyard`, `POSTGRES_PASSWORD=<random>` |
-| `server.env` | `DATABASE_URL=postgresql://shipyard:<same>@postgres:5432/shipyard`, `PORT=3300`, `PUBLIC_URL=https://<host name>`, `SESSION_SECRET=<random 32 bytes hex>`, `TRUST_PROXY_HOPS=1` (behind a tunnel or proxy; omit otherwise), optional `FOREMAN_URL`/`FOREMAN_TOKEN` (a write-scoped Foreman token), optional `D3AUTH_ISSUER`/`D3AUTH_CLIENT_ID`/`D3AUTH_CLIENT_SECRET` |
+| `server.env` | `DATABASE_URL=postgresql://shipyard:<same>@postgres:5432/shipyard`, `PORT=3300`, `PUBLIC_URL=https://<host name>`, `SESSION_SECRET=<random 32 bytes hex>`, `TRUST_PROXY_HOPS=1` (behind a tunnel or proxy; omit otherwise), `BACKUP_DIR=/backups`, optional `BACKUP_RETENTION_DAYS` (default 14; the newest three dumps are always kept), optional `FOREMAN_URL`/`FOREMAN_TOKEN` (a write-scoped Foreman token), optional `D3AUTH_ISSUER`/`D3AUTH_CLIENT_ID`/`D3AUTH_CLIENT_SECRET` |
 | `agent.env` | `SHIPYARD_SERVER_URL=http://server:3300`, `SHIPYARD_DATA_ROOT=/DATA/shipyard`, optional `GITHUB_TOKEN_AGENT` (fine-grained, read-only; public repos work without one, at 60 requests an hour) |
 | `tunnel.env` | `TUNNEL_TOKEN=<token>` if you expose the server through a Cloudflare tunnel |
 
@@ -32,8 +33,11 @@ No shell here has `openssl`? `head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n
 
 `docker-compose.yml` with four services — `postgres:16`, `server`, `agent`, and (optionally)
 `cloudflared` — and **literal** image tags `ghcr.io/matdemers1/shipyard/{server,agent}:sha-<40hex>`.
+The server mounts `/DATA/shipyard/backups:/backups` (its nightly dumps; `BACKUP_DIR=/backups`).
 The agent:
 
+- mounts `/DATA/shipyard/backups` **read-only at that identical path**, so the server manifest's
+  backup step can see the dump it just took (`docs/manifests/shipyard.yml`, `artifactsDir`);
 - mounts `/var/run/docker.sock`, `/DATA/shipyard/agent` (its key, journal, ledger), and
   `/DATA/shipyard/apps` read-only;
 - mounts **each managed stack directory at its identical host path** (e.g. `/DATA/d3auth-demo`),
@@ -97,6 +101,34 @@ the agent at its identical path, then a dry run and adopt-live before any deploy
 
 The server upgrades itself through its own manifest once onboarded; the agent never does — see
 `upgrade-agent.md` for upgrading it by hand.
+
+## 8. Backups and the restore drill
+
+The server dumps its own database every night at 03:30 (server local time) with PostgreSQL 16
+client tools — `pg_dump --format=custom` into `/DATA/shipyard/backups/shipyard-<UTC stamp>.dump` —
+then runs the **restore drill**: the newest dump is restored into a scratch database
+`shipyard_drill_<stamp>_<hex>` on the same Postgres, checked, and dropped whatever happens. The
+check: the restore has `_prisma_migrations` at a migration the live database has applied (and every
+live table, when it is the live migration), the key tables `user`, `app`, `deploy`,
+`deploy_target`, `audit_event` exist, and `user` and `app` are not empty where they are live.
+A missing or day-old dump at start is taken within a minute of boot. Dumps older than
+`BACKUP_RETENTION_DAYS` are pruned; the newest three never are. Each outcome is an audit event
+(`system.backup`, `system.drill`) on the System screen, and a failure emails `ALERT_TO`.
+
+Run either on demand — the drill is the one command that proves the backups restore:
+
+```bash
+docker compose -p shipyard exec server node dist/cli/host-admin.js backup
+docker compose -p shipyard exec server node dist/cli/host-admin.js drill
+# drill passed: /backups/shipyard-….dump restored 20 tables at 2026…_phase…
+```
+
+The drill creates a database, so the server's database user needs `CREATEDB`. The `postgres:16`
+image's `POSTGRES_USER` is a superuser and already has it; with any other user, grant it once:
+
+```bash
+docker compose -p shipyard exec postgres psql -U postgres -c 'ALTER ROLE shipyard CREATEDB;'
+```
 
 ## Installed on the D3 Cloud host (2026-09-25)
 

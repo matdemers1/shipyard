@@ -24,6 +24,14 @@ health:
   path: /api/health
 soakSeconds: 120
 steps:
+  # Shipyard's own pg_dump (client 16), exec'd in the running server before every self-deploy — the
+  # same command the nightly job runs (SHP-D-035). artifactsDir is the HOST side of the server's
+  # `/DATA/shipyard/backups:/backups` bind mount, which the agent also mounts read-only at this
+  # identical path (install.md).
+  backup:
+    service: server
+    argv: [node, dist/cli/host-admin.js, backup]
+    artifactsDir: /DATA/shipyard/backups
   # One-shot `compose run --rm` with the new image, before the swap (SHP-D-028).
   migrate:
     service: server

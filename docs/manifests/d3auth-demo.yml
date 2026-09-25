@@ -16,3 +16,6 @@ health:
 soakSeconds: 60
 envFiles:
   - /DATA/d3auth-demo/.env
+foreman:
+  project: AUTH
+  environment: demo

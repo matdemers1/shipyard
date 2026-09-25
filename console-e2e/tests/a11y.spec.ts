@@ -1,15 +1,18 @@
 import { expect, test, type Page } from '@playwright/test';
 import { axeViolations, expectTheme, forceTheme, settle, type Theme } from '../harness/a11y.js';
+import { withDb } from '../harness/db.js';
 import { USERS, storageStateFor, type RoleName } from '../harness/env.js';
-import { fixture, type Fixture } from '../harness/seed.js';
+import { fixture, reseedWorld, type Fixture } from '../harness/seed.js';
 
 /**
  * SHP-T-6.2, SHP-REQ-090: every screen, in both themes, has no serious or critical axe violation.
  *
  * "Every screen" is every route in apps/web/src/routes.tsx, plus the states of a screen that put
- * different things in front of a person — each sheet open, an app never deployed, drifted, frozen,
- * a deploy succeeded, rolled back and refused, the viewer's denied page, the phone-width drawer.
- * Each is checked in light *and* dark, because a contrast failure only exists in one of them.
+ * different things in front of a person — each sheet, modal and confirm dialog any screen can
+ * open (drift's adopt/redeploy, unfreeze, the schedule cancel/approve confirm, the agent revoke
+ * confirm, a token's and an invite's "shown once" reveal, ...), an app never deployed, drifted,
+ * frozen, a deploy succeeded, rolled back and refused, the viewer's denied page, the phone-width
+ * drawer. Each is checked in light *and* dark, because a contrast failure only exists in one of them.
  */
 
 interface Screen {
@@ -194,6 +197,26 @@ const SCREENS: Screen[] = [
       await dialog(p, `Roll back ${fx.apps.history}`);
     },
   },
+  {
+    name: 'S5 app detail, drifted — adopt what’s running',
+    as: 'admin',
+    path: (fx) => `/apps/${fx.apps.drifted}`,
+    ready: (p, fx) => h1(p, fx.apps.drifted),
+    act: async (p, fx) => {
+      await p.getByRole('button', { name: "Adopt what's running" }).click();
+      await dialog(p, `Adopt what's running on ${fx.apps.drifted}`);
+    },
+  },
+  {
+    name: 'S5 app detail, drifted — redeploy recorded release',
+    as: 'admin',
+    path: (fx) => `/apps/${fx.apps.drifted}`,
+    ready: (p, fx) => h1(p, fx.apps.drifted),
+    act: async (p, fx) => {
+      await p.getByRole('button', { name: 'Redeploy recorded release' }).click();
+      await dialog(p, `Redeploy ${fx.apps.drifted}'s recorded release`);
+    },
+  },
   // S6 Deploy record.
   ...(['succeeded', 'rolledBack', 'refused', 'awaitingApproval'] as const).map(
     (which): Screen => ({
@@ -267,6 +290,19 @@ const SCREENS: Screen[] = [
       await dialog(p, 'Schedule a deploy');
     },
   },
+  {
+    name: 'S9 schedules, cancel confirm',
+    as: 'admin',
+    path: () => '/schedules',
+    ready: async (p) => {
+      await h1(p, 'Schedules');
+      await expect(p.getByRole('button', { name: /^Cancel / })).toBeVisible();
+    },
+    act: async (p) => {
+      await p.getByRole('button', { name: /^Cancel / }).click();
+      await dialog(p, /^Cancel the deploy of/);
+    },
+  },
   // S10 Freeze sheet.
   {
     name: 'S10 freeze sheet',
@@ -276,6 +312,16 @@ const SCREENS: Screen[] = [
     act: async (p, fx) => {
       await p.getByRole('button', { name: 'Freeze', exact: true }).click();
       await dialog(p, `Freeze ${fx.apps.history}`);
+    },
+  },
+  {
+    name: 'S10 unfreeze confirm, already frozen',
+    as: 'admin',
+    path: (fx) => `/apps/${fx.apps.frozen}`,
+    ready: (p, fx) => h1(p, fx.apps.frozen),
+    act: async (p, fx) => {
+      await p.getByRole('button', { name: 'Unfreeze', exact: true }).click();
+      await dialog(p, `Unfreeze ${fx.apps.frozen}`);
     },
   },
   // S11 API tokens.
@@ -294,6 +340,35 @@ const SCREENS: Screen[] = [
     path: () => '/tokens',
     ready: (p) => expect(p.getByText('This page needs the deployer role')).toBeVisible(),
   },
+  {
+    name: 'S11 API tokens, revoke confirm',
+    as: 'admin',
+    path: () => '/tokens',
+    ready: async (p) => {
+      await h1(p, 'API tokens');
+      await expect(p.getByText('matdemers1/d3-auth')).toBeVisible();
+    },
+    act: async (p) => {
+      await p.getByRole('button', { name: /^Revoke /, exact: false }).first().click();
+      await dialog(p, 'Revoke this token?');
+    },
+  },
+  {
+    name: 'S11 API tokens, shown once after creating a token',
+    as: 'admin',
+    path: () => '/tokens',
+    ready: async (p) => {
+      await h1(p, 'API tokens');
+      await expect(p.getByText('matdemers1/d3-auth')).toBeVisible();
+    },
+    act: async (p) => {
+      await p.getByRole('textbox', { name: 'Label' }).fill('console-e2e-a11y-token');
+      await p.getByRole('checkbox').first().check();
+      await p.getByRole('button', { name: 'Create token' }).click();
+      await expect(p.getByText(/created$/)).toBeVisible();
+      await expect(p.getByRole('button', { name: 'Copy token' })).toBeVisible();
+    },
+  },
   // S12 Agent.
   {
     name: 'S12 agent',
@@ -302,6 +377,19 @@ const SCREENS: Screen[] = [
     ready: async (p) => {
       await h1(p, 'Agent');
       await expect(p.getByRole('button', { name: 'Revoke agent' })).toBeVisible();
+    },
+  },
+  {
+    name: 'S12 agent, revoke confirm',
+    as: 'admin',
+    path: () => '/agent',
+    ready: async (p) => {
+      await h1(p, 'Agent');
+      await expect(p.getByRole('button', { name: 'Revoke agent' })).toBeVisible();
+    },
+    act: async (p) => {
+      await p.getByRole('button', { name: 'Revoke agent' }).click();
+      await dialog(p, 'Revoke this agent?');
     },
   },
   // S13 Users and invites.
@@ -313,6 +401,21 @@ const SCREENS: Screen[] = [
       await h1(p, 'Users');
       // Twice once the invite scenario has run: the invite, and the pending account it made.
       await expect(p.getByText('newcomer@shipyard.test').first()).toBeVisible();
+    },
+  },
+  {
+    name: 'S13 users, invite link shown once',
+    as: 'admin',
+    path: () => '/users',
+    ready: async (p) => {
+      await h1(p, 'Users');
+      await expect(p.getByText('newcomer@shipyard.test').first()).toBeVisible();
+    },
+    act: async (p) => {
+      await p.getByRole('textbox', { name: 'Email' }).fill('console-e2e-a11y-invite@shipyard.test');
+      await p.getByRole('button', { name: 'Create invite' }).click();
+      await expect(p.getByText(/^Invite for console-e2e-a11y-invite@shipyard\.test created$/)).toBeVisible();
+      await expect(p.getByRole('button', { name: 'Copy link' })).toBeVisible();
     },
   },
   // S14 Account.
@@ -396,6 +499,16 @@ for (const theme of ['light', 'dark'] as const satisfies readonly Theme[]) {
     }
   });
 }
+
+/**
+ * A few scenarios above (creating an API token, creating an invite) mutate the seeded world.
+ * Nothing later in this file depends on their absence, but `reseedWorld` puts the baseline —
+ * every app, deploy, token, invite and agent — back once the whole sweep is done, so whatever
+ * runs after this file starts from the same world it would have without this suite.
+ */
+test.afterAll(async () => {
+  await withDb((db) => reseedWorld(db));
+});
 
 /** The sweep above passing means nothing unless axe would have failed it: prove the check bites. */
 test.describe('the check itself', () => {

@@ -41,6 +41,9 @@ importers:
       '@shipyard/schema':
         specifier: workspace:*
         version: link:../../packages/schema
+      '@shipyard/sequence':
+        specifier: workspace:*
+        version: link:../../packages/sequence
 
   apps/server:
     dependencies:

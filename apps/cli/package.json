@@ -5,13 +5,17 @@
   "description": "Host CLI (shipyard-run) driving packages/sequence directly",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "pnpm --filter @shipyard/sequence build && tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@shipyard/schema": "workspace:*"
+    "@shipyard/schema": "workspace:*",
+    "@shipyard/sequence": "workspace:*"
+  },
+  "bin": {
+    "shipyard-run": "dist/index.js"
   }
 }

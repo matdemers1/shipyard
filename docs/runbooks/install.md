@@ -135,7 +135,8 @@ live table, when it is the live migration), the key tables `user`, `app`, `deplo
 `deploy_target`, `audit_event` exist, and `user` and `app` are not empty where they are live.
 A missing or day-old dump at start is taken within a minute of boot. Dumps older than
 `BACKUP_RETENTION_DAYS` are pruned; the newest three never are. Each outcome is an audit event
-(`system.backup`, `system.drill`) on the System screen, and a failure emails `ALERT_TO`.
+(`system.backup`, `system.drill`) on the System screen, and a failure emails the alert recipient
+(`ALERT_TO`, or **Settings → Alert email**).
 
 Run either on demand — the drill is the one command that proves the backups restore:
 
@@ -179,5 +180,10 @@ Foreman with a token issued by Foreman's own `issue-token` ("shipyard outbox", r
   `docker compose -p shipyard up -d server`; env vars win, and Settings then shows them read-only.
   A D3 Auth identity signs in only once it is linked to an existing Shipyard account (Account
   screen) — it never creates one.
-- Not configured yet: `MAIL_RELAY_URL`/`MAIL_RELAY_TOKEN`/`ALERT_TO` (stale-agent and backup-failure
-  email; until then they are logged only).
+- Alert email (an agent silent for more than five minutes, a failed nightly backup or restore
+  drill): as an admin, **Settings → Alert email** — the relay URL and secret from D3 Auth's
+  mail-relay Worker settings, and the recipient; **Save** applies to the next alert without a
+  restart, **Send test email** posts one message and shows the relay's answer, **Turn off** clears
+  it. The token is encrypted like the D3 Auth client secret (so `SESSION_SECRET` must be set). Or
+  set `MAIL_RELAY_URL`, `MAIL_RELAY_TOKEN` and `ALERT_TO` in `server.env`; env wins, and Settings
+  then shows them read-only. Until one is configured, alerts are logged only.

@@ -10,6 +10,7 @@ import { startScheduler } from './schedules/runner.js';
 import { startBackups } from './jobs/backup.js';
 import { startHeartbeat } from './jobs/heartbeat.js';
 import { createMailer } from './mail/index.js';
+import { liveRelay } from './mail/settings.js';
 
 const config = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);
@@ -25,7 +26,9 @@ const outbox = startOutbox({ db, logger, config, bus });
 const approvalExpiry = startApprovalExpiry({ db, logger, config, bus });
 // Due schedules fire with every gate re-run (SHP-REQ-080).
 const scheduler = startScheduler({ db, logger, config, bus });
-const mailer = createMailer(config, logger);
+// Alert email from server.env, else from Settings → Alert email, looked up on every send: a save
+// in the console applies to the next alert without a restart (SHP-T-6.9).
+const mailer = createMailer(config, logger, { relay: liveRelay({ db, config, logger }) });
 // Shipyard's own nightly dump and restore drill (SHP-D-035), and the stale-agent alert.
 const backups = startBackups({ db, logger, config, bus }, mailer);
 const heartbeat = startHeartbeat({ db, logger, config, bus }, mailer);

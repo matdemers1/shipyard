@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { axeViolations, expectTheme, forceTheme, settle, type Theme } from '../harness/a11y.js';
 import { enterZeroUserWorld, restoreAccounts } from '../harness/accounts.js';
 import { clearD3AuthSetting } from '../harness/d3auth.js';
+import { clearMailSetting } from '../harness/mail.js';
 import { withDb } from '../harness/db.js';
 import { USERS, storageStateFor, type RoleName } from '../harness/env.js';
 import { fixture, reseedWorld, type Fixture } from '../harness/seed.js';
@@ -35,6 +36,16 @@ interface Screen {
 const h1 = (page: Page, name: string | RegExp) => expect(page.getByRole('heading', { level: 1, name })).toBeVisible();
 const dialog = async (page: Page, name: string | RegExp) => {
   await expect(page.getByRole('dialog', { name })).toBeVisible();
+};
+
+/** Settings → Alert email: saves a relay nothing listens on (the setting is cleared after the sweep). */
+const saveDeadRelay = async (page: Page) => {
+  const form = page.getByRole('form', { name: 'Alert email' });
+  await form.getByRole('textbox', { name: /^Relay URL/ }).fill('http://127.0.0.1:9/send');
+  await form.getByLabel(/^Relay token/).fill('console-e2e-a11y-relay-token');
+  await form.getByRole('textbox', { name: /^Recipient/ }).fill('ops@shipyard.test');
+  await page.getByRole('button', { name: 'Save alert email', exact: true }).click();
+  await expect(page.getByText('Alerts on', { exact: true })).toBeVisible();
 };
 
 /** The home card for `app`. */
@@ -470,6 +481,30 @@ const SCREENS: Screen[] = [
       await dialog(p, 'Turn off Sign in with D3 Auth?');
     },
   },
+  // S16 Settings → Alert email: a test email the relay could not take, and the turn-off confirm.
+  {
+    name: 'S16 settings, alert email test failed',
+    as: 'admin',
+    path: () => '/settings',
+    ready: (p) => h1(p, 'Settings'),
+    act: async (p) => {
+      // A relay nothing answers: saved, and the test says it could not connect.
+      await saveDeadRelay(p);
+      await p.getByRole('button', { name: 'Send test email', exact: true }).click();
+      await expect(p.getByText('The relay did not send it')).toBeVisible();
+    },
+  },
+  {
+    name: 'S16 settings, alert email turn-off confirm',
+    as: 'admin',
+    path: () => '/settings',
+    ready: (p) => h1(p, 'Settings'),
+    act: async (p) => {
+      await saveDeadRelay(p);
+      await p.getByRole('button', { name: 'Turn off alert email', exact: true }).click();
+      await dialog(p, 'Turn off alert email?');
+    },
+  },
   {
     name: 'S16 settings as a viewer, denied',
     as: 'viewer',
@@ -591,6 +626,7 @@ test.afterAll(async () => {
   // The turn-off-confirm scenario leaves a (dead) issuer saved; clearing it through the API also
   // swaps the server's live client back.
   await clearD3AuthSetting();
+  await clearMailSetting();
 });
 
 /** The sweep above passing means nothing unless axe would have failed it: prove the check bites. */

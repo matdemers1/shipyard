@@ -65,6 +65,10 @@ import {
   D3AuthTestRequest,
   D3AuthTestResult,
   D3AuthSettings,
+  RelayUrl,
+  MailSettingsUpdate,
+  MailSettings,
+  MailTestResult,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -142,6 +146,10 @@ const SCHEMAS: Record<string, ZodType> = {
   d3AuthTestRequest: D3AuthTestRequest,
   d3AuthTestResult: D3AuthTestResult,
   d3AuthSettings: D3AuthSettings,
+  relayUrl: RelayUrl,
+  mailSettingsUpdate: MailSettingsUpdate,
+  mailSettings: MailSettings,
+  mailTestResult: MailTestResult,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

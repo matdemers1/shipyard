@@ -15,6 +15,7 @@ import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { deriveSettingsKey, encryptSecret } from './crypto.js';
 import { testDiscovery } from './discovery.js';
+import { addMailRoutes } from './mail.js';
 import { d3authManifest } from './manifest.js';
 
 /**
@@ -26,12 +27,16 @@ import { d3authManifest } from './manifest.js';
  * carries it, and the audit records only whether it changed. A save swaps the live OIDC client
  * without a restart; clearing turns the D3 Auth button off. When server.env sets any `D3AUTH_*`
  * variable, env wins: the screen shows it read-only and every write here is refused.
+ *
+ * Alert email (SHP-T-6.9) lives beside it under `/api/settings/mail` — see settings/mail.ts.
  */
 
 export interface SettingsDeps extends ServiceDeps {
   oidc: OidcSettings;
   /** Test-only: a shorter discovery timeout for the Test button. */
   discoveryTimeoutMs?: number;
+  /** Test-only: a shorter timeout for Settings → Alert email → Send test email. */
+  mailTestTimeoutMs?: number;
 }
 
 const TOKEN_ACTOR = refusal('forbidden', 'An API token cannot read or change settings.', 'Sign in to the console as an admin to do this.');
@@ -214,6 +219,9 @@ export function settingsRouter(deps: SettingsDeps): Router {
     req.noAuditNeeded('a discovery fetch changes nothing');
     res.json(await testDiscovery(issuer, deps.discoveryTimeoutMs !== undefined ? { timeoutMs: deps.discoveryTimeoutMs } : {}));
   });
+
+  // Settings → Alert email (SHP-T-6.9): the same guards, the same secret handling.
+  addMailRoutes(router, deps, admin, bad);
 
   return router;
 }

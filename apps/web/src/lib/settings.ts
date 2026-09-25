@@ -1,4 +1,11 @@
-import type { D3AuthSettings, D3AuthSettingsUpdate, D3AuthTestResult } from '@shipyard/schema';
+import type {
+  D3AuthSettings,
+  D3AuthSettingsUpdate,
+  D3AuthTestResult,
+  MailSettings,
+  MailSettingsUpdate,
+  MailTestResult,
+} from '@shipyard/schema';
 import { request } from './api';
 
 /**
@@ -15,6 +22,11 @@ export const settings = {
       method: 'POST',
       body: issuer === undefined || issuer.trim() === '' ? {} : { issuer: issuer.trim() },
     }),
+  // Alert email (SHP-T-6.9): the relay token goes one way too — only `tokenSet` comes back.
+  mail: (): Promise<MailSettings> => request<MailSettings>('/api/settings/mail'),
+  saveMail: (body: MailSettingsUpdate): Promise<MailSettings> => request<MailSettings>('/api/settings/mail', { method: 'PUT', body }),
+  clearMail: (): Promise<MailSettings> => request<MailSettings>('/api/settings/mail', { method: 'DELETE' }),
+  testMail: (): Promise<MailTestResult> => request<MailTestResult>('/api/settings/mail/test', { method: 'POST', body: {} }),
 };
 
 export const MANIFEST_FILENAME = 'shipyard.d3auth.json';

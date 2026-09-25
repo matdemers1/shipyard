@@ -1,6 +1,7 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { clearD3AuthSetting, startFakeIssuer, type FakeIssuer } from '../harness/d3auth.js';
 import { storageStateFor } from '../harness/env.js';
+import { clearMailSetting, startFakeRelay, type FakeRelay } from '../harness/mail.js';
 
 /**
  * S16 Settings → Sign in with D3 Auth (SHP-T-6.8, SHP-REQ-110), against the real server: an admin
@@ -10,18 +11,24 @@ import { storageStateFor } from '../harness/env.js';
  */
 
 const SECRET = 'console-e2e-d3auth-client-secret';
+const RELAY_TOKEN = 'console-e2e-mail-relay-token';
 const h1 = (page: Page, name: string) => expect(page.getByRole('heading', { level: 1, name })).toBeVisible();
 
 let fake: FakeIssuer;
+let relay: FakeRelay;
 
 test.beforeAll(async () => {
   fake = await startFakeIssuer();
+  relay = await startFakeRelay(RELAY_TOKEN);
   await clearD3AuthSetting();
+  await clearMailSetting();
 });
 
 test.afterAll(async () => {
   await clearD3AuthSetting();
+  await clearMailSetting();
   await fake.close();
+  await relay.close();
 });
 
 /** Asserts whether a signed-out visitor is offered Sign in with D3 Auth right now. */
@@ -107,6 +114,66 @@ test.describe('S16 settings as an admin', () => {
   });
 });
 
+test.describe('S16 settings → alert email as an admin', () => {
+  test.use({ storageState: storageStateFor('admin') });
+
+  test('save the relay, send a test email through it, and turn it off — the token never comes back', async ({ page }) => {
+    await page.goto('/settings');
+    await h1(page, 'Settings');
+    await expect(page.getByText('Alerts off', { exact: true })).toBeVisible();
+    await expect(page.getByText(/agent has been silent for more than five minutes/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Send test email', exact: true })).toBeDisabled();
+
+    const form = page.getByRole('form', { name: 'Alert email' });
+    await form.getByRole('textbox', { name: /^Relay URL/ }).fill(relay.url);
+    await form.getByLabel(/^Relay token/).fill(RELAY_TOKEN);
+    await form.getByRole('textbox', { name: /^Recipient/ }).fill('ops@shipyard.test');
+    await page.getByRole('button', { name: 'Save alert email', exact: true }).click();
+    await expect(page.getByText('Alert email saved', { exact: true })).toBeVisible();
+    await expect(page.getByText('Alerts on', { exact: true })).toBeVisible();
+    await expect(form.getByLabel(/^Relay token/)).toHaveValue('');
+
+    // Write-only: not in the page after a reload, not in what the API returns.
+    await page.reload();
+    await h1(page, 'Settings');
+    await expect(page.getByRole('textbox', { name: /^Relay URL/ })).toHaveValue(relay.url);
+    await expect(page.getByText(/A token is stored/)).toBeVisible();
+    expect(await page.content()).not.toContain(RELAY_TOKEN);
+    expect(await (await page.request.get('/api/settings/mail')).text()).not.toContain(RELAY_TOKEN);
+
+    // One message, through the relay, with the bearer token; the relay's answer is shown.
+    relay.received.length = 0;
+    await page.getByRole('button', { name: 'Send test email', exact: true }).click();
+    await expect(page.getByText('The relay accepted the test message')).toBeVisible();
+    await expect(page.getByText(/HTTP 202 — check ops@shipyard\.test/)).toBeVisible();
+    expect(relay.received).toHaveLength(1);
+    expect(relay.received[0]?.authorization).toBe(`Bearer ${RELAY_TOKEN}`);
+    expect(relay.received[0]?.body).toMatchObject({ to: 'ops@shipyard.test', subject: 'Shipyard test alert' });
+
+    await page.getByRole('button', { name: 'Turn off alert email', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Turn off alert email?' });
+    await dialog.getByRole('button', { name: 'Turn off', exact: true }).click();
+    await expect(page.getByText('Alert email turned off', { exact: true })).toBeVisible();
+    await expect(page.getByText('Alerts off', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Send test email', exact: true })).toBeDisabled();
+  });
+
+  test("a relay that refuses the token: the test says so, with the relay's answer", async ({ page }) => {
+    await page.goto('/settings');
+    await h1(page, 'Settings');
+    const form = page.getByRole('form', { name: 'Alert email' });
+    await form.getByRole('textbox', { name: /^Relay URL/ }).fill(relay.url);
+    await form.getByLabel(/^Relay token/).fill('not-the-relay-secret');
+    await form.getByRole('textbox', { name: /^Recipient/ }).fill('ops@shipyard.test');
+    await page.getByRole('button', { name: 'Save alert email', exact: true }).click();
+    await expect(page.getByText('Alerts on', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Send test email', exact: true }).click();
+    await expect(page.getByText('The relay did not send it')).toBeVisible();
+    await expect(page.getByText(/HTTP 401/)).toBeVisible();
+    await clearMailSetting();
+  });
+});
+
 test.describe('S16 settings as a viewer', () => {
   test.use({ storageState: storageStateFor('viewer') });
 
@@ -116,5 +183,6 @@ test.describe('S16 settings as a viewer', () => {
     await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0);
     await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Settings', exact: true })).toHaveCount(0);
     expect((await page.request.get('/api/settings/d3auth')).status()).toBe(403);
+    expect((await page.request.get('/api/settings/mail')).status()).toBe(403);
   });
 });

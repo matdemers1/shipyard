@@ -1,0 +1,1 @@
+{ "source": "settings", "relayUrl": "https://mail-relay.d3cloud.io/send", "tokenSet": true, "token": "relay-secret", "alertTo": "ops@example.com", "active": true, "canStoreSecret": true, "problem": null, "updatedAt": null }

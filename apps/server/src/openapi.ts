@@ -291,6 +291,58 @@ function buildPaths(): Record<string, unknown> {
         },
       },
     },
+    '/settings/mail': {
+      get: {
+        summary: 'Alert email as configured (admin only; never the relay token)',
+        operationId: 'getSettingsMail',
+        responses: {
+          '200': {
+            description: 'Where it is configured (server.env, Settings or nowhere), the relay, recipient and whether it would send.',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/MailSettings' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+      put: {
+        summary: 'Save the mail relay URL, its token and the alert recipient; applies to the next alert without a restart',
+        operationId: 'putSettingsMail',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/MailSettingsUpdate' } } },
+        },
+        responses: {
+          '200': {
+            description: 'Saved. 409 when server.env sets MAIL_RELAY_URL, MAIL_RELAY_TOKEN or ALERT_TO (env wins).',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/MailSettings' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+      delete: {
+        summary: 'Clear the alert email setting: alerts are no longer emailed',
+        operationId: 'deleteSettingsMail',
+        responses: {
+          '200': {
+            description: 'Cleared. 409 when server.env owns it (env wins).',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/MailSettings' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+    '/settings/mail/test': {
+      post: {
+        summary: 'Send one test message through the relay in effect and report its answer',
+        operationId: 'postSettingsMailTest',
+        responses: {
+          '200': {
+            description: "The relay's answer, sent or not. 409 when alert email is not configured.",
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/MailTestResult' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
     '/auth/oidc/start': {
       get: {
         summary: 'Begin Sign in with D3 Auth',

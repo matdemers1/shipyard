@@ -1,10 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { createRegistryAdapter } from '../src/adapters/ghcr.js';
+import { createRegistryAdapter, dockerConfigCredentials } from '../src/adapters/ghcr.js';
 import { RefusalError } from '../src/ports.js';
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/ghcr');
@@ -207,5 +208,36 @@ describe('createRegistryAdapter (GHCR)', () => {
     // this just shows the seam the adapter promises: null, never a throw, for an absent tag.
     const mapped = digest === null ? 'image_missing' : 'ok';
     expect(mapped).toBe('image_missing');
+  });
+
+  it('sends the host\'s credential to its token endpoint as Basic auth (private images, SHP-T-4.11)', async () => {
+    const { fake } = makeFakeFetch();
+    const registry = createRegistryAdapter({ fetch: fake as unknown as typeof fetch, credentials: (host) => (host === 'ghcr.io' ? 'dXNlcjp0b2tlbg==' : undefined) });
+    await registry.resolveDigest(IMAGE_REPO, TAG);
+    const tokenCall = fake.mock.calls.find(([url]) => String(url).startsWith('https://ghcr.io/token'));
+    expect(new Headers(tokenCall?.[1]?.headers).get('Authorization')).toBe('Basic dXNlcjp0b2tlbg==');
+    // Only the token endpoint ever sees it; registry calls carry the bearer token.
+    for (const [url, init] of fake.mock.calls) {
+      if (String(url).startsWith('https://ghcr.io/token')) continue;
+      expect(new Headers(init?.headers).get('Authorization') ?? '').not.toContain('Basic');
+    }
+  });
+
+  it('stays anonymous without a credential', async () => {
+    const { fake } = makeFakeFetch();
+    const registry = createRegistryAdapter({ fetch: fake as unknown as typeof fetch, credentials: () => undefined });
+    await registry.resolveDigest(IMAGE_REPO, TAG);
+    const tokenCall = fake.mock.calls.find(([url]) => String(url).startsWith('https://ghcr.io/token'));
+    expect(new Headers(tokenCall?.[1]?.headers).has('Authorization')).toBe(false);
+  });
+
+  it('reads auths from a docker config directory, and treats a missing one as none', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'shp-dockercfg-'));
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ auths: { 'ghcr.io': { auth: 'abc=' }, 'other.io': {} } }));
+    const creds = dockerConfigCredentials(dir);
+    expect(creds('ghcr.io')).toBe('abc=');
+    expect(creds('other.io')).toBeUndefined();
+    expect(dockerConfigCredentials(join(dir, 'nope'))('ghcr.io')).toBeUndefined();
+    expect(dockerConfigCredentials(undefined)('ghcr.io')).toBeUndefined();
   });
 });

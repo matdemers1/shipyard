@@ -6,6 +6,7 @@ import {
   createDockerAdapter,
   createGitHubAdapter,
   createRegistryAdapter,
+  dockerConfigCredentials,
   isAppLockLive,
   loadManifests,
   nodeFs,
@@ -86,7 +87,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   const github = createGitHubAdapter(config.githubToken === undefined ? {} : { token: config.githubToken });
   const ports: SequencePorts = {
     github,
-    registry: createRegistryAdapter(),
+    // Private images: the same read-only docker config the agent's compose pulls use (SHP-T-4.11).
+    registry: createRegistryAdapter({ credentials: dockerConfigCredentials(process.env.DOCKER_CONFIG) }),
     docker: createDockerAdapter({
       ...(config.selfContainerId === undefined ? {} : { selfContainerId: config.selfContainerId }),
       ...(config.dockerHost === undefined ? {} : { dockerHost: config.dockerHost }),

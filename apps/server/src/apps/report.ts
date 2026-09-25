@@ -55,6 +55,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     const changed: string[] = [];
     const created: string[] = [];
     const drifted: { app: string; services: string[] }[] = [];
+    const refusedApps: string[] = [];
 
     await db.$transaction(async (tx) => {
       for (const entry of report.apps) {
@@ -76,11 +77,15 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
           runningDigests: entry.running as Prisma.InputJsonValue,
         };
         const before = await tx.app.findUnique({ where: { name: m.name }, select: { manifestSha256: true, agentId: true } });
+        if (before !== null && before.agentId !== agentId) {
+          // An app belongs to the agent that first reported it. Another agent naming it is refused,
+          // not merged: moving an app between hosts is a deliberate act, never a side effect.
+          refusedApps.push(m.name);
+          logger.error({ app: m.name, owner: before.agentId, reporter: agentId }, 'app reported by a different agent; ignored');
+          continue;
+        }
         if (before === null) created.push(m.name);
         else if (before.manifestSha256 !== entry.manifestSha256) changed.push(m.name);
-        if (before !== null && before.agentId !== agentId) {
-          logger.warn({ app: m.name, from: before.agentId, to: agentId }, 'app reported by a different agent');
-        }
         const row = await tx.app.upsert({
           where: { name: m.name },
           create: { name: m.name, ...fields },
@@ -105,20 +110,26 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       logger.warn({ app: d.app, services: d.services }, 'drift detected: running digests differ from the recorded release');
     }
 
-    await req.audit({
-      action: 'agent.report',
-      entityType: 'agent',
-      entityId: agentId,
-      after: {
-        apps: report.apps.map((a) => ({ name: a.manifest.name, manifestSha256: a.manifestSha256 })),
-        created,
-        changed,
-        drifted,
-      },
-    });
+    // A periodic report that changed nothing is a heartbeat, not an event.
+    if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0) {
+      req.noAuditNeeded('unchanged report');
+    } else {
+      await req.audit({
+        action: 'agent.report',
+        entityType: 'agent',
+        entityId: agentId,
+        after: {
+          apps: report.apps.map((a) => ({ name: a.manifest.name, manifestSha256: a.manifestSha256 })),
+          created,
+          changed,
+          drifted,
+          refused: refusedApps,
+        },
+      });
+    }
 
     for (const name of names) bus.publish(`app:${name}`);
 
-    res.status(200).json({ apps: names.length, created, changed, drifted: drifted.map((d) => d.app) });
+    res.status(200).json({ apps: names.length, created, changed, drifted: drifted.map((d) => d.app), refused: refusedApps });
   });
 }

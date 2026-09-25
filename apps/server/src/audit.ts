@@ -32,6 +32,8 @@ declare global {
     interface Request {
       actor?: Actor;
       audit(event: AuditEventInput): Promise<void>;
+      /** Marks a POST that changes nothing worth recording; the reason is logged at debug. */
+      noAuditNeeded(reason: string): void;
     }
   }
 }
@@ -68,6 +70,13 @@ export function auditContext(db: Db, logger: Logger, options: AuditContextOption
     res.setHeader('x-request-id', requestId);
 
     let audited = false;
+
+    // A POST that changes nothing meaningful (a heartbeat, a read over MCP, an unchanged report)
+    // says so, with a reason, instead of tripping the unaudited-mutation guard or writing noise.
+    req.noAuditNeeded = (reason: string): void => {
+      audited = true;
+      logger.debug({ requestId, reason }, 'no audit needed');
+    };
 
     req.audit = async (event: AuditEventInput): Promise<void> => {
       // No fallback: an authenticated mutation that forgot its actor must fail loudly rather than

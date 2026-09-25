@@ -24,7 +24,7 @@ export interface RecordedRelease {
 /** The app's recorded release: its most recent `succeeded` target's images, or null if none yet. */
 export async function recordedRelease(db: DbClient, appId: string): Promise<RecordedRelease | null> {
   const target = await db.deployTarget.findFirst({
-    where: { appId, state: 'succeeded' },
+    where: { appId, state: 'succeeded', deploy: { dryRun: false } },
     orderBy: [{ endedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
     select: { id: true, deployId: true, endedAt: true, images: { select: { service: true, sha: true, digest: true } } },
   });

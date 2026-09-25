@@ -9,11 +9,18 @@ import { DeployTargetState } from './agent.js';
  * where practical so z.toJSONSchema (SHP-T-0.7) can render them directly.
  */
 
+/** Short, printable text: it is echoed into lock refusals, logs and the console. */
+const RequesterText = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[^\p{Cc}]*$/u, 'no control characters');
+
 export const Requester = z
   .strictObject({
-    repo: z.string().min(1),
-    branch: z.string().min(1),
-    label: z.string().min(1),
+    repo: RequesterText,
+    branch: RequesterText,
+    label: RequesterText,
   })
   .meta({ id: 'Requester', description: 'Who or what asked for this deploy, for the audit trail' });
 export type Requester = z.infer<typeof Requester>;

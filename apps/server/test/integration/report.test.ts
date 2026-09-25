@@ -252,6 +252,19 @@ describe('drift', () => {
 });
 
 describe('only the report writes app rows (SHP-REQ-104)', () => {
+  it('refuses a report naming an app another agent owns, and leaves the app with its owner', async () => {
+    const entry = { manifest: manifest('web'), manifestSha256: 'a'.repeat(64), running: { web: DIGEST_A, worker: null } };
+    expect((await send(report([entry]))).status).toBe(200);
+    const other = makeKey();
+    await db.agent.create({ data: { publicKey: other.b64, fingerprint: other.fingerprint, confirmedAt: new Date() } });
+    const res = await send(report([{ ...entry, manifestSha256: 'c'.repeat(64) }]), other);
+    expect(res.status).toBe(200);
+    expect((res.body as { refused: string[] }).refused).toEqual(['web']);
+    const row = await db.app.findUniqueOrThrow({ where: { name: 'web' } });
+    expect(row.agentId).toBe(agentId);
+    expect(row.manifestSha256).toBe('a'.repeat(64));
+  });
+
   it('finds no app create/upsert/update outside src/apps/report.ts and src/apps/drift.ts', async () => {
     const root = join(import.meta.dirname, '../../src');
     const allowed = new Set(['apps/report.ts', 'apps/drift.ts']);
@@ -264,9 +277,13 @@ describe('only the report writes app rows (SHP-REQ-104)', () => {
       const rel = relative(root, file).split('\\').join('/');
       if (rel.startsWith('generated/') || allowed.has(rel)) continue;
       const text = await readFile(file, 'utf8');
-      text.split('\n').forEach((line, i) => {
-        if (writes.test(line)) offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
-      });
+      // Whole-file, whitespace-collapsed, so a call chain split across lines still matches; and
+      // raw SQL that names the app table counts as a write too.
+      const flat = text.replace(/\s+/g, ' ');
+      if (writes.test(flat)) offenders.push(`${rel}: ORM write to app`);
+      if (/\$(executeRaw|executeRawUnsafe|queryRaw|queryRawUnsafe)\b[^;]*\b(insert\s+into|update|delete\s+from)\s+"?app"?\b/i.test(flat)) {
+        offenders.push(`${rel}: raw SQL write to app`);
+      }
     }
     expect(offenders).toEqual([]);
   });

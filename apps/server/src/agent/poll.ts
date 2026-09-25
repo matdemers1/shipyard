@@ -134,8 +134,9 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
         stop.abort();
         if (gone.signal.aborted) return;
       }
-      // A heartbeat is a mutation of the agent row (last_heartbeat_at), so it is audited like one.
-      await req.audit({ action: 'agent.heartbeat', entityType: 'agent', entityId: agentId });
+      // An empty poll only bumps last_heartbeat_at, every 25 s, forever: bookkeeping, not an event
+      // worth an audit row. Work handed out, progress and results are audited.
+      req.noAuditNeeded('heartbeat');
       const response: PollResponse = { target: null };
       res.json(response);
     } finally {

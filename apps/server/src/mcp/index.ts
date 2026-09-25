@@ -18,6 +18,9 @@ export function mcpRouter(deps: ServiceDeps, options: McpOptions = {}): Router {
   const router = Router();
 
   router.post('/', async (req, res) => {
+    // MCP is POST-only, and most calls read (initialize, tools/list, status). A deploy or rollback
+    // is audited by the deploy service itself when it changes something.
+    req.noAuditNeeded('mcp');
     if (req.actor?.type !== 'token') {
       res.setHeader('WWW-Authenticate', 'Bearer realm="shipyard"');
       res.status(401).json({

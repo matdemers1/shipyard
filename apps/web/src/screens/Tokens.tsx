@@ -245,7 +245,8 @@ export function Tokens() {
         <PageHeader
           title="API tokens"
           description="Bearer tokens for Claude Code sessions and CI, each limited to named apps."
-          {...(list !== null ? { count: list.filter((t) => t.revokedAt === null).length, countLabel: 'live' } : {})}
+          // countNoun, not countLabel: countLabel replaces the heading's whole accessible name.
+          {...(list !== null ? { count: list.filter((t) => t.revokedAt === null).length, countNoun: { one: 'live', other: 'live' } } : {})}
         />
         {refusal === null ? null : (
           <Alert tone="danger" title={refusal.message} dynamic>

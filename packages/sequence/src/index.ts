@@ -3,6 +3,7 @@ export * from './ports.js';
 export * from './types.js';
 export * from './manifest.js';
 export * from './gates.js';
+export * from './preflight.js';
 export * from './rewrite.js';
 export * from './adapters/github.js';
 export * from './adapters/ghcr.js';

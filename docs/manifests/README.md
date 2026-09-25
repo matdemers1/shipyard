@@ -19,3 +19,23 @@ Run from the published agent image, `ghcr.io/matdemers1/shipyard/agent:sha-d7ecd
 | `deploy d3auth-demo 324ab5d…` (older) | **refused** `not_ahead_of_live (G7)`: "live is 9df50ff; request a descendant, or use rollback" |
 
 A forced health failure rolling back is proven on the toy app in `e2e/tests/sequence.test.ts`.
+
+## Env preflight: `dev.d3cloud.shipyard.env` (SHP-T-5.5, SHP-REQ-082)
+
+An image can declare the environment variable names it needs at runtime by carrying an OCI label
+`dev.d3cloud.shipyard.env` — a comma-separated list of names, whitespace around each entry
+tolerated (e.g. `dev.d3cloud.shipyard.env=DATABASE_URL, SMTP_HOST`). Only names ever leave the
+engine; a value is never read into memory beyond parsing the manifest's env files for their keys,
+and never logged.
+
+G9 refuses the deploy before locking or pulling anything if any name is absent from the stack's
+env files — the union of the manifest's `requiredEnv` and every mapped service's image-declared
+names, naming every missing variable and which image or manifest field required it (e.g. "missing
+required env DATABASE_URL (manifest requiredEnv), SMTP_HOST (declared by server image)"). If names
+are required but the manifest names no `envFiles` at all, the refusal's fix says so. A malformed
+entry in the label (not a valid identifier) refuses fail-closed, naming the bad entry, rather than
+being silently dropped.
+
+G9 is only ever evaluated when env names were actually gathered for the request; an image-only
+rollback does not re-derive this from the target release's image and so is never blocked by it —
+current behaviour, preserved.

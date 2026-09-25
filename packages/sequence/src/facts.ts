@@ -7,8 +7,9 @@ import { evaluateGates, firstRefusal } from './gates.js';
 import type { Ledger } from './ledger.js';
 import { RefusalError } from './ports.js';
 import type { ComposeTarget, SequencePorts } from './ports.js';
+import { declaredEnv } from './preflight.js';
 import { loadSecrets } from './redact.js';
-import { LABEL_MIGRATION } from './types.js';
+import { LABEL_ENV, LABEL_MIGRATION } from './types.js';
 import type { GateFacts, GateResult, LiveState, VerifiedImage } from './types.js';
 
 /**
@@ -48,9 +49,14 @@ export function normalizeMigration(label: string | undefined | null): string | n
   return trimmed.length === 0 ? null : trimmed;
 }
 
-async function envNames(ports: SequencePorts, manifest: Manifest, options: ResolveOptions): Promise<string[] | undefined> {
+async function envNames(
+  ports: SequencePorts,
+  manifest: Manifest,
+  options: ResolveOptions,
+  anyRequired: boolean,
+): Promise<string[] | undefined> {
   if (options.envNamesProvider !== undefined) return options.envNamesProvider(manifest);
-  if (manifest.envFiles === undefined && (manifest.requiredEnv ?? []).length === 0) return undefined;
+  if (manifest.envFiles === undefined && !anyRequired) return undefined;
   try {
     // Only the names leave this function; the values are dropped here.
     return [...(await loadSecrets(ports.fs, manifest.envFiles)).keys()];
@@ -94,7 +100,27 @@ export async function resolveDeployTarget(
       digests[service] = await ports.registry.resolveDigest(config.image, `sha-${sha}`);
     }
 
-    const envNamesPresent = await envNames(ports, manifest, options);
+    // Every mapped image's labels are fetched here — not only for G9's declared env names, but so
+    // the same fetch is reused below for VerifiedImage.labels/migration. A digest G8 will refuse on
+    // (null) has no config to fetch; that service's declaredEnv is simply absent.
+    const configs = new Map<string, { labels: Record<string, string> }>();
+    const declaredEnvByService: Record<string, string[]> = {};
+    for (const [service, config] of Object.entries(manifest.services)) {
+      const digest = digests[service];
+      if (digest === null || digest === undefined) continue;
+      const config_ = await ports.registry.imageConfig(config.image, digest);
+      configs.set(service, config_);
+      const { names, invalid } = declaredEnv(config_.labels);
+      if (invalid.length > 0) {
+        const message = `${config.image} declares an invalid env name in its ${LABEL_ENV} label: ${invalid.join(', ')}`;
+        throw new RefusalError(refusal('env_missing', message));
+      }
+      declaredEnvByService[service] = names;
+    }
+
+    const anyRequired =
+      (manifest.requiredEnv ?? []).length > 0 || Object.values(declaredEnvByService).some((names) => names.length > 0);
+    const envNamesPresent = await envNames(ports, manifest, options, anyRequired);
 
     const freeBytes = options.dryRun
       ? await ports.docker.freeBytes()
@@ -110,6 +136,7 @@ export async function resolveDeployTarget(
       aheadOfLive: aheadOfLive === null ? null : { status: aheadOfLive.status },
       digests,
       freeBytes,
+      declaredEnv: declaredEnvByService,
     };
     if (envNamesPresent !== undefined) facts.envNamesPresent = envNamesPresent;
 
@@ -124,7 +151,7 @@ export async function resolveDeployTarget(
         // G8 passed, so this cannot happen; fail closed rather than trust it.
         return { live, gates, refusal: refusal('image_missing', `no digest for ${service}`), images: [] };
       }
-      const config_ = await ports.registry.imageConfig(config.image, digest);
+      const config_ = configs.get(service) ?? (await ports.registry.imageConfig(config.image, digest));
       images.push({
         service,
         repo: config.image,

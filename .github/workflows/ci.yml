@@ -85,7 +85,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm e2e
+      - run: pnpm --filter e2e exec vitest run tests/restore.test.ts --reporter=verbose
 
   images:
     needs: e2e

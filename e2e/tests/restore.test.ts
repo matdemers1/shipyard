@@ -52,6 +52,17 @@ describe('guided restore after a failed contract release, against the dind harne
       // The toy runs as `node`; the directories are the test's.
       await chmod(dir, 0o777);
     }
+    // DEBUG (CI only, temporary): what does a uid-1000 container inside dind see at the shared dir?
+    {
+      const { execFileSync } = await import('node:child_process');
+      const sh = (cmd: string): string => { try { return execFileSync('sh', ['-c', cmd], { encoding: 'utf8' }); } catch (e) { return String(e); } };
+      console.log('DEBUG host:', sh(`id; ls -ld ${h.sharedDir} ${dataDir}; mount | grep -E ' /tmp ' || true; df -h /tmp`));
+      const r1 = await h.dind(['run', '--rm', '-u', '1000', '-v', `${dataDir}:/data`, 'alpine', 'sh', '-c', 'id; ls -ld /data; touch /data/probe && echo WROTE']);
+      console.log('DEBUG dind uid1000:', r1.code, r1.stdout, r1.stderr);
+      console.log('DEBUG host after:', sh(`ls -la ${dataDir}`));
+      const r2 = await h.dind(['info', '--format', '{{.SecurityOptions}} {{.Driver}}']);
+      console.log('DEBUG dind info:', r2.stdout, r2.stderr);
+    }
     const volumes = ['services:', '  app:', '    volumes:', `      - ${dataDir}:/data`, `      - ${backupsDir}:/backups`, ''].join('\n');
     paths = await prepareToyDataRoot({ soakSeconds: 3, extraComposeFiles: { 'data.yml': volumes } });
     ports = enginePorts({ dockerHost: h.dockerHost, fakeGithubUrl: h.fakeGithubUrl, registryHostPort: h.registryHostPort }, memoryLog(logLines));

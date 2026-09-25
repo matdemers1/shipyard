@@ -51,12 +51,25 @@ function fakeFs(files: FakeFile[] = [], before: FakeFile[] = []): { fs: FsPort; 
     appendLine: () => Promise.resolve(),
     exists: () => Promise.resolve(true),
     mkdirp: () => Promise.resolve(),
-    list: () => Promise.resolve(listed++ === 0 ? before : files),
+    list: (_dir, options) => {
+      if (options?.recursive !== true) return Promise.reject(new Error('backup artifacts must be listed recursively'));
+      return Promise.resolve(listed++ === 0 ? before : files);
+    },
   };
   return { fs, written };
 }
 
 describe('runBackup', () => {
+  it('finds an artifact nested by date, and not an unchanged nested file', async () => {
+    const { docker } = fakeDocker();
+    const old = { path: '/backups/bundles/2026/09/24/old.tar.gz', size: 10, mtimeMs: 500 };
+    const fresh = { path: '/backups/bundles/2026/09/25/new.tar.gz', size: 10, mtimeMs: 1000 };
+    const { fs } = fakeFs([old, fresh], [old]);
+    const result = await runBackup({ docker, fs, clock: fakeClock(1000) }, TARGET, { service: 'db', argv: ['backup'], artifactsDir: '/backups' });
+    expect(result.artifact.path).toBe(fresh.path);
+  });
+
+
   it('never takes a file that existed before the step, even one with a future-skewed mtime', async () => {
     const { docker } = fakeDocker();
     const stale = { path: '/backups/stale.tar', size: 100, mtimeMs: 50_000_000 };

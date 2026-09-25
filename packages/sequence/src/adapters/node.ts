@@ -68,12 +68,12 @@ export function nodeFs(): FsPort {
       await mkdir(path, { recursive: true });
     },
 
-    async list(dir) {
-      const entries = await readdir(dir, { withFileTypes: true });
+    async list(dir, options) {
+      const entries = await readdir(dir, { withFileTypes: true, recursive: options?.recursive === true });
       const files = entries.filter((entry) => entry.isFile());
       return await Promise.all(
         files.map(async (entry) => {
-          const full = join(dir, entry.name);
+          const full = join(entry.parentPath, entry.name);
           const stats = await stat(full);
           return { path: full, size: stats.size, mtimeMs: stats.mtimeMs };
         }),

@@ -52,19 +52,20 @@ const ARTIFACT_GRACE_MS = 1000;
 
 /**
  * Runs the manifest's backup step in the app's already-running container (SHP-D-018) and records
- * as the artifact the newest non-empty file created under `artifactsDir` since the step began
+ * as the artifact the newest non-empty file created anywhere under `artifactsDir` since the step began
  * (SHP-D-054). Never returns or throws with any step output (SHP-REQ-102): a caller cannot leak
  * what it was never given.
  */
 export async function runBackup(ports: StepPorts, target: ComposeTarget, step: BackupStepDef): Promise<BackupResult> {
   // What was there before the step, so an existing file can never pass as this step's artifact —
   // not even one whose mtime is skewed into the future.
-  const before = new Map((await ports.fs.list(step.artifactsDir)).map((entry) => [entry.path, entry.mtimeMs]));
+  const before = new Map((await ports.fs.list(step.artifactsDir, { recursive: true })).map((entry) => [entry.path, entry.mtimeMs]));
   const startedAt = ports.clock.now().getTime();
   const result = await ports.docker.compose(target, ['exec', '-T', step.service, ...step.argv]);
   const endedAt = ports.clock.now().getTime();
 
-  const entries = await ports.fs.list(step.artifactsDir);
+  // At any depth: some apps nest their backups by date (D3 Auth's bundles/YYYY/MM/DD/).
+  const entries = await ports.fs.list(step.artifactsDir, { recursive: true });
   const candidates = entries.filter(
     (entry) =>
       entry.size > 0 &&

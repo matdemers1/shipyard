@@ -154,7 +154,7 @@ export async function resolveRestore(
 
   // The artifact is still in the backup step's directory, and not empty: the container names its
   // own mount of that directory, so a file anywhere else could not be what `{artifact}` reaches.
-  const listed = await ports.fs.list(backupStep.artifactsDir).catch(() => []);
+  const listed = await ports.fs.list(backupStep.artifactsDir, { recursive: true }).catch(() => []);
   const onDisk = listed.find(
     (entry) => basename(entry.path) === basename(artifact.backupArtifact) && resolve(dirname(entry.path)) === resolve(dirname(artifact.backupArtifact)),
   );

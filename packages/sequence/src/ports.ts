@@ -133,8 +133,11 @@ export interface FsPort {
   appendLine(path: string, line: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   mkdirp(path: string): Promise<void>;
-  /** Files directly inside a directory, with size and mtime in epoch ms. */
-  list(dir: string): Promise<{ path: string; size: number; mtimeMs: number }[]>;
+  /**
+   * Files inside a directory, with size and mtime in epoch ms: directly inside it, or with
+   * `recursive`, at any depth (backup artifacts some apps nest by date).
+   */
+  list(dir: string, options?: { recursive?: boolean }): Promise<{ path: string; size: number; mtimeMs: number }[]>;
 }
 
 export interface Clock {

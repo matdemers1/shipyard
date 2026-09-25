@@ -80,6 +80,15 @@ describe('nodeFs', () => {
     expect(one?.size).toBe(5);
     expect(typeof one?.mtimeMs).toBe('number');
   });
+
+  it('list with recursive finds files at any depth, with their full paths (date-nested backups)', async () => {
+    const fs = nodeFs();
+    await fs.mkdirp(join(dir, 'bundles', '2026', '09', '25'));
+    await fs.writeFileAtomic(join(dir, 'bundles', '2026', '09', '25', 'd3auth-x.tar.gz'), 'bundle');
+    await fs.writeFileAtomic(join(dir, 'top.txt'), 't');
+    const paths = (await fs.list(dir, { recursive: true })).map((e) => e.path).sort();
+    expect(paths).toEqual([join(dir, 'bundles', '2026', '09', '25', 'd3auth-x.tar.gz'), join(dir, 'top.txt')]);
+  });
 });
 
 describe('systemClock', () => {

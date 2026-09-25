@@ -224,4 +224,53 @@ describe('Deploy record (S6)', () => {
     expect(screen.getByText('Pending')).toBeInTheDocument();
     expect(screen.getByText(/HTTP 503/)).toBeInTheDocument();
   });
+
+  it('lists a group deploy\'s members in order, with the stopped member\'s group_stopped reason (SHP-T-5.11)', async () => {
+    mockFetch({
+      'GET /api/auth/me': meReply('viewer'),
+      'GET /api/deploys/d-1': {
+        status: 200,
+        body: {
+          ...STATUS,
+          app: 'bravo',
+          state: 'failed',
+          refusal: { code: 'health_failed', gate: 'none', message: 'bravo answered 500 on /health.', fix: 'Fix the release and deploy again.' },
+          group: {
+            name: 'trio',
+            members: [
+              { app: 'alpha', state: 'succeeded', refusal: null, canary: true, position: 0, targetId: 't1' },
+              {
+                app: 'bravo',
+                state: 'failed',
+                refusal: { code: 'health_failed', gate: 'none', message: 'bravo answered 500 on /health.', fix: 'Fix the release and deploy again.' },
+                canary: false,
+                position: 1,
+                targetId: 't2',
+              },
+              {
+                app: 'charlie',
+                state: 'cancelled',
+                refusal: { code: 'group_stopped', gate: 'none', message: 'The group deploy stopped at bravo (failed); this member was not touched.', fix: 'x' },
+                canary: false,
+                position: 2,
+                targetId: 't3',
+              },
+            ],
+          },
+        },
+      },
+      'GET /api/deploys/d-1/steps': { status: 200, body: { steps: [] } },
+      'GET /api/deploys/d-1/foreman': { status: 200, body: { posts: [], stuck: false } },
+    });
+    renderAt('/deploys/d-1');
+    const section = await screen.findByText('trio — deployed in order, canary first');
+    expect(section).toBeInTheDocument();
+    const group = screen.getByText('alpha').closest('dl');
+    expect(group).not.toBeNull();
+    if (group === null) throw new Error('no group list');
+    const rows = within(group).getAllByRole('term');
+    expect(rows.map((r) => r.textContent)).toEqual(['alpha', 'bravo', 'charlie']);
+    expect(within(group).getByText('Canary')).toBeInTheDocument();
+    expect(within(group).getByText(/The group deploy stopped at bravo/)).toBeInTheDocument();
+  });
 });

@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { DryRunSheetProps } from '../src/components/DryRunSheet';
+import type { GroupDeploySheetProps } from '../src/components/GroupDeploySheet';
 import { App } from '../src/App';
 import { meReply, mockFetch } from './fetch';
 
@@ -10,6 +11,13 @@ import { meReply, mockFetch } from './fetch';
 vi.mock('../src/components/DryRunSheet', () => ({
   DryRunSheet: ({ open, action }: DryRunSheetProps) =>
     open && action !== null ? <div role="dialog">{`${action.kind} ${action.app} ${action.sha}`}</div> : null,
+}));
+
+// Same idea for the group-deploy sheet: Home's job is to fetch the groups and open it with the
+// right one; the sheet's own behaviour is covered by groupdeploysheet.test.tsx.
+vi.mock('../src/components/GroupDeploySheet', () => ({
+  GroupDeploySheet: ({ open, group }: GroupDeploySheetProps) =>
+    open && group !== null ? <div role="dialog">{`deploy group ${group.name}`}</div> : null,
 }));
 
 /** S2 Home (SHP-T-3.2): the approvals banner, and one card per app with a live SHA, commits
@@ -60,6 +68,7 @@ function baseRoutes() {
     'GET /api/auth/methods': { status: 200, body: { password: true, d3auth: false } },
     'GET /api/agent': { status: 200, body: AGENT_OK },
     'GET /api/deploys': { status: 200, body: [] },
+    'GET /api/groups': { status: 200, body: [] },
   };
 }
 
@@ -122,6 +131,44 @@ describe('Home', () => {
     await screen.findByRole('link', { name: 'api' });
     expect(screen.getByRole('button', { name: 'Up to date' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: /^Ship /i })).not.toBeInTheDocument();
+  });
+
+  it('shows a group card with its members and canary, and a deployer can open its sheet', async () => {
+    mockFetch({
+      ...baseRoutes(),
+      'GET /api/auth/me': meReply('deployer'),
+      'GET /api/apps': { status: 200, body: { apps: [appRow('web')] } },
+      'GET /api/approvals': { status: 200, body: [] },
+      'GET /api/apps/web/commits': { status: 200, body: commitsUpToDate() },
+      'GET /api/groups': { status: 200, body: [{ name: 'trio', canary: 'alpha', members: ['alpha', 'bravo', 'charlie'] }] },
+    });
+    render(<App />);
+    await screen.findByRole('heading', { level: 1, name: 'Home' });
+
+    const groupHeading = await screen.findByRole('heading', { name: 'trio' });
+    expect(groupHeading).toBeInTheDocument();
+    expect(screen.getByText('alpha · canary')).toBeInTheDocument();
+    expect(screen.getByText('bravo')).toBeInTheDocument();
+    expect(screen.getByText('charlie')).toBeInTheDocument();
+
+    const deployGroup = screen.getByRole('button', { name: 'Deploy group' });
+    const user = userEvent.setup();
+    await user.click(deployGroup);
+    expect(await screen.findByRole('dialog')).toHaveTextContent('deploy group trio');
+  });
+
+  it('hides the group deploy action from a viewer', async () => {
+    mockFetch({
+      ...baseRoutes(),
+      'GET /api/auth/me': meReply('viewer'),
+      'GET /api/apps': { status: 200, body: { apps: [] } },
+      'GET /api/approvals': { status: 200, body: [] },
+      'GET /api/groups': { status: 200, body: [{ name: 'trio', canary: 'alpha', members: ['alpha', 'bravo', 'charlie'] }] },
+    });
+    render(<App />);
+    await screen.findByRole('heading', { level: 1, name: 'Home' });
+    await screen.findByRole('heading', { name: 'trio' });
+    expect(screen.queryByRole('button', { name: 'Deploy group' })).not.toBeInTheDocument();
   });
 
   it('hides every ship button from a viewer', async () => {

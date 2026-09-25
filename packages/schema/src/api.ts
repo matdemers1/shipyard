@@ -133,6 +133,27 @@ export const DeployStatus = z
     gates: z.array(z.strictObject({ gate: z.string(), pass: z.boolean(), reason: z.string() })),
     createdAt: z.string(),
     endedAt: z.string().nullable(),
+    /**
+     * Present only for a group deploy (SHP-REQ-078, SHP-REQ-079): every member in deploy order —
+     * the canary first, then the rest by app name. The fields above still describe the *current*
+     * member — the first not yet terminal, or else the last one that actually ran — so a caller
+     * reading only the top level keeps working exactly as it did for a single-app deploy.
+     */
+    group: z
+      .strictObject({
+        name: z.string().min(1),
+        members: z.array(
+          z.strictObject({
+            app: AppName,
+            state: DeployTargetState,
+            refusal: Refusal.nullable(),
+            canary: z.boolean(),
+            position: z.number().int().nonnegative(),
+            targetId: z.string().min(1),
+          }),
+        ),
+      })
+      .optional(),
   })
   .meta({ id: 'DeployStatus', description: 'A deploy target and, when finished, what it shipped' });
 export type DeployStatus = z.infer<typeof DeployStatus>;

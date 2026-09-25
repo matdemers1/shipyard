@@ -114,6 +114,20 @@ export interface DeployImage {
   migration?: string | null;
 }
 
+export interface DeployGroupMember {
+  app: string;
+  state: DeployTargetState;
+  refusal: DeployRefusal | null;
+  canary: boolean;
+  position: number;
+  targetId: string;
+}
+
+export interface DeployGroup {
+  name: string;
+  members: DeployGroupMember[];
+}
+
 export interface DeployStatus {
   deployId: string;
   kind: DeployKind;
@@ -129,6 +143,8 @@ export interface DeployStatus {
   gates: Gate[];
   createdAt: string;
   endedAt: string | null;
+  /** Present only for a group deploy: every member in deploy order (SHP-REQ-078, SHP-REQ-079). */
+  group?: DeployGroup;
 }
 
 export function fetchDeployStatus(id: string): Promise<DeployStatus> {

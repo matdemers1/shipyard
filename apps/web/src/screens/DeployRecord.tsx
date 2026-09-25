@@ -145,6 +145,20 @@ export function DeployRecord() {
         </Section>
       ) : null}
 
+      {status.group !== undefined ? (
+        <Section title="Group" description={`${status.group.name} — deployed in order, canary first`}>
+          <DescriptionList>
+            {status.group.members.map((member) => (
+              <DescriptionItem key={member.targetId} term={member.app}>
+                <Badge tone={outcomeTone(member.state)}>{outcomeLabel(member.state)}</Badge>
+                {member.canary ? <Badge tone="attention">Canary</Badge> : null}
+                {member.refusal !== null ? <span> — {member.refusal.message}</span> : null}
+              </DescriptionItem>
+            ))}
+          </DescriptionList>
+        </Section>
+      ) : null}
+
       <Section title="Gates">
         {status.gates.length === 0 ? (
           <EmptyState kind="empty" heading="No gates recorded yet" headingLevel={3} size="inline" />

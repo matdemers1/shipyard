@@ -1,0 +1,37 @@
+# foreman, the source of truth for project state (SHP-T-4.5). A member of the `foreman` group behind
+# its canary, foreman-board (SHP-D-047): a group deploy promotes the digests the board soaked.
+# Host-local and argv-only (SHP-D-017): the copy that counts is <data root>/apps/foreman.yml.
+name: foreman
+repo: matdemers1/foreman
+workflow: ci.yml
+compose:
+  files:
+    - /DATA/foreman/docker-compose.yml
+    - /DATA/foreman/docker-compose.tunnel.yml
+  project: foreman
+services:
+  server:
+    image: ghcr.io/matdemers1/foreman/server
+  worker:
+    image: ghcr.io/matdemers1/foreman/worker
+# Foreman's /health answers {status, schemaRevision}; the server applies its own migrations on
+# boot, after its own pre-migration dump, so there is no separate migrate step.
+health:
+  service: server
+  port: 3200
+  path: /health
+soakSeconds: 120
+steps:
+  # Foreman's own dump job, through the real job runner (FRM-REQ-145). Its artifacts land in the
+  # stack's `backups` named volume, which the agent mounts read-only at this identical path.
+  backup:
+    service: server
+    argv: [node, dist/cli/run-job.js, backup]
+    artifactsDir: /var/lib/docker/volumes/foreman_backups/_data
+envFiles:
+  - /DATA/foreman/server.env
+group: foreman
+canary: false
+foreman:
+  project: FRM
+  environment: production

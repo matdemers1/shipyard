@@ -1,0 +1,36 @@
+# foreman-board, the second app under Shipyard (SHP-T-3.9) and the canary of the `foreman` group
+# (SHP-D-047): a group deploy ships and soaks it first, then promotes the same digests to foreman.
+# Host-local and argv-only (SHP-D-017): the copy that counts is <data root>/apps/foreman-board.yml.
+name: foreman-board
+repo: matdemers1/foreman
+workflow: ci.yml
+compose:
+  files:
+    - /DATA/foreman-board/docker-compose.yml
+  project: foreman-board
+services:
+  server:
+    image: ghcr.io/matdemers1/foreman/server
+  worker:
+    image: ghcr.io/matdemers1/foreman/worker
+# Foreman's /health answers {status, schemaRevision}; the server applies its own migrations on
+# boot, after its own pre-migration dump, so there is no separate migrate step.
+health:
+  service: server
+  port: 3200
+  path: /health
+soakSeconds: 60
+steps:
+  # Foreman's own dump job, through the real job runner (FRM-REQ-145). Its artifacts land in the
+  # stack's `backups` named volume, which the agent mounts read-only at this identical path.
+  backup:
+    service: server
+    argv: [node, dist/cli/run-job.js, backup]
+    artifactsDir: /var/lib/docker/volumes/foreman-board_backups/_data
+envFiles:
+  - /DATA/foreman-board/server.env
+group: foreman
+canary: true
+foreman:
+  project: FRM
+  environment: board

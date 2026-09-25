@@ -130,6 +130,20 @@ export const TargetResult = z
     images: z.array(TargetImage),
     schemaRevision: z.string().min(1).optional(),
     refusal: Refusal.optional(),
+    /** Every gate the agent evaluated, pass or fail (the dry-run sheet reads these). */
+    gates: z.array(z.strictObject({ gate: z.string().min(1), pass: z.boolean(), reason: z.string() })).optional(),
+    /** The backup this target took, recorded as a restore candidate (SHP-D-054, SHP-D-080). */
+    backupArtifact: z.strictObject({ path: z.string().min(1), size: z.int().min(0), createdAt: z.iso.datetime() }).optional(),
   })
   .meta({ id: 'TargetResult', description: 'The terminal result of an executed target' });
 export type TargetResult = z.infer<typeof TargetResult>;
+
+/** A state change the agent reports while a target runs, for progress and lock refusals (SHP-REQ-039). */
+export const TargetProgress = z
+  .strictObject({
+    targetId: z.string().min(1),
+    state: DeployTargetState,
+    step: z.string().min(1).max(100).optional(),
+  })
+  .meta({ id: 'TargetProgress', description: 'A running target moved to a new state or step' });
+export type TargetProgress = z.infer<typeof TargetProgress>;

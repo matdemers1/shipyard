@@ -6,7 +6,10 @@ import type { SheetAction } from './DryRunSheet';
 
 export interface ApprovalsBannerProps {
   approvals: PendingApproval[];
-  /** False for a viewer: Review still opens the read-only sheet, but Deny is hidden (SHP-REQ-105). */
+  /**
+   * False for a viewer: the banner is read-only — no Review (the review runs a dry run, which the
+   * server refuses a viewer) and no Deny (SHP-REQ-105).
+   */
   canDeny?: boolean;
   onReview: (action: SheetAction) => void;
   /** Called after a deny succeeds, to refresh the list. */
@@ -45,6 +48,7 @@ export function ApprovalsBanner({ approvals, canDeny = true, onReview, onDenied 
                 {approval.app} · {approval.sha.slice(0, 7)} · {approval.requester.label}
                 {approval.fireAt !== undefined && approval.fireAt !== null ? ` · fires ${new Date(approval.fireAt).toLocaleString()}` : ''}
               </div>
+              {canDeny ? (
               <Cluster gap="8">
                 <Button
                   type="button"
@@ -56,7 +60,6 @@ export function ApprovalsBanner({ approvals, canDeny = true, onReview, onDenied 
                 >
                   Review
                 </Button>
-                {canDeny ? (
                   <Button
                     type="button"
                     variant="danger-ghost"
@@ -67,8 +70,8 @@ export function ApprovalsBanner({ approvals, canDeny = true, onReview, onDenied 
                   >
                     Deny
                   </Button>
-                ) : null}
               </Cluster>
+              ) : null}
             </Cluster>
           ))}
         </Stack>

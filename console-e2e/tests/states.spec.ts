@@ -539,15 +539,18 @@ test.describe('as a viewer', () => {
     await expect(page.getByRole('button', { name: 'Deny' })).toHaveCount(0);
   });
 
-  test('S3 denied: the dry-run sheet is read-only', async ({ page }) => {
+  test('S3 denied: a viewer never gets a dry-run sheet, and the server refuses one', async ({ page }) => {
     const fx = fixture();
-    await fakeDryRun(page, dryRunStatus(fx.apps.approval, HELD_SHA, {}));
+    // No fakes: this is what the real server and console do for a viewer. The held deploy is
+    // visible, but nothing that opens the sheet (Review, Deploy, Roll back) is offered…
     await page.goto('/');
-    await page.getByRole('button', { name: 'Review' }).click();
-    const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
-    await expect(dialog.getByRole('listitem').filter({ hasText: 'G5' })).toContainText('passed');
-    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Confirm' })).toHaveCount(0);
+    await expect(page.getByText(fx.apps.approval, { exact: false }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Review' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Deny' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Deploy/ })).toHaveCount(0);
+    // …and asking the API for a dry run anyway is refused: the sheet has nothing to show.
+    const res = await page.request.post('/api/deploys', { data: { kind: 'deploy', app: fx.apps.history, sha: HELD_SHA, dryRun: true } });
+    expect(res.status()).toBe(403);
   });
 
   test('S5 denied: app detail has no actions', async ({ page }) => {

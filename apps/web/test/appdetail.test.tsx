@@ -8,8 +8,9 @@ import { meReply, mockFetch, type Reply } from './fetch';
 
 /**
  * App detail (SHP-T-3.5): only the server's ledger-eligible rollback targets get a button
- * (SHP-REQ-063); adopt-live cannot be submitted without a reason (SHP-REQ-066); a viewer sees no
- * actions (SHP-REQ-105).
+ * (SHP-REQ-063); adopt-live cannot be submitted without a reason and names the drift event it
+ * reviewed (SHP-REQ-066); a requested redeploy shows as pending; a viewer sees no actions
+ * (SHP-REQ-105).
  */
 
 // The sheet is another task's; here it only has to be opened with the right action.
@@ -82,6 +83,7 @@ const openDrift: DriftState = {
     id: 'e1',
     detectedAt: '2026-09-24T01:00:00.000Z',
     services: [{ service: 'web', observed: digest('a'), recorded: digest('9'), differs: true }],
+    pending: null,
   },
   resolved: [],
 };
@@ -105,9 +107,9 @@ describe('rollback targets', () => {
     routes('deployer', detail(), noDrift);
     const user = userEvent.setup();
     renderAt('/apps/web');
-    await screen.findByRole('heading', { level: 1, name: 'web' });
-
-    const buttons = screen.getAllByRole('button', { name: /^Roll back to/ });
+    // The skeleton has the same heading; wait for the loaded page's buttons themselves.
+    // The first render of the file is the slow one (a cold import under a busy suite).
+    const buttons = await screen.findAllByRole('button', { name: /^Roll back to/ }, { timeout: 4000 });
     expect(buttons.map((b) => b.textContent)).toEqual(['Roll back to 7777777', 'Roll back to 6666666']);
     // Not the live release, not the one behind a contract migration.
     expect(screen.queryByRole('button', { name: 'Roll back to 9999999' })).not.toBeInTheDocument();
@@ -152,7 +154,51 @@ describe('drift banner', () => {
       expect(calls.some((c) => c.method === 'POST' && c.path === '/api/apps/web/drift/adopt')).toBe(true);
     });
     const post = calls.find((c) => c.method === 'POST');
-    expect(post?.body).toEqual({ reason: 'hotfix pulled by hand' });
+    // The event the deployer reviewed travels with the reason: the server adopts its digests.
+    expect(post?.body).toEqual({ reason: 'hotfix pulled by hand', driftEventId: 'e1' });
+  });
+
+  it('shows a stale-review refusal in the adopt form instead of adopting', async () => {
+    routes('deployer', detail(), openDrift, {
+      'POST /api/apps/web/drift/adopt': {
+        status: 409,
+        body: {
+          error: {
+            code: 'conflict',
+            gate: 'none',
+            message: 'The drift you reviewed on web is no longer the open one.',
+            fix: 'Reload the app, review what is running now, and choose again.',
+          },
+        },
+      },
+    });
+    const user = userEvent.setup();
+    renderAt('/apps/web');
+    await user.click(await screen.findByRole('button', { name: "Adopt what's running" }));
+    await user.type(screen.getByLabelText(/Reason/), 'hotfix');
+    await user.click(screen.getByRole('button', { name: 'Adopt with this reason' }));
+    expect(await screen.findByText(/no longer the open one\. Reload the app/)).toBeInTheDocument();
+  });
+
+  it('shows a requested redeploy as pending, with its rollback, while the drift stays open', async () => {
+    const pending: DriftState = {
+      open: { ...(openDrift.open as NonNullable<DriftState['open']>), pending: { deployId: 'd-rb', requestedBy: 'matt@example.com', note: 'x' } },
+      resolved: [
+        {
+          id: 'e0',
+          detectedAt: '2026-09-23T01:00:00.000Z',
+          resolvedAt: '2026-09-23T02:00:00.000Z',
+          resolution: null,
+          reason: 'Superseded',
+          resolvedBy: null,
+        },
+      ],
+    };
+    routes('deployer', detail(), pending);
+    renderAt('/apps/web');
+    expect(await screen.findByText(/A redeploy of the recorded release was requested by matt@example\.com/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'see the rollback' })).toHaveAttribute('href', '/deploys/d-rb');
+    expect(screen.getByText('Superseded by a newer observation')).toBeInTheDocument();
   });
 
   it('asks before redeploying the recorded release, and shows a refusal with its fix', async () => {
@@ -170,6 +216,7 @@ describe('drift banner', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Redeploy recorded release' }));
     expect(await within(dialog).findByText('web is being deployed by someone.')).toBeInTheDocument();
     expect(within(dialog).getByText('Wait for it to finish.')).toBeInTheDocument();
+    expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ driftEventId: 'e1' });
   });
 });
 
@@ -177,8 +224,7 @@ describe('viewer', () => {
   it('sees the drift, the targets and the manifest, and no actions', async () => {
     routes('viewer', detail(), openDrift);
     renderAt('/apps/web');
-    await screen.findByRole('heading', { level: 1, name: 'web' });
-    expect(screen.getByText('web is running something other than its recorded release')).toBeInTheDocument();
+    expect(await screen.findByText('web is running something other than its recorded release')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: "Adopt what's running" })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Redeploy recorded release' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Roll back to/ })).not.toBeInTheDocument();

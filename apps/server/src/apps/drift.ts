@@ -19,6 +19,11 @@ export interface RecordedRelease {
   sha: string | null;
   digests: DigestMap;
   endedAt: Date | null;
+  /**
+   * True when the agent executed it (it was dispatched): a release in the agent's own ledger. An
+   * adopt-live record is written by the server alone and is false (SHP-D-080).
+   */
+  agentExecuted: boolean;
 }
 
 /** The app's recorded release: its most recent `succeeded` target's images, or null if none yet. */
@@ -26,7 +31,13 @@ export async function recordedRelease(db: DbClient, appId: string): Promise<Reco
   const target = await db.deployTarget.findFirst({
     where: { appId, state: 'succeeded', deploy: { dryRun: false } },
     orderBy: [{ endedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
-    select: { id: true, deployId: true, endedAt: true, images: { select: { service: true, sha: true, digest: true } } },
+    select: {
+      id: true,
+      deployId: true,
+      endedAt: true,
+      dispatchedAt: true,
+      images: { select: { service: true, sha: true, digest: true } },
+    },
   });
   if (target === null) return null;
   const digests: DigestMap = {};
@@ -37,59 +48,124 @@ export async function recordedRelease(db: DbClient, appId: string): Promise<Reco
     sha: target.images[0]?.sha ?? null,
     digests,
     endedAt: target.endedAt,
+    agentExecuted: target.dispatchedAt !== null,
   };
 }
 
 /**
  * The services whose observed digest differs from the recorded one. A service the agent sees no
  * container for (null) is not a digest observation and is not counted: a stopped container is not
- * a different release. A service the record does not name is not compared.
+ * a different release. A service the manifest maps (`mapped`) that the record does not name, but
+ * that is running, differs: the record says nothing about it, so whatever runs was never recorded
+ * (a service stopped when a release was recorded must not start later, unseen, as anything at all).
  */
-export function differingServices(recorded: DigestMap, observed: Record<string, string | null>): string[] {
-  const out: string[] = [];
+export function differingServices(
+  recorded: DigestMap,
+  observed: Record<string, string | null>,
+  mapped: readonly string[] = [],
+): string[] {
+  const out = new Set<string>();
   for (const [service, digest] of Object.entries(recorded)) {
     const seen = observed[service];
     if (seen === undefined || seen === null) continue;
-    if (seen !== digest) out.push(service);
+    if (seen !== digest) out.add(service);
   }
-  return out.sort();
+  for (const service of mapped) {
+    if (service in recorded) continue;
+    const seen = observed[service];
+    if (seen !== undefined && seen !== null) out.add(service);
+  }
+  return [...out].sort();
+}
+
+/** Every recorded service is running exactly its recorded digest, and nothing else differs. */
+export function matchesRecorded(recorded: DigestMap, observed: Record<string, string | null>, mapped: readonly string[] = []): boolean {
+  const services = Object.entries(recorded);
+  if (services.length === 0) return false;
+  return services.every(([service, digest]) => observed[service] === digest) && differingServices(recorded, observed, mapped).length === 0;
+}
+
+/** A superseded event's reason starts with this, followed by the newer event's id. */
+export const SUPERSEDED_PREFIX = 'Superseded: the agent then observed different digests, drift event ';
+
+/** Two observations name the same digest (or the same absence) for every service either names. */
+function sameObservation(before: Prisma.JsonValue, now: Record<string, string | null>): boolean {
+  const prior = typeof before === 'object' && before !== null && !Array.isArray(before) ? before : {};
+  const names = new Set([...Object.keys(prior), ...Object.keys(now)]);
+  for (const name of names) {
+    const a = prior[name];
+    const b = now[name];
+    if ((typeof a === 'string' ? a : null) !== (b ?? null)) return false;
+  }
+  return true;
 }
 
 export interface DriftOutcome {
-  /** True when this report opened a new drift event. */
+  /** True when this report opened a new drift event (superseding an open one included). */
   opened: boolean;
+  /** True when this report resolved a pending redeploy-recorded (the recorded release runs again). */
+  resolved: boolean;
   services: string[];
 }
 
 /**
  * Compares one app's observed digests with its recorded release, inside the report's transaction.
- * Opens a DriftEvent and sets `app.driftedAt` when they differ and none is open. Equal digests
- * leave an open event alone: resolving drift is an explicit human act. An app with a target in
- * flight is skipped — its digests are mid-swap, not drifted.
+ * Opens a DriftEvent and sets `app.driftedAt` when they differ and none is open, or when the open
+ * one no longer shows what runs (it is superseded). Equal digests
+ * leave an open event alone: resolving drift is an explicit human act — with one exception that
+ * is still that human's act: a redeploy-recorded that a deployer requested (the event is pending,
+ * `resolution = redeploy_recorded` with no `resolvedAt`) is resolved here, and only here, when the
+ * running digests equal the recorded release again (SHP-REQ-066). An app with a target in flight
+ * is skipped — its digests are mid-swap, not drifted.
  */
 export async function detectDrift(
   tx: Prisma.TransactionClient,
   app: { id: string },
   observed: Record<string, string | null>,
+  mapped: readonly string[] = [],
 ): Promise<DriftOutcome> {
   const active = await tx.deployTarget.count({ where: { appId: app.id, state: { in: [...ACTIVE_STATES] } } });
-  if (active > 0) return { opened: false, services: [] };
+  if (active > 0) return { opened: false, resolved: false, services: [] };
 
   const recorded = await recordedRelease(tx, app.id);
-  if (recorded === null) return { opened: false, services: [] };
+  if (recorded === null) return { opened: false, resolved: false, services: [] };
 
-  const services = differingServices(recorded.digests, observed);
-  if (services.length === 0) return { opened: false, services };
+  const services = differingServices(recorded.digests, observed, mapped);
+  const open = await tx.driftEvent.findFirst({
+    where: { appId: app.id, resolvedAt: null },
+    orderBy: { detectedAt: 'desc' },
+    select: { id: true, resolution: true, reason: true, observed: true },
+  });
 
-  const open = await tx.driftEvent.findFirst({ where: { appId: app.id, resolvedAt: null }, select: { id: true } });
-  if (open !== null) return { opened: false, services };
+  if (services.length === 0) {
+    if (open?.resolution === 'redeploy_recorded' && matchesRecorded(recorded.digests, observed, mapped)) {
+      await tx.driftEvent.update({ where: { id: open.id }, data: { resolvedAt: new Date() } });
+      await tx.app.update({ where: { id: app.id }, data: { driftedAt: null } });
+      return { opened: false, resolved: true, services };
+    }
+    return { opened: false, resolved: false, services };
+  }
+  if (open !== null && sameObservation(open.observed, observed)) return { opened: false, resolved: false, services };
 
   const now = new Date();
-  await tx.driftEvent.create({
+  const created = await tx.driftEvent.create({
     data: { appId: app.id, observed, recorded: recorded.digests, detectedAt: now },
+    select: { id: true },
   });
+  if (open !== null) {
+    // What runs changed again while the drift was open: the old event no longer shows what is
+    // running, so it is closed as superseded (no resolution) and the deployer reviews the new one.
+    // An adopt that names the old event is refused as stale rather than adopting digests nobody saw.
+    const prior = open.resolution === 'redeploy_recorded' && open.reason !== null ? ` ${open.reason}` : '';
+    await tx.driftEvent.update({
+      where: { id: open.id },
+      data: { resolvedAt: now, resolution: null, reason: `${SUPERSEDED_PREFIX}${created.id}.${prior}`.slice(0, 1000) },
+    });
+    await tx.app.update({ where: { id: app.id }, data: { driftedAt: now } });
+    return { opened: true, resolved: false, services };
+  }
   await tx.app.update({ where: { id: app.id }, data: { driftedAt: now } });
-  return { opened: true, services };
+  return { opened: true, resolved: false, services };
 }
 
 /**
@@ -105,13 +181,15 @@ export async function assertDeployable(db: DbClient, appName: string): Promise<R
     const open = await db.driftEvent.findFirst({
       where: { appId: app.id, resolvedAt: null },
       orderBy: { detectedAt: 'desc' },
-      select: { detectedAt: true },
+      select: { detectedAt: true, resolution: true },
     });
     if (open !== null) {
       return refusal(
         'drift_unresolved',
         `${appName} is running images that differ from its recorded release (drift detected ${open.detectedAt.toISOString()}).`,
-        'Resolve the drift first: adopt what is live, or redeploy the recorded release.',
+        open.resolution === 'redeploy_recorded'
+          ? 'A redeploy of the recorded release was requested; deploys are allowed once the agent reports it running again. Or adopt what is live.'
+          : 'Resolve the drift first: adopt what is live, or redeploy the recorded release.',
       );
     }
   }
@@ -119,8 +197,8 @@ export async function assertDeployable(db: DbClient, appName: string): Promise<R
 }
 
 /**
- * Clears `app.driftedAt` once a deployer has resolved the drift (SHP-REQ-066): adopt-live or
- * redeploy-recorded, in `detail.ts`. The only app-row write outside the report, kept here so the
+ * Clears `app.driftedAt` once a deployer has adopted what is running (SHP-REQ-066), in `detail.ts`;
+ * a redeploy-recorded is cleared by `detectDrift` when the recorded release runs again. The only app-row write outside the report, kept here so the
  * report and drift remain the only writers (SHP-REQ-104).
  */
 export async function clearDrifted(db: DbClient, appId: string): Promise<void> {

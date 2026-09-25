@@ -141,8 +141,10 @@ export function AppDetail() {
         {drift.open !== null ? (
           <DriftBanner
             app={detail.name}
+            eventId={drift.open.id}
             detectedAt={drift.open.detectedAt}
             services={drift.open.services}
+            pending={drift.open.pending}
             canAct={can}
             onResolved={(deployId) => {
               if (deployId !== undefined) void navigate(`/deploys/${deployId}/live`);
@@ -313,7 +315,13 @@ export function AppDetail() {
                 <DataListRow
                   key={r.id}
                   truncate={false}
-                  title={r.resolution === 'adopt_live' ? 'Adopted what was running' : 'Redeployed the recorded release'}
+                  title={
+                    r.resolution === 'adopt_live'
+                      ? 'Adopted what was running'
+                      : r.resolution === 'redeploy_recorded'
+                        ? 'Redeployed the recorded release'
+                        : 'Superseded by a newer observation'
+                  }
                   description={`${r.resolvedBy ?? 'unknown'}, ${when(r.resolvedAt)}${r.reason !== null ? `: ${r.reason}` : ''}`}
                 />
               ))}

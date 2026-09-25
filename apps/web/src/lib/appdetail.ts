@@ -73,12 +73,23 @@ export interface DriftService {
   differs: boolean;
 }
 
+/**
+ * A redeploy of the recorded release that a deployer requested: the drift stays open until the
+ * agent reports the recorded release running again (SHP-REQ-066).
+ */
+export interface PendingRedeploy {
+  deployId: string | null;
+  requestedBy: string | null;
+  note: string | null;
+}
+
 export interface DriftState {
-  open: { id: string; detectedAt: string; services: DriftService[] } | null;
+  open: { id: string; detectedAt: string; services: DriftService[]; pending: PendingRedeploy | null } | null;
   resolved: {
     id: string;
     detectedAt: string;
     resolvedAt: string | null;
+    /** Null when a newer observation superseded the event before anyone resolved it. */
     resolution: 'adopt_live' | 'redeploy_recorded' | null;
     reason: string | null;
     resolvedBy: string | null;
@@ -103,10 +114,17 @@ export const appDetail = {
     request<AppDetail>(path(app), signal !== undefined ? { signal } : {}),
   drift: (app: string, signal?: AbortSignal): Promise<DriftState> =>
     request<DriftState>(`${path(app)}/drift`, signal !== undefined ? { signal } : {}),
-  adopt: (app: string, reason: string): Promise<Adopted> =>
-    request<Adopted>(`${path(app)}/drift/adopt`, { method: 'POST', body: { reason } }),
-  redeploy: (app: string): Promise<DeployAccepted> =>
-    request<DeployAccepted>(`${path(app)}/drift/redeploy`, { method: 'POST', body: {} }),
+  /**
+   * Adopts what the deployer reviewed: the open drift event's observed digests, named by its id.
+   * With no open drift (an app never deployed), what the agent last reported running.
+   */
+  adopt: (app: string, reason: string, driftEventId?: string): Promise<Adopted> =>
+    request<Adopted>(`${path(app)}/drift/adopt`, {
+      method: 'POST',
+      body: driftEventId !== undefined ? { reason, driftEventId } : { reason },
+    }),
+  redeploy: (app: string, driftEventId: string): Promise<DeployAccepted> =>
+    request<DeployAccepted>(`${path(app)}/drift/redeploy`, { method: 'POST', body: { driftEventId } }),
 };
 
 /** The server's limit on an adopt-live reason (SHP-D-085). */

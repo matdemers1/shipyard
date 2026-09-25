@@ -245,6 +245,9 @@ function backupFromJournal(entries: JournalEntry[], deployId: string, path: stri
   };
 }
 
+/** The protocol's limit on a migration label's length. */
+const MAX_MIGRATION_LABEL = 100;
+
 /** The engine's `DeployResult` as the protocol's `TargetResult`. */
 export function toTargetResult(target: PollTarget, result: DeployResult, journal: JournalEntry[] = []): TargetResult {
   let state: TargetResult['state'];
@@ -258,7 +261,14 @@ export function toTargetResult(target: PollTarget, result: DeployResult, journal
     state,
     images: result.images
       .filter((image) => SHA_RE.test(image.sha))
-      .map((image) => ({ service: image.service, sha: image.sha, digest: image.digest })),
+      // The migration label travels with the verified digest (SHP-D-057): the server's rollback
+      // targets read it to list a release behind a contract migration as needing a restore.
+      .map((image) => ({
+        service: image.service,
+        sha: image.sha,
+        digest: image.digest,
+        ...(image.migration === null ? {} : { migration: image.migration.slice(0, MAX_MIGRATION_LABEL) }),
+      })),
     gates: result.gates.map((g) => ({ gate: g.gate, pass: g.pass, reason: g.reason })),
   };
   if (result.schemaRevision !== null && result.schemaRevision.length > 0) out.schemaRevision = result.schemaRevision;

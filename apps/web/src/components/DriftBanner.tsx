@@ -1,7 +1,8 @@
-import { Alert, Button, DescriptionItem, DescriptionList, FormField, Input, Modal, Stack } from '@d3cloud/ui';
+import { Alert, Button, DescriptionItem, DescriptionList, FormField, Input, Link, Modal, Stack } from '@d3cloud/ui';
 import { useState, type SyntheticEvent } from 'react';
 import { RefusalError } from '../lib/api';
-import { REASON_MAX, appDetail, reasonIsValid, shortDigest, when, type DriftService } from '../lib/appdetail';
+import { Link as RouterLink } from 'react-router-dom';
+import { REASON_MAX, appDetail, reasonIsValid, shortDigest, when, type DriftService, type PendingRedeploy } from '../lib/appdetail';
 
 /**
  * Drift (SHP-D-031): the app is running images that differ from its recorded release, and new
@@ -22,6 +23,8 @@ function problemOf(error: unknown): Problem {
 
 export interface AdoptLiveButtonProps {
   app: string;
+  /** The open drift event whose digests the deployer is looking at; absent for an app never deployed. */
+  driftEventId?: string;
   /** The consequence, shown in the dialog. */
   description: string;
   onAdopted: () => void;
@@ -31,7 +34,7 @@ export interface AdoptLiveButtonProps {
  * "Adopt what's running" and its form. The submit stays disabled until a reason is typed: the
  * server refuses an adopt without one, and the console does not offer what would be refused.
  */
-export function AdoptLiveButton({ app, description, onAdopted }: AdoptLiveButtonProps) {
+export function AdoptLiveButton({ app, driftEventId, description, onAdopted }: AdoptLiveButtonProps) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
@@ -50,7 +53,7 @@ export function AdoptLiveButton({ app, description, onAdopted }: AdoptLiveButton
     setBusy(true);
     setProblem(null);
     try {
-      await appDetail.adopt(app, reason.trim());
+      await appDetail.adopt(app, reason.trim(), driftEventId);
       close();
       onAdopted();
     } catch (error) {
@@ -100,7 +103,15 @@ export function AdoptLiveButton({ app, description, onAdopted }: AdoptLiveButton
   );
 }
 
-function RedeployButton({ app, onStarted }: { app: string; onStarted: (deployId: string) => void }) {
+function RedeployButton({
+  app,
+  driftEventId,
+  onStarted,
+}: {
+  app: string;
+  driftEventId: string;
+  onStarted: (deployId: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
@@ -114,7 +125,7 @@ function RedeployButton({ app, onStarted }: { app: string; onStarted: (deployId:
     setBusy(true);
     setProblem(null);
     try {
-      const accepted = await appDetail.redeploy(app);
+      const accepted = await appDetail.redeploy(app, driftEventId);
       close();
       onStarted(accepted.deployId);
     } catch (error) {
@@ -137,7 +148,7 @@ function RedeployButton({ app, onStarted }: { app: string; onStarted: (deployId:
         </Button>
       }
       title={`Redeploy ${app}'s recorded release`}
-      description="Starts a rollback to the recorded release, replacing what is running now. The drift is marked resolved once Shipyard accepts it; if it is refused, the drift stays open."
+      description="Starts a rollback to the recorded release, replacing what is running now. The drift is resolved when the agent next reports the recorded release running; until then, and if the rollback fails, it stays open and other deploys are refused."
       footer={
         <>
           <Button type="button" variant="secondary" onClick={close}>
@@ -160,14 +171,18 @@ function RedeployButton({ app, onStarted }: { app: string; onStarted: (deployId:
 
 export interface DriftBannerProps {
   app: string;
+  /** The open drift event: adopting or redeploying names it, so a stale view is refused. */
+  eventId: string;
   detectedAt: string;
   services: DriftService[];
+  /** A redeploy of the recorded release already requested for this drift. */
+  pending?: PendingRedeploy | null;
   canAct: boolean;
   /** After a resolution; a redeploy passes the deploy it started. */
   onResolved: (deployId?: string) => void;
 }
 
-export function DriftBanner({ app, detectedAt, services, canAct, onResolved }: DriftBannerProps) {
+export function DriftBanner({ app, eventId, detectedAt, services, pending = null, canAct, onResolved }: DriftBannerProps) {
   const differing = services.filter((s) => s.differs).map((s) => s.service);
   const named = differing.length > 0 ? differing.join(', ') : 'images';
   return (
@@ -179,12 +194,13 @@ export function DriftBanner({ app, detectedAt, services, canAct, onResolved }: D
           <>
             <AdoptLiveButton
               app={app}
+              driftEventId={eventId}
               description={`Records the running ${named} as ${app}'s release, so deploys are allowed again. Nothing on the host changes.`}
               onAdopted={() => {
                 onResolved();
               }}
             />
-            <RedeployButton app={app} onStarted={onResolved} />
+            <RedeployButton app={app} driftEventId={eventId} onStarted={onResolved} />
           </>
         ) : undefined
       }
@@ -194,6 +210,21 @@ export function DriftBanner({ app, detectedAt, services, canAct, onResolved }: D
           Detected {when(detectedAt)}. New deploys are refused until a deployer adopts what is running or redeploys
           the recorded release. Shipyard never reverts it on its own.
         </p>
+        {pending !== null ? (
+          <p>
+            A redeploy of the recorded release was requested{pending.requestedBy !== null ? ` by ${pending.requestedBy}` : ''}. The drift
+            is resolved when the agent reports the recorded release running again
+            {pending.deployId !== null ? (
+              <>
+                {': '}
+                <Link asChild>
+                  <RouterLink to={`/deploys/${pending.deployId}`}>see the rollback</RouterLink>
+                </Link>
+              </>
+            ) : null}
+            .
+          </p>
+        ) : null}
         <DescriptionList aria-label="Observed against recorded, per service">
           {services.map((s) => (
             <DescriptionItem key={s.service} term={s.service}>

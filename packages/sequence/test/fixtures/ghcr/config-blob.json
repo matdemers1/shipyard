@@ -1,0 +1,169 @@
+{
+  "status": 200,
+  "body": {
+    "architecture": "amd64",
+    "config": {
+      "User": "node",
+      "ExposedPorts": {
+        "3300/tcp": {}
+      },
+      "Env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "NODE_VERSION=22.23.3",
+        "YARN_VERSION=1.22.22",
+        "SHIPYARD_VERSION=30593dd333296f7f9ef5613ea1c211e9f32d310b",
+        "NODE_ENV=production",
+        "PORT=3300"
+      ],
+      "Entrypoint": [
+        "docker-entrypoint.sh"
+      ],
+      "Cmd": [
+        "node",
+        "dist/index.js"
+      ],
+      "WorkingDir": "/app",
+      "Labels": {
+        "org.opencontainers.image.created": "2026-09-24T23:07:32.258Z",
+        "org.opencontainers.image.description": "One deploy button for a Docker Compose host — a portless agent verifies every request with GitHub and GHCR before it touches anything.",
+        "org.opencontainers.image.licenses": "Apache-2.0",
+        "org.opencontainers.image.revision": "30593dd333296f7f9ef5613ea1c211e9f32d310b",
+        "org.opencontainers.image.source": "https://github.com/matdemers1/shipyard",
+        "org.opencontainers.image.title": "shipyard",
+        "org.opencontainers.image.url": "https://github.com/matdemers1/shipyard",
+        "org.opencontainers.image.version": "sha-30593dd333296f7f9ef5613ea1c211e9f32d310b"
+      },
+      "ArgsEscaped": true,
+      "Healthcheck": {
+        "Test": [
+          "CMD",
+          "node",
+          "dist/healthcheck.js"
+        ]
+      }
+    },
+    "created": "2026-09-24T23:08:15.410061039Z",
+    "history": [
+      {
+        "created": "2026-09-18T00:00:00Z",
+        "created_by": "# debian.sh --arch 'amd64' out/ 'trixie' '@1789689600'",
+        "comment": "debuerreotype 0.17"
+      },
+      {
+        "created": "2026-09-23T21:09:48.641035508Z",
+        "created_by": "RUN /bin/sh -c groupadd --gid 1000 node   && useradd --uid 1000 --gid node --shell /bin/bash --create-home node # buildkit",
+        "comment": "buildkit.dockerfile.v0"
+      },
+      {
+        "created": "2026-09-23T21:10:08.738936893Z",
+        "created_by": "ENV NODE_VERSION=22.23.3",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-23T21:10:08.738936893Z",
+        "created_by": "RUN /bin/sh -c ARCH= OPENSSL_ARCH= && dpkgArch=\"$(dpkg --print-architecture)\"     && case \"${dpkgArch##*-}\" in       amd64) ARCH='x64' OPENSSL_ARCH='linux-x86_64';;       ppc64el) ARCH='ppc64le' OPENSSL_ARCH='linux-ppc64le';;       s390x) ARCH='s390x' OPENSSL_ARCH='linux*-s390x';;       arm64) ARCH='arm64' OPENSSL_ARCH='linux-aarch64';;       *) echo \"unsupported architecture\"; exit 1 ;;     esac     && set -ex     && apt-get update && apt-get install -y ca-certificates curl wget gnupg dirmngr xz-utils libatomic1 --no-install-recommends     && rm -rf /var/lib/apt/lists/*     && export GNUPGHOME=\"$(mktemp -d)\"     && for key in       5BE8A3F6C8A5C01D106C0AD820B1A390B168D356       DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7       CC68F5A3106FF448322E48ED27F5E38D5B0A215F       890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4       C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C       108F52B48DB57BB0CC439B2997B01419BD92F80A       655F3B5C1FB3FA8D1A0CA6BDE4A7D232B936D2FD       A363A499291CBBC940DD62E41F10027AF002F8B0     ; do       { gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys \"$key\" && gpg --batch --fingerprint \"$key\"; } ||       { gpg --batch --keyserver keyserver.ubuntu.com --recv-keys \"$key\" && gpg --batch --fingerprint \"$key\"; } ;     done     && curl -fsSLO --compressed \"https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$ARCH.tar.xz\"     && curl -fsSLO --compressed \"https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt.asc\"     && gpg --batch --decrypt --output SHASUMS256.txt SHASUMS256.txt.asc     && gpgconf --kill all     && rm -rf \"$GNUPGHOME\"     && grep \" node-v$NODE_VERSION-linux-$ARCH.tar.xz\\$\" SHASUMS256.txt | sha256sum -c -     && tar -xJf \"node-v$NODE_VERSION-linux-$ARCH.tar.xz\" -C /usr/local --strip-components=1 --no-same-owner     && rm \"node-v$NODE_VERSION-linux-$ARCH.tar.xz\" SHASUMS256.txt.asc SHASUMS256.txt     && find /usr/local/include/node/openssl/archs -mindepth 1 -maxdepth 1 ! -name \"$OPENSSL_ARCH\" -exec rm -rf {} \\;     && apt-mark auto '.*' > /dev/null     && find /usr/local -type f -executable -exec ldd '{}' ';'       | awk '/=>/ { so = $(NF-1); if (index(so, \"/usr/local/\") == 1) { next }; gsub(\"^/(usr/)?\", \"\", so); print so }'       | sort -u       | xargs -r dpkg-query --search       | cut -d: -f1       | sort -u       | xargs -r apt-mark manual     && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false     && ln -s /usr/local/bin/node /usr/local/bin/nodejs     && node --version     && npm --version     && rm -rf /tmp/* # buildkit",
+        "comment": "buildkit.dockerfile.v0"
+      },
+      {
+        "created": "2026-09-23T21:10:08.738936893Z",
+        "created_by": "ENV YARN_VERSION=1.22.22",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-23T21:10:21.668725201Z",
+        "created_by": "RUN /bin/sh -c set -ex   && savedAptMark=\"$(apt-mark showmanual)\"   && apt-get update && apt-get install -y ca-certificates curl wget gnupg dirmngr --no-install-recommends   && rm -rf /var/lib/apt/lists/*   && export GNUPGHOME=\"$(mktemp -d)\"   && for key in     6A010C5166006599AA17F08146C2130DFD2497F5   ; do     { gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys \"$key\" && gpg --batch --fingerprint \"$key\"; } ||     { gpg --batch --keyserver keyserver.ubuntu.com --recv-keys \"$key\" && gpg --batch --fingerprint \"$key\"; } ;   done   && curl -fsSLO --compressed \"https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz\"   && curl -fsSLO --compressed \"https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz.asc\"   && gpg --batch --verify yarn-v$YARN_VERSION.tar.gz.asc yarn-v$YARN_VERSION.tar.gz   && gpgconf --kill all   && rm -rf \"$GNUPGHOME\"   && mkdir -p /opt   && tar -xzf yarn-v$YARN_VERSION.tar.gz -C /opt/   && ln -s /opt/yarn-v$YARN_VERSION/bin/yarn /usr/local/bin/yarn   && ln -s /opt/yarn-v$YARN_VERSION/bin/yarnpkg /usr/local/bin/yarnpkg   && rm yarn-v$YARN_VERSION.tar.gz.asc yarn-v$YARN_VERSION.tar.gz   && apt-mark auto '.*' > /dev/null   && { [ -z \"$savedAptMark\" ] || apt-mark manual $savedAptMark > /dev/null; }   && find /usr/local -type f -executable -exec ldd '{}' ';'     | awk '/=>/ { so = $(NF-1); if (index(so, \"/usr/local/\") == 1) { next }; gsub(\"^/(usr/)?\", \"\", so); print so }'     | sort -u     | xargs -r dpkg-query --search     | cut -d: -f1     | sort -u     | xargs -r apt-mark manual   && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false   && yarn --version   && rm -rf /tmp/* # buildkit",
+        "comment": "buildkit.dockerfile.v0"
+      },
+      {
+        "created": "2026-09-23T21:10:21.691808058Z",
+        "created_by": "COPY docker-entrypoint.sh /usr/local/bin/ # buildkit",
+        "comment": "buildkit.dockerfile.v0"
+      },
+      {
+        "created": "2026-09-23T21:10:21.691808058Z",
+        "created_by": "ENTRYPOINT [\"docker-entrypoint.sh\"]",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-23T21:10:21.691808058Z",
+        "created_by": "CMD [\"node\"]",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-24T23:07:59.222387301Z",
+        "created_by": "RUN /bin/sh -c apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg postgresql-common     && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y     && apt-get update && apt-get install -y --no-install-recommends postgresql-client-16     && rm -rf /var/lib/apt/lists/*     && [ \"$(pg_dump --version | grep -o '[0-9]\\+' | head -1)\" = \"16\" ] # buildkit",
+        "comment": "buildkit.dockerfile.v0"
+      },
+      {
+        "created": "2026-09-24T23:07:59.287996704Z",
+        "created_by": "ARG REVISION=unknown",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-24T23:07:59.287996704Z",
+        "created_by": "LABEL org.opencontainers.image.revision=30593dd333296f7f9ef5613ea1c211e9f32d310b org.opencontainers.image.source=https://github.com/matdemers1/shipyard org.opencontainers.image.licenses=Apache-2.0",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-24T23:07:59.287996704Z",
+        "created_by": "ENV SHIPYARD_VERSION=30593dd333296f7f9ef5613ea1c211e9f32d310b NODE_ENV=production PORT=3300",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-24T23:07:59.287996704Z",
+        "created_by": "WORKDIR /app",
+        "comment": "buildkit.dockerfile.v0"
+      },
+      {
+        "created": "2026-09-24T23:08:15.410061039Z",
+        "created_by": "COPY --chown=root:root /out ./ # buildkit",
+        "comment": "buildkit.dockerfile.v0"
+      },
+      {
+        "created": "2026-09-24T23:08:15.410061039Z",
+        "created_by": "USER node",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-24T23:08:15.410061039Z",
+        "created_by": "EXPOSE map[3300/tcp:{}]",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-24T23:08:15.410061039Z",
+        "created_by": "HEALTHCHECK &{[\"CMD\" \"node\" \"dist/healthcheck.js\"] \"0s\" \"0s\" \"0s\" \"0s\" '\\x00'}",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      },
+      {
+        "created": "2026-09-24T23:08:15.410061039Z",
+        "created_by": "CMD [\"node\" \"dist/index.js\"]",
+        "comment": "buildkit.dockerfile.v0",
+        "empty_layer": true
+      }
+    ],
+    "os": "linux",
+    "rootfs": {
+      "type": "layers",
+      "diff_ids": [
+        "sha256:a6dc765193a52cbaede3c93a9ff48b9540948dd0774bbe7031fcb5847606f9ac",
+        "sha256:90caba3aa93283559585444c29414e109c2967ff277b197d6439d9ad43a919e5",
+        "sha256:0b33ce5bd4a594129278aec202f483da45ea9e3990f027b9a41194aacb961749",
+        "sha256:cafefbc404b164b571512ba00b078bad888bb144789521300f6c7211197c7cd4",
+        "sha256:ab8943bf1712555acd7d2fbf800c348510744513f9a84c192f9729292b22f623",
+        "sha256:e6c8c800b044aae8179eb2fba0d318d2df50d01b83f14c6858d4e83e09b4d484",
+        "sha256:41eb7b024b43212fe2948893e14ef2da8aa635a2b9ec1f2f415bf1970f7cd480",
+        "sha256:cf2e8f2a1d555fa0bb20eead8432e4015947fb619b8bf9f32d020031afbe60c5"
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@shipyard/schema": ["../../packages/schema/src/index.ts"],
+      "@shipyard/sequence": ["../../packages/sequence/src/index.ts"]
+    }
+  }
+}

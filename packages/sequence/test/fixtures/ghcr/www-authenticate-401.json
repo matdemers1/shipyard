@@ -1,0 +1,12 @@
+{
+  "status": 401,
+  "headers": {
+    "connection": "close",
+    "content-length": "73",
+    "content-type": "application/json",
+    "date": "Thu, 24 Sep 2026 23:28:22 GMT",
+    "www-authenticate": "Bearer realm=\"https://ghcr.io/token\",service=\"ghcr.io\",scope=\"repository:matdemers1/shipyard/server:pull\"",
+    "x-github-edge-region": "iad",
+    "x-github-request-id": "D2E8:29CF59:2B8A16:34CDBD:6AB5B216"
+  }
+}

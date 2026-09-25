@@ -1,0 +1,11 @@
+{
+  "synthetic": true,
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "unexpected": "shape",
+    "no": "workflow_runs or status field here"
+  }
+}

@@ -1,0 +1,5 @@
+x-image: &img ghcr.io/matdemers1/toy/app
+
+services:
+  app:
+    image: *img

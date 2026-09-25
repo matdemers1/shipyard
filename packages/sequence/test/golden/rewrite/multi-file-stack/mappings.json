@@ -1,0 +1,12 @@
+[
+  {
+    "service": "app",
+    "repo": "ghcr.io/matdemers1/toy/app",
+    "reference": "ghcr.io/matdemers1/toy/app:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  {
+    "service": "worker",
+    "repo": "ghcr.io/matdemers1/toy/worker",
+    "reference": "ghcr.io/matdemers1/toy/worker:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  }
+]

@@ -1,0 +1,7 @@
+services:
+  app:
+    image: ghcr.io/matdemers1/toy/app:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  worker:
+    image: ghcr.io/matdemers1/toy/worker:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  sidecar:
+    image: ghcr.io/matdemers1/toy/app

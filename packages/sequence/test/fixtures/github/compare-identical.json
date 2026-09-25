@@ -1,0 +1,196 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-remaining": "48",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-reset": "1790296043"
+  },
+  "body": {
+    "url": "https://api.github.com/repos/matdemers1/shipyard/compare/30593dd333296f7f9ef5613ea1c211e9f32d310b...30593dd333296f7f9ef5613ea1c211e9f32d310b",
+    "html_url": "https://github.com/matdemers1/shipyard/compare/30593dd333296f7f9ef5613ea1c211e9f32d310b...30593dd333296f7f9ef5613ea1c211e9f32d310b",
+    "permalink_url": "https://github.com/matdemers1/shipyard/compare/matdemers1:30593dd...matdemers1:30593dd",
+    "diff_url": "https://github.com/matdemers1/shipyard/compare/30593dd333296f7f9ef5613ea1c211e9f32d310b...30593dd333296f7f9ef5613ea1c211e9f32d310b.diff",
+    "patch_url": "https://github.com/matdemers1/shipyard/compare/30593dd333296f7f9ef5613ea1c211e9f32d310b...30593dd333296f7f9ef5613ea1c211e9f32d310b.patch",
+    "base_commit": {
+      "sha": "30593dd333296f7f9ef5613ea1c211e9f32d310b",
+      "node_id": "C_kwDOUqPDFtoAKDMwNTkzZGQzMzMyOTZmN2Y5ZWY1NjEzZWExYzIxMWU5ZjMyZDMxMGI",
+      "commit": {
+        "author": {
+          "name": "Matthew Demers",
+          "email": "matthew@demers.dev",
+          "date": "2026-09-24T23:03:38Z"
+        },
+        "committer": {
+          "name": "Matthew Demers",
+          "email": "matthew@demers.dev",
+          "date": "2026-09-24T23:03:38Z"
+        },
+        "message": "Phase 0 Foundation (SHP-P-0): monorepo, shared schema, Prisma, server skeleton, dual login, bootstrap-admin, OpenAPI, e2e harness, CI",
+        "tree": {
+          "sha": "2dcef0d67335f568925d35275c3f5ea7431f31e3",
+          "url": "https://api.github.com/repos/matdemers1/shipyard/git/trees/2dcef0d67335f568925d35275c3f5ea7431f31e3"
+        },
+        "url": "https://api.github.com/repos/matdemers1/shipyard/git/commits/30593dd333296f7f9ef5613ea1c211e9f32d310b",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/matdemers1/shipyard/commits/30593dd333296f7f9ef5613ea1c211e9f32d310b",
+      "html_url": "https://github.com/matdemers1/shipyard/commit/30593dd333296f7f9ef5613ea1c211e9f32d310b",
+      "comments_url": "https://api.github.com/repos/matdemers1/shipyard/commits/30593dd333296f7f9ef5613ea1c211e9f32d310b/comments",
+      "author": {
+        "login": "matdemers1",
+        "id": 101132989,
+        "node_id": "U_kgDOBgcqvQ",
+        "avatar_url": "https://avatars.githubusercontent.com/u/101132989?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/matdemers1",
+        "html_url": "https://github.com/matdemers1",
+        "followers_url": "https://api.github.com/users/matdemers1/followers",
+        "following_url": "https://api.github.com/users/matdemers1/following{/other_user}",
+        "gists_url": "https://api.github.com/users/matdemers1/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/matdemers1/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/matdemers1/subscriptions",
+        "organizations_url": "https://api.github.com/users/matdemers1/orgs",
+        "repos_url": "https://api.github.com/users/matdemers1/repos",
+        "events_url": "https://api.github.com/users/matdemers1/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/matdemers1/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "matdemers1",
+        "id": 101132989,
+        "node_id": "U_kgDOBgcqvQ",
+        "avatar_url": "https://avatars.githubusercontent.com/u/101132989?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/matdemers1",
+        "html_url": "https://github.com/matdemers1",
+        "followers_url": "https://api.github.com/users/matdemers1/followers",
+        "following_url": "https://api.github.com/users/matdemers1/following{/other_user}",
+        "gists_url": "https://api.github.com/users/matdemers1/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/matdemers1/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/matdemers1/subscriptions",
+        "organizations_url": "https://api.github.com/users/matdemers1/orgs",
+        "repos_url": "https://api.github.com/users/matdemers1/repos",
+        "events_url": "https://api.github.com/users/matdemers1/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/matdemers1/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "b4182fd9b3f615de2175cb055aac550c062fbdf9",
+          "url": "https://api.github.com/repos/matdemers1/shipyard/commits/b4182fd9b3f615de2175cb055aac550c062fbdf9",
+          "html_url": "https://github.com/matdemers1/shipyard/commit/b4182fd9b3f615de2175cb055aac550c062fbdf9"
+        },
+        {
+          "sha": "e71ec8e3ef5803f2652eb321346440b0023796ca",
+          "url": "https://api.github.com/repos/matdemers1/shipyard/commits/e71ec8e3ef5803f2652eb321346440b0023796ca",
+          "html_url": "https://github.com/matdemers1/shipyard/commit/e71ec8e3ef5803f2652eb321346440b0023796ca"
+        }
+      ]
+    },
+    "merge_base_commit": {
+      "sha": "30593dd333296f7f9ef5613ea1c211e9f32d310b",
+      "node_id": "C_kwDOUqPDFtoAKDMwNTkzZGQzMzMyOTZmN2Y5ZWY1NjEzZWExYzIxMWU5ZjMyZDMxMGI",
+      "commit": {
+        "author": {
+          "name": "Matthew Demers",
+          "email": "matthew@demers.dev",
+          "date": "2026-09-24T23:03:38Z"
+        },
+        "committer": {
+          "name": "Matthew Demers",
+          "email": "matthew@demers.dev",
+          "date": "2026-09-24T23:03:38Z"
+        },
+        "message": "Phase 0 Foundation (SHP-P-0): monorepo, shared schema, Prisma, server skeleton, dual login, bootstrap-admin, OpenAPI, e2e harness, CI",
+        "tree": {
+          "sha": "2dcef0d67335f568925d35275c3f5ea7431f31e3",
+          "url": "https://api.github.com/repos/matdemers1/shipyard/git/trees/2dcef0d67335f568925d35275c3f5ea7431f31e3"
+        },
+        "url": "https://api.github.com/repos/matdemers1/shipyard/git/commits/30593dd333296f7f9ef5613ea1c211e9f32d310b",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/matdemers1/shipyard/commits/30593dd333296f7f9ef5613ea1c211e9f32d310b",
+      "html_url": "https://github.com/matdemers1/shipyard/commit/30593dd333296f7f9ef5613ea1c211e9f32d310b",
+      "comments_url": "https://api.github.com/repos/matdemers1/shipyard/commits/30593dd333296f7f9ef5613ea1c211e9f32d310b/comments",
+      "author": {
+        "login": "matdemers1",
+        "id": 101132989,
+        "node_id": "U_kgDOBgcqvQ",
+        "avatar_url": "https://avatars.githubusercontent.com/u/101132989?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/matdemers1",
+        "html_url": "https://github.com/matdemers1",
+        "followers_url": "https://api.github.com/users/matdemers1/followers",
+        "following_url": "https://api.github.com/users/matdemers1/following{/other_user}",
+        "gists_url": "https://api.github.com/users/matdemers1/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/matdemers1/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/matdemers1/subscriptions",
+        "organizations_url": "https://api.github.com/users/matdemers1/orgs",
+        "repos_url": "https://api.github.com/users/matdemers1/repos",
+        "events_url": "https://api.github.com/users/matdemers1/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/matdemers1/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "matdemers1",
+        "id": 101132989,
+        "node_id": "U_kgDOBgcqvQ",
+        "avatar_url": "https://avatars.githubusercontent.com/u/101132989?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/matdemers1",
+        "html_url": "https://github.com/matdemers1",
+        "followers_url": "https://api.github.com/users/matdemers1/followers",
+        "following_url": "https://api.github.com/users/matdemers1/following{/other_user}",
+        "gists_url": "https://api.github.com/users/matdemers1/gists{/gist_id}",
+        "starred_url": "https://api.github.com/users/matdemers1/starred{/owner}{/repo}",
+        "subscriptions_url": "https://api.github.com/users/matdemers1/subscriptions",
+        "organizations_url": "https://api.github.com/users/matdemers1/orgs",
+        "repos_url": "https://api.github.com/users/matdemers1/repos",
+        "events_url": "https://api.github.com/users/matdemers1/events{/privacy}",
+        "received_events_url": "https://api.github.com/users/matdemers1/received_events",
+        "type": "User",
+        "user_view_type": "public",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "b4182fd9b3f615de2175cb055aac550c062fbdf9",
+          "url": "https://api.github.com/repos/matdemers1/shipyard/commits/b4182fd9b3f615de2175cb055aac550c062fbdf9",
+          "html_url": "https://github.com/matdemers1/shipyard/commit/b4182fd9b3f615de2175cb055aac550c062fbdf9"
+        },
+        {
+          "sha": "e71ec8e3ef5803f2652eb321346440b0023796ca",
+          "url": "https://api.github.com/repos/matdemers1/shipyard/commits/e71ec8e3ef5803f2652eb321346440b0023796ca",
+          "html_url": "https://github.com/matdemers1/shipyard/commit/e71ec8e3ef5803f2652eb321346440b0023796ca"
+        }
+      ]
+    },
+    "status": "identical",
+    "ahead_by": 0,
+    "behind_by": 0,
+    "total_commits": 0,
+    "commits": [],
+    "files": []
+  }
+}

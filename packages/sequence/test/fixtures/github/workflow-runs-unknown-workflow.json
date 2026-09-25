@@ -1,0 +1,14 @@
+{
+  "status": 404,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-ratelimit-remaining": "51",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-reset": "1790296043"
+  },
+  "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow",
+    "status": "404"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "status": 200,
+  "headers": {
+    "connection": "close",
+    "content-length": "856",
+    "content-type": "application/vnd.oci.image.index.v1+json",
+    "date": "Thu, 24 Sep 2026 23:28:22 GMT",
+    "docker-content-digest": "sha256:e64335bb2f02a08d3f95b60456520e567713573c40eb54791893e8f115b812e5",
+    "docker-distribution-api-version": "registry/2.0",
+    "etag": "\"sha256:e64335bb2f02a08d3f95b60456520e567713573c40eb54791893e8f115b812e5\"",
+    "strict-transport-security": "max-age=63072000; includeSubDomains; preload",
+    "x-github-edge-region": "iad",
+    "x-github-request-id": "D2E9:A0820:2A1DEF:335F86:6AB5B216"
+  }
+}

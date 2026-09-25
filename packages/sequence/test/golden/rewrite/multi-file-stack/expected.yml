@@ -1,0 +1,5 @@
+services:
+  app:
+    image: ghcr.io/matdemers1/toy/app:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  db:
+    image: postgres:16

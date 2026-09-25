@@ -3,14 +3,19 @@
   "repo": "matdemers1/d3-auth",
   "workflow": "ci.yml",
   "compose": {
-    "files": ["/DATA/apps/d3auth/docker-compose.yml"],
+    "files": [
+      "/DATA/apps/d3auth/docker-compose.yml"
+    ],
     "project": "d3auth"
   },
   "services": {
-    "server": { "image": "ghcr.io/matdemers1/d3-auth/server" }
+    "server": {
+      "image": "ghcr.io/matdemers1/d3-auth/server"
+    }
   },
   "health": {
     "service": "server",
-    "path": "/health"
+    "path": "/health",
+    "port": 3100
   }
 }

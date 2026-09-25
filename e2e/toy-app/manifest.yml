@@ -11,6 +11,7 @@ services:
     image: registry:5000/toy/app
 health:
   service: app
+  port: 3000
   path: /health
   expectSchema: "20260924-0001"
 soakSeconds: 5

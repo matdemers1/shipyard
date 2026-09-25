@@ -1,0 +1,3 @@
+services:
+  worker:
+    image: ghcr.io/matdemers1/toy/worker

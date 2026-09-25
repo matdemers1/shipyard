@@ -1,0 +1,68 @@
+[
+  {
+    "name": "passes when free space is comfortably above the floor",
+    "facts": {},
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "passes when free space exactly equals the floor",
+    "facts": { "freeBytes": 5368709120 },
+    "expect": [
+      { "gate": "disk", "pass": true },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses when free space is one byte below the floor",
+    "facts": { "freeBytes": 5368709119 },
+    "expect": [
+      { "gate": "disk", "pass": false, "code": "insufficient_disk" },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses against a manifest with a raised floor",
+    "facts": { "freeBytes": 10737418240, "manifest": { "diskFloorGb": 20 } },
+    "expect": [
+      { "gate": "disk", "pass": false, "code": "insufficient_disk" },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses with an unknown free space message when freeBytes is NaN",
+    "facts": { "freeBytes": null },
+    "expect": [
+      { "gate": "disk", "pass": false, "code": "insufficient_disk" },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  },
+  {
+    "name": "refuses with an unknown free space message when freeBytes is negative",
+    "facts": { "freeBytes": -1 },
+    "expect": [
+      { "gate": "disk", "pass": false, "code": "insufficient_disk" },
+      { "gate": "G5", "pass": true },
+      { "gate": "G6", "pass": true },
+      { "gate": "G7", "pass": true },
+      { "gate": "G8", "pass": true }
+    ]
+  }
+]

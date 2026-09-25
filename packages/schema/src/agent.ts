@@ -88,6 +88,10 @@ const PollTarget = z
     app: z.string().min(1),
     sha: z.string().regex(/^[0-9a-f]{40}$/, 'exactly 40 lowercase hex characters'),
     dryRun: z.boolean(),
+    /** A rollback's target deploy; the agent resolves its digests from its own ledger (SHP-D-080). */
+    toDeployId: z.string().min(1).optional(),
+    /** The requester label, for the agent's logs and lock file. Display only. */
+    requesterLabel: z.string().max(200).optional(),
   })
   .meta({ id: 'PollTarget', description: 'A target for the agent to execute' });
 

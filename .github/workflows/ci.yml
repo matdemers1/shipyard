@@ -87,6 +87,57 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm e2e
 
+  # The console in a real browser against the real built server (SHP-T-6.2): axe on every screen in
+  # both themes (SHP-REQ-090), and every screen's states. The harness wipes its database, seeds it
+  # through the server's own Prisma client and answers GitHub from a stub, so nothing leaves the
+  # runner. Not yet in `images`' needs: it gates main once it has a record of green runs here.
+  console-e2e:
+    needs: unit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shipyard
+          POSTGRES_PASSWORD: shipyard
+          POSTGRES_DB: shipyard_console_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shipyard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://shipyard:shipyard@127.0.0.1:5432/shipyard_console_test
+      # Built in its own step below, so a build failure is named as one.
+      CONSOLE_E2E_SKIP_BUILD: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter console-e2e exec playwright install --with-deps chromium
+      - name: Build what ships
+        run: |
+          pnpm --filter @shipyard/schema build
+          pnpm --filter @shipyard/sequence build
+          pnpm --filter shipyard-server build
+          pnpm --filter shipyard-web build
+      - run: pnpm --filter console-e2e test
+      - name: Keep the report when console-e2e failed
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: console-e2e-report
+          path: |
+            console-e2e/playwright-report
+            console-e2e/test-results
+          retention-days: 7
+
   images:
     needs: e2e
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

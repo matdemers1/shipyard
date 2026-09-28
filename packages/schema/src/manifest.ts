@@ -2,6 +2,7 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
 import { AppName, GhRepo, ProjectCode, Step } from './primitives.js';
+import { BuildConfig } from './build.js';
 
 /**
  * The host-local app manifest (SHP-REQ-004). Written as YAML on the host and
@@ -115,7 +116,32 @@ export const Manifest = z
     diskFloorGb: z.number().min(0).max(1000).default(5),
     /** Old Shipyard-deployed images kept per service after a success. */
     retainImages: z.int().min(1).max(20).default(3),
+    /**
+     * How the app's images are built (SHP-REQ-117). Undefined means today's behaviour: G5 reads
+     * the GitHub workflow run for the SHA, same as `{ source: 'github' }`.
+     */
+    build: BuildConfig.optional(),
+    /** Deploy the moment a Shipyard-built image is verified, no request needed. Requires `build.source: shipyard`. */
+    autoDeploy: z.boolean().default(false),
   })
+  .refine((m) => !m.autoDeploy || m.build?.source === 'shipyard', {
+    message: 'autoDeploy requires build.source to be shipyard',
+    path: ['autoDeploy'],
+  })
+  .refine(
+    (m) => {
+      if (m.build?.source !== 'shipyard') return true;
+      const releaseTargets = m.build.releaseTargets;
+      if (releaseTargets === undefined) return false;
+      const serviceKeys = Object.keys(m.services).sort();
+      const targetKeys = Object.keys(releaseTargets).sort();
+      return serviceKeys.length === targetKeys.length && serviceKeys.every((k, i) => k === targetKeys[i]);
+    },
+    {
+      message: 'build.releaseTargets must map every compose service to a build target, with no extras, when build.source is shipyard',
+      path: ['build', 'releaseTargets'],
+    },
+  )
   .meta({ id: 'Manifest', description: 'The host-local app manifest (SHP-REQ-004)' });
 
 export type Manifest = z.infer<typeof Manifest>;

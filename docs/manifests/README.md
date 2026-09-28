@@ -72,3 +72,35 @@ steps:
   stops `failed`; Shipyard never restores or rolls back a second time on its own.
 - Requested from the console only (Restore on the app, the app's name typed to confirm). Tokens and
   MCP cannot start one.
+
+## `build` and `autoDeploy` (SHP-T-7.2, SHP-REQ-117, SHP-REQ-136)
+
+By default (and for Shipyard's own manifest, `shipyard.yml`, permanently — SHP-REQ-136) an app's
+images come from its GitHub Actions workflow: `build: { source: github }`, or `build` omitted
+entirely. Every other `build` field must be absent when `source` is `github`, so a manifest can't
+half opt in.
+
+`build: { source: shipyard }` has Shipyard itself fetch the exact commit, build it, and push it:
+
+```yaml
+build:
+  source: shipyard
+  dockerfile: Dockerfile              # repo-relative; default Dockerfile
+  testTarget: test                    # BuildKit target run for tests; default test
+  releaseTargets:                     # every compose service mapped to its Dockerfile target
+    server: release-server
+    web: release-web
+  integration:                        # optional compose integration-test service, run before release targets
+    compose: docker-compose.integration.yml
+    service: integration
+    argv: [pnpm, test:integration]
+  secrets:                            # secret NAMES only; values never appear in the manifest
+    - npm_token
+autoDeploy: true                      # deploy the moment a Shipyard-built image is verified; requires source: shipyard
+```
+
+- `dockerfile`, `integration.compose` and every target/service/secret name are validated the same
+  way as every other host-local path and name in this file — relative, no `..`, no shell string.
+  `releaseTargets` must name every key in `services`, and no extras.
+- `autoDeploy` defaults to `false` and can only be `true` when `build.source` is `shipyard` — an
+  app built by GitHub Actions is still deployed by request (console, MCP, or token), same as today.

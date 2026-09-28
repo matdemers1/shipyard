@@ -1,0 +1,31 @@
+name: toy
+repo: example/toy
+workflow: ci.yml
+compose:
+  files:
+    - /srv/toy/docker-compose.yml
+  project: toy
+services:
+  server:
+    image: ghcr.io/example/toy/server
+  web:
+    image: ghcr.io/example/toy/web
+health:
+  service: server
+  port: 3000
+  path: /health
+autoDeploy: true
+build:
+  source: shipyard
+  dockerfile: Dockerfile
+  testTarget: test
+  releaseTargets:
+    server: release-server
+    web: release-web
+  integration:
+    compose: docker-compose.integration.yml
+    service: integration
+    argv: [pnpm, test:integration]
+  secrets:
+    - npm_token
+    - db_password

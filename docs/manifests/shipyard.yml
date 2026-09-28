@@ -41,3 +41,7 @@ envFiles:
 foreman:
   project: SHP
   environment: production
+# Shipyard's own images always come from GitHub Actions (SHP-REQ-136): a broken builder can never
+# block the fix to itself. This field is the default, listed explicitly so the intent is not lost.
+build:
+  source: github

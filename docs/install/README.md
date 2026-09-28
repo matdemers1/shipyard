@@ -47,9 +47,13 @@ pushes the image itself instead of reading CI's. Two more files, installed in th
 | 2 | `buildkit.compose.yml` | the operator: `docker compose -f buildkit.compose.yml -p shipyard-buildkit up -d` | Rootless `buildkitd`, attached **only** to `shipyard-build`, no Docker socket, no published port, listening on a unix socket in the volume `shipyard-buildkit-socket`, cache in its own volume, public DNS resolvers (a LAN resolver would be dropped). `cpus` / `mem_limit` are placeholders. |
 
 Then give the agent the socket: add `shipyard-buildkit-socket:/run/buildkit` to its `volumes:` (and
-the volume as `external: true` at the bottom of `docker-compose.yml`), and set its BuildKit address to
-`unix:///run/buildkit/buildkitd.sock`. buildkitd runs as uid 1000, so the agent must be able to open a
-socket owned by uid 1000 (`group_add: ["1000"]` or running as that uid).
+the volume as `external: true` at the bottom of `docker-compose.yml`), and set `BUILDKIT_ADDR` in
+`agent.env` to `unix:///run/buildkit/buildkitd.sock` (unset, the agent never offers to build).
+buildkitd runs as uid 1000, so the agent must be able to open a socket owned by uid 1000
+(`group_add: ["1000"]` or running as that uid). `BUILD_DOCKER_CONFIG` names the directory holding the
+GHCR push credential buildctl uses; build secrets are set on the host with
+`printf %s "$VALUE" | shipyard-run build-secret set <app> <name>` (stdin only, never argv). All three
+are documented in `agent.env.example`.
 
 **Why this isolates build steps.** A Dockerfile `RUN` step runs in buildkitd's network namespace, so
 the firewall on `shipyard-build` is the firewall on every build step. The agent checks the network

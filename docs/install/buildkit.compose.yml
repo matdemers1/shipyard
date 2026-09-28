@@ -1,0 +1,61 @@
+# Rootless BuildKit for Shipyard-built apps (SHP-T-7.8; SHP-REQ-122, SHP-REQ-123, SHP-REQ-124).
+#
+# Order: run `build-network.sh` first (it creates the external `shipyard-build` network and its
+# firewall rules), then:
+#
+#   docker compose -f buildkit.compose.yml -p shipyard-buildkit up -d
+#
+# buildkitd is attached ONLY to `shipyard-build`. A Dockerfile RUN step runs in buildkitd's network
+# namespace, so the firewall rules on that network are the build steps' rules: public internet yes
+# (package registries), RFC1918 / the Docker host / other compose projects no.
+#
+# No TCP port and no Docker socket: buildkitd listens on a unix socket in the named volume
+# `shipyard-buildkit-socket`, which the agent mounts (see README.md) and reaches as
+# `unix:///run/buildkit/buildkitd.sock`.
+#
+# Security trade-off, stated plainly. Rootless buildkitd inside a container needs:
+#   - `seccomp=unconfined` and `apparmor=unconfined` on the buildkitd container, so RootlessKit can
+#     create its user namespace and mounts. It still runs as uid 1000 inside that user namespace,
+#     with no Docker socket and no host path mounted.
+#   - `--oci-worker-no-process-sandbox`, because an unprivileged container cannot mount a fresh
+#     /proc for each step. The cost: RUN steps share buildkitd's PID namespace, so a step can see
+#     and signal buildkitd's processes and any step of a concurrent build. Shipyard builds one app
+#     at a time (FIFO dispatch), and buildkitd holds nothing but its cache and the current build's
+#     secret mounts, so this is accepted. The alternative, `--privileged`, would be worse.
+name: shipyard-buildkit
+
+services:
+  buildkitd:
+    # TODO(lead): pin by digest (`moby/buildkit:v0.23.0-rootless@sha256:…`) once pulled on the host.
+    image: moby/buildkit:v0.23.0-rootless
+    restart: unless-stopped
+    command:
+      - --oci-worker-no-process-sandbox
+      - --addr
+      - unix:///run/user/1000/buildkit/buildkitd.sock
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    # Public resolvers: Docker's embedded DNS forwards from the container's namespace, and a LAN
+    # resolver (192.168.x) is exactly what the firewall drops.
+    dns:
+      - 1.1.1.1
+      - 9.9.9.9
+    # Placeholders: SHP-T-7.11 wires these from Settings.
+    cpus: 2
+    mem_limit: 4g
+    volumes:
+      - buildkit-cache:/home/user/.local/share/buildkit
+      - buildkit-socket:/run/user/1000/buildkit
+    networks:
+      - shipyard-build
+
+networks:
+  shipyard-build:
+    external: true
+    name: shipyard-build
+
+volumes:
+  buildkit-cache: {}
+  buildkit-socket:
+    name: shipyard-buildkit-socket

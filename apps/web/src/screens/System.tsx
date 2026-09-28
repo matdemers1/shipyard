@@ -15,6 +15,19 @@ function asRefusal(error: unknown): RefusalError {
   return error instanceof RefusalError ? error : unreachableRefusal();
 }
 
+/** `1234567` bytes → `1.2 GB` (decimal, matching how storage is usually quoted). */
+function humanBytes(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  const rounded = unit === 0 ? String(Math.round(value)) : value.toFixed(value < 10 ? 2 : 1);
+  return `${rounded} ${units[unit] ?? 'B'}`;
+}
+
 function BackupRow({ label, run }: { label: string; run: SystemBackupRun | null }) {
   if (run === null) {
     return <DescriptionItem term={label}>Never run</DescriptionItem>;
@@ -135,6 +148,32 @@ export function System() {
                       <Badge tone="attention">Expiring soon</Badge>
                     ) : (
                       <Badge tone="danger">Expired</Badge>
+                    )}
+                  </DescriptionItem>
+                </DescriptionList>
+              )}
+            </Section>
+
+            <Section title="Build cache">
+              {status.buildCache === null ? (
+                <DescriptionList>
+                  <DescriptionItem term="Status">Not yet reported</DescriptionItem>
+                </DescriptionList>
+              ) : (
+                <DescriptionList>
+                  <DescriptionItem term="Size">{humanBytes(status.buildCache.bytes)}</DescriptionItem>
+                  <DescriptionItem term="Cap">{humanBytes(status.buildCache.capBytes)}</DescriptionItem>
+                  <DescriptionItem term="Last garbage collection">
+                    {status.buildCache.lastGcAt === null ? 'Never run' : shortDate(status.buildCache.lastGcAt)}
+                  </DescriptionItem>
+                  <DescriptionItem term="Limits applied">
+                    {status.buildCache.limitsApplied === null ? (
+                      'Not yet applied'
+                    ) : (
+                      <Badge tone="neutral">
+                        {status.buildCache.limitsApplied.cpus} CPU{status.buildCache.limitsApplied.cpus === 1 ? '' : 's'},{' '}
+                        {status.buildCache.limitsApplied.memoryMb} MiB
+                      </Badge>
                     )}
                   </DescriptionItem>
                 </DescriptionList>

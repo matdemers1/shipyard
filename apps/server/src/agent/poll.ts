@@ -20,6 +20,7 @@ import { sendRefusal } from '../errors.js';
 import { enqueueDeployment } from '../outbox/index.js';
 import { readGroupMeta, stopGroupAfter } from '../groups/service.js';
 import { recordBuildProgress, recordBuildResult } from '../builds/service.js';
+import { loadBuildSettings } from '../settings/build.js';
 import {
   PROGRESS_RANK,
   agentHasTargetInFlight,
@@ -137,6 +138,9 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
       logger.error({ err }, 'stale build sweep failed');
     }
     const wantsBuild = body.capabilities?.includes('build') === true;
+    // Settings → Builds (SHP-T-7.11): on every poll answer, whatever else it carries, so the agent
+    // learns a saved limit or cache cap change the moment it next polls.
+    const buildSettings = await loadBuildSettings(db);
 
     const gone = new AbortController();
     const onClose = (): void => {
@@ -173,7 +177,7 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
             after: { targetId: target.targetId, app: target.app, kind: target.kind, dryRun: target.dryRun },
           });
           logger.info({ deployId: target.deployId, targetId: target.targetId, app: target.app }, 'target dispatched to agent');
-          const response: PollResponse = { target };
+          const response: PollResponse = { target, buildSettings };
           res.json(response);
           return;
         }
@@ -201,7 +205,7 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
             after: { app: job.app, sha: job.sha },
           });
           logger.info({ buildId: job.buildId, app: job.app, sha: job.sha }, 'build dispatched to agent');
-          const response: PollResponse = { target: null, build: job };
+          const response: PollResponse = { target: null, build: job, buildSettings };
           res.json(response);
           return;
         }
@@ -213,7 +217,7 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
       // An empty poll only bumps last_heartbeat_at, every 25 s, forever: bookkeeping, not an event
       // worth an audit row. Work handed out, progress and results are audited.
       req.noAuditNeeded('heartbeat');
-      const response: PollResponse = { target: null };
+      const response: PollResponse = { target: null, buildSettings };
       res.json(response);
     } finally {
       res.off('close', onClose);

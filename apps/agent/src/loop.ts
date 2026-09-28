@@ -1,4 +1,14 @@
-import { PollResponse, refusal, type BuildJob, type PollRequest, type Refusal, type StepJournal, type TargetProgress, type TargetResult } from '@shipyard/schema';
+import {
+  PollResponse,
+  refusal,
+  type BuildJob,
+  type BuildSettings,
+  type PollRequest,
+  type Refusal,
+  type StepJournal,
+  type TargetProgress,
+  type TargetResult,
+} from '@shipyard/schema';
 import type {
   DeployRequest,
   DeployResult,
@@ -126,6 +136,12 @@ export interface LoopOptions {
   runTarget: (target: PollTarget) => Promise<void>;
   /** The build worker, when builds are configured. */
   builds?: LoopBuilds;
+  /**
+   * Called with `buildSettings` whenever a poll response carries it (SHP-T-7.11): the loop's only
+   * hook into the BuildKit cache manager. Never awaited by the loop itself — a slow or failing
+   * apply must never hold a poll up — so it must never throw synchronously either.
+   */
+  onBuildSettings?: (settings: BuildSettings) => void;
   log: LoopLog;
   /** Aborting stops the loop: after the current target, never in the middle of one. */
   signal: AbortSignal;
@@ -152,6 +168,13 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       const parsed = PollResponse.parse(body);
       target = parsed.target;
       build = 'build' in parsed ? parsed.build : undefined;
+      if (parsed.buildSettings !== undefined && opts.onBuildSettings !== undefined) {
+        try {
+          opts.onBuildSettings(parsed.buildSettings);
+        } catch (err) {
+          opts.log.warn({ err: message(err) }, 'onBuildSettings threw; ignoring');
+        }
+      }
       delay = backoff.initialMs;
     } catch (err) {
       if (stopped()) break;

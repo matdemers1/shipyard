@@ -132,7 +132,7 @@ describe('POST /api/agent/poll (SHP-REQ-040)', () => {
     const started = Date.now();
     const res = await poll(1);
     const elapsed = Date.now() - started;
-    expect(res).toEqual({ target: null });
+    expect(res).toMatchObject({ target: null });
     expect(elapsed).toBeGreaterThanOrEqual(900);
     expect(elapsed).toBeLessThan(5_000);
   });
@@ -158,7 +158,7 @@ describe('POST /api/agent/poll (SHP-REQ-040)', () => {
     const accepted = await deploy('web');
     const first = targetOf(await poll(0));
     expect(first.deployId).toBe(accepted.deployId);
-    expect(await poll(0)).toEqual({ target: null });
+    expect(await poll(0)).toMatchObject({ target: null });
   });
 
   it('re-dispatches a target whose poll response was lost (dispatched, never started, 2 min)', async () => {
@@ -193,7 +193,7 @@ describe('POST /api/agent/poll (SHP-REQ-040)', () => {
 
   it("never hands out another agent's target", async () => {
     await createDeploy(deps, caller, { kind: 'deploy', app: 'elsewhere', sha: SHA }, { check: () => Promise.resolve(null) });
-    expect(await poll(0)).toEqual({ target: null });
+    expect(await poll(0)).toMatchObject({ target: null });
     const theirs = targetOf(await poll(0, otherKey));
     expect(theirs.app).toBe('elsewhere');
   });

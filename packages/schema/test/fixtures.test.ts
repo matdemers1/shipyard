@@ -78,6 +78,9 @@ import {
   BuildProgress,
   BuildResult,
   BuildConfig,
+  BuildSettings,
+  BuildSettingsUpdate,
+  AgentBuildCache,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -172,6 +175,9 @@ const SCHEMAS: Record<string, ZodType> = {
   buildProgress: BuildProgress,
   buildResult: BuildResult,
   buildConfig: BuildConfig,
+  buildSettings: BuildSettings,
+  buildSettingsUpdate: BuildSettingsUpdate,
+  agentBuildCache: AgentBuildCache,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

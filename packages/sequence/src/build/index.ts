@@ -4,3 +4,4 @@ export * from './record.js';
 export * from './network.js';
 export * from './integration.js';
 export * from './secrets.js';
+export * from './cache.js';

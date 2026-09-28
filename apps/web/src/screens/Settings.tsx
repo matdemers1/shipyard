@@ -23,6 +23,7 @@ import { copyText, shortDate } from '../lib/admin';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { downloadManifest, settings as settingsApi } from '../lib/settings';
 import { AlertEmailSettings } from './AlertEmailSettings';
+import { BuildSettingsSection } from './BuildSettings';
 
 /**
  * Settings (SHP-T-6.8, SHP-REQ-110): configure Sign in with D3 Auth without editing server files.
@@ -390,6 +391,7 @@ export function Settings() {
               <Registration s={s} />
             </Section>
             <AlertEmailSettings />
+            <BuildSettingsSection />
           </>
         )}
       </Stack>

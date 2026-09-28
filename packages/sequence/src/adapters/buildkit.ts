@@ -45,7 +45,19 @@ export interface BuildKitAdapterOptions {
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 
 /** The exact `buildctl` argv for one solve (exported for tests). */
+/**
+ * What may appear inside BuildKit's comma-separated `--output` value: an image reference and tag,
+ * nothing that could close the `name=` field and open another option (`,`, `=`, whitespace).
+ * The manifest schema already refuses such a repository; this is the adapter's own check.
+ */
+const OUTPUT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._\/:-]*$/;
+
 export function solveArgv(addr: string, req: SolveRequest, metadataFile: string): string[] {
+  if (req.push !== undefined && !OUTPUT_REF_RE.test(req.push.ref)) {
+    throw new RefusalError(
+      refusal('invalid_request', `The image reference '${req.push.ref}' is not a plain repository:tag`, 'Fix the service image in the manifest.'),
+    );
+  }
   const argv = [
     '--addr',
     addr,

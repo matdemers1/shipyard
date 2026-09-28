@@ -17,12 +17,23 @@ const ComposeConfig = z
   })
   .meta({ id: 'ComposeConfig', description: 'Compose files and project name for this app' });
 
+/**
+ * An untagged OCI repository reference: `[host[:port]/]path`, path components lowercase per the
+ * distribution grammar. Strict because the string is embedded in argv tokens that other tools parse
+ * further — BuildKit's comma-separated `--output type=image,name=<ref>,push=true` among them — so a
+ * `,` or `=` here would smuggle options past the manifest (SHP-REQ-117, SHP-REQ-127).
+ */
+const IMAGE_REPOSITORY_RE =
+  /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?(?::[0-9]{1,5})?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$/;
+
 const ServiceConfig = z
   .strictObject({
     image: z
       .string()
       .min(1)
-      .refine((v) => !v.includes('@') && !(v.split('/').pop() ?? '').includes(':'), 'image must not include a tag or digest; both are chosen at deploy time'),
+      .max(255)
+      .refine((v) => !v.includes('@') && !(v.split('/').pop() ?? '').includes(':'), 'image must not include a tag or digest; both are chosen at deploy time')
+      .refine((v) => IMAGE_REPOSITORY_RE.test(v), 'image must be a plain repository reference: [host[:port]/]lowercase/path, no commas, spaces or `=`'),
   })
   .meta({ id: 'ServiceConfig', description: 'The untagged image for one compose service' });
 

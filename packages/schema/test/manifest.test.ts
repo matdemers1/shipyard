@@ -60,6 +60,16 @@ describe('service image', () => {
   it('accepts a registry with a port', () => {
     expect(Manifest.safeParse({ ...base, services: { app: { image: 'registry:5000/toy/app' } } }).success).toBe(true);
   });
+  it('accepts every repository form the manifests and harness use', () => {
+    for (const image of ['ghcr.io/matdemers1/shipyard/server', 'registry.shipyard.test/toy/app', 'registry:5000/toy/app', 'toy/app', 'ghcr.io/o/r/web-ui_2']) {
+      expect(Manifest.safeParse({ ...base, services: { app: { image } } }).success, image).toBe(true);
+    }
+  });
+  it('rejects an image that could smuggle options into an argv token (commas, =, spaces, uppercase path)', () => {
+    for (const image of ['ghcr.io/x,push=false', 'ghcr.io/x,registry.insecure=true', 'ghcr.io/a=b', 'ghcr.io/a b', 'ghcr.io/Owner/app', '-ghcr.io/x', 'ghcr.io//x']) {
+      expect(Manifest.safeParse({ ...base, services: { app: { image } } }).success, image).toBe(false);
+    }
+  });
   it('rejects a tag or a digest', () => {
     expect(Manifest.safeParse({ ...base, services: { app: { image: 'registry:5000/toy/app:latest' } } }).success).toBe(false);
     expect(Manifest.safeParse({ ...base, services: { app: { image: 'ghcr.io/a/b@sha256:' + 'a'.repeat(64) } } }).success).toBe(false);

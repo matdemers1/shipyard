@@ -55,6 +55,12 @@ const baseReq: SolveRequest = {
 };
 
 describe('solveArgv', () => {
+  it('refuses a push ref that could open another --output option, before any argv is built', () => {
+    for (const ref of ['ghcr.io/x,push=false:sha-' + 'a'.repeat(40), 'ghcr.io/x=y:sha-' + 'a'.repeat(40), 'ghcr.io/x y:tag', ',name=evil']) {
+      expect(() => solveArgv(ADDR, { ...baseReq, push: { ref } }, '/m/meta.json'), ref).toThrow(RefusalError);
+    }
+  });
+
   it('builds the exact buildctl argv for a pushed release target', () => {
     expect(solveArgv(ADDR, baseReq, '/m/meta.json')).toEqual([
       '--addr',

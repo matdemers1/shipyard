@@ -17,6 +17,13 @@ import {
   BUILD_NETWORK_BRIDGE,
   BUILD_NETWORK_NAME,
   BUILD_NETWORK_SUBNET,
+  INTEGRATION_BRIDGE_PREFIX,
+  INTEGRATION_FORWARD_CHAIN,
+  INTEGRATION_GATEWAY_MODE_OPTION,
+  INTEGRATION_INPUT_CHAIN,
+  INTEGRATION_SUBNET_POOL,
+  integrationNetworkSlot,
+  integrationSubnetSlot,
   verifyBuildNetwork,
 } from '../../src/build/network.js';
 import type { BuildNetworkInfo } from '../../src/build/network.js';
@@ -86,7 +93,8 @@ interface FakeDocker extends IntegrationDocker {
   events: string[];
 }
 
-function fakeDocker(opts: { model?: unknown; configExit?: number; runExit?: number; run?: () => Promise<ExecResult>; loadExit?: number } = {}): FakeDocker {
+function fakeDocker(opts: { model?: unknown; configExit?: number; runExit?: number; run?: () => Promise<ExecResult>; loadExit?: number; create?: ExecResult[] } = {}): FakeDocker {
+  const creates = [...(opts.create ?? [])];
   const calls: ComposeCall[] = [];
   const loads: string[] = [];
   const removed: string[] = [];
@@ -110,6 +118,7 @@ function fakeDocker(opts: { model?: unknown; configExit?: number; runExit?: numb
       if (sub === 'config') {
         return { exitCode: opts.configExit ?? 0, stdout: JSON.stringify(opts.model ?? goodModel()), stderr: '' };
       }
+      if (sub === 'create') return creates.shift() ?? { exitCode: 0, stdout: '', stderr: '' };
       if (sub === 'run') {
         if (opts.run !== undefined) return opts.run();
         return { exitCode: opts.runExit ?? 0, stdout: 'tests ran\n', stderr: '' };
@@ -189,13 +198,17 @@ describe('createIntegrationStage', () => {
 
     expect(passed).toBe(true);
     const composeFile = join(dir, 'ci', 'integration.yml');
-    const [config, run, down] = docker.calls;
-    expect(docker.calls).toHaveLength(3);
+    const [config, create, run, down] = docker.calls;
+    expect(docker.calls).toHaveLength(4);
 
     // config: the source file only, the project, an empty env file, no interpolation.
     expect(config?.target).toEqual({ files: [composeFile], project: PROJECT });
     expect(config?.args.slice(0, 2)).toEqual(['--env-file', expect.stringMatching(/empty\.env$/) as string]);
     expect(config?.args.slice(2)).toEqual(['config', '--no-interpolate', '--format', 'json']);
+
+    // create: the project with the override, before the run.
+    expect(create?.target).toEqual(run?.target);
+    expect(create?.args.slice(2)).toEqual(['create']);
 
     // run: source file + generated override, -p shipyard-build-<id>, argv passed as separate elements.
     expect(run?.target.project).toBe(PROJECT);
@@ -217,7 +230,7 @@ describe('createIntegrationStage', () => {
     expect(exports[0]?.secretContents).toEqual(['npm_s3cr3t']);
     expect(docker.loads).toHaveLength(1);
     expect(docker.removed).toEqual([IMAGE]);
-    expect(docker.events).toEqual(['compose config', 'load', 'compose run', 'compose down', `rmi ${IMAGE}`]);
+    expect(docker.events).toEqual(['compose config', 'load', 'compose create', 'compose run', 'compose down', `rmi ${IMAGE}`]);
     expect(logs.join('')).toContain('tests ran');
     expect(logs.join('')).toContain('itest exited 0');
 
@@ -225,15 +238,56 @@ describe('createIntegrationStage', () => {
     expect(await readdir(work)).toEqual([]);
   });
 
-  it('generates an override that pins the image, resets build, and puts the project on one internal network', async () => {
+  it('generates an override that pins the image, resets build, and puts the project on one internal, host-isolated network from the pool', async () => {
     const docker = fakeDocker();
     await stage(docker, fakeBuilder().builder)({ onLog: () => undefined });
     const override = docker.calls[1]?.override ?? '';
     expect(override).toContain('build: !reset null');
     const doc = parse(override.replace('!reset null', 'null')) as Record<string, Record<string, Record<string, unknown>>>;
     expect(doc.services).toEqual({ itest: { image: IMAGE, pull_policy: 'never', build: null } });
-    expect(doc.networks).toEqual({ default: { name: `${PROJECT}_default`, driver: 'bridge', internal: true, enable_ipv6: false } });
-    expect(override).not.toMatch(/ports|privileged|network_mode|cap_add|devices|bind/);
+    const slot = integrationSubnetSlot(BUILD_ID);
+    expect(doc.networks).toEqual({
+      default: {
+        name: `${PROJECT}_default`,
+        driver: 'bridge',
+        internal: true,
+        enable_ipv6: false,
+        driver_opts: { 'com.docker.network.bridge.name': `${INTEGRATION_BRIDGE_PREFIX}${String(slot)}`, [INTEGRATION_GATEWAY_MODE_OPTION]: 'isolated' },
+        ipam: { config: [{ subnet: `172.30.${String(slot)}.0/24` }] },
+      },
+    });
+    expect(override).not.toMatch(/ports|privileged|network_mode|cap_add|devices|bind:/);
+    // The run sees the same override the create made the network from.
+    expect(docker.calls[2]?.override).toBe(override);
+  });
+
+  it('takes the next /24 of the pool when the daemon reports an overlap, tearing down the failed attempt', async () => {
+    const overlap: ExecResult = { exitCode: 1, stdout: '', stderr: 'failed to create network: Error response from daemon: invalid pool request: Pool overlaps with other one on this address space' };
+    const docker = fakeDocker({ create: [overlap, overlap] });
+    const logs: string[] = [];
+    expect(await stage(docker, fakeBuilder().builder)({ onLog: (c) => logs.push(c) })).toBe(true);
+    expect(docker.events).toEqual(['compose config', 'load', 'compose create', 'compose down', 'compose create', 'compose down', 'compose create', 'compose run', 'compose down', `rmi ${IMAGE}`]);
+    const slot = integrationSubnetSlot(BUILD_ID);
+    const subnets = docker.calls.filter((c) => c.args[2] === 'create').map((c) => /subnet: (\S+)/.exec(c.override ?? '')?.[1]);
+    expect(subnets).toEqual([0, 1, 2].map((i) => integrationNetworkSlot((slot + i) % 256).subnet));
+    expect(docker.calls.find((c) => c.args[2] === 'run')?.override).toContain(integrationNetworkSlot((slot + 2) % 256).subnet);
+    expect(logs.join('')).toContain('is taken; trying the next');
+  });
+
+  it('gives up after the attempt limit, and fails without retrying on any other create error', async () => {
+    const overlap: ExecResult = { exitCode: 1, stdout: '', stderr: 'Pool overlaps with other one on this address space' };
+    const exhausted = fakeDocker({ create: Array.from({ length: 8 }, () => overlap) });
+    const logs: string[] = [];
+    expect(await stage(exhausted, fakeBuilder().builder)({ onLog: (c) => logs.push(c) })).toBe(false);
+    expect(exhausted.events.filter((e) => e === 'compose create')).toHaveLength(8);
+    expect(exhausted.events).not.toContain('compose run');
+    expect(exhausted.events.slice(-2)).toEqual(['compose down', `rmi ${IMAGE}`]);
+    expect(logs.join('')).toContain('no free subnet');
+
+    const broken = fakeDocker({ create: [{ exitCode: 1, stdout: '', stderr: 'pull access denied for postgres' }] });
+    expect(await stage(broken, fakeBuilder().builder)({ onLog: () => undefined })).toBe(false);
+    expect(broken.events).toEqual(['compose config', 'load', 'compose create', 'compose down', `rmi ${IMAGE}`]);
+    expect(await readdir(work)).toEqual([]);
   });
 
   it('runs the image default command when the manifest has no argv, and honours a custom network name', async () => {
@@ -243,15 +297,15 @@ describe('createIntegrationStage', () => {
       networkName: 'shipyard-build-b01abc-net',
     });
     await hook({ onLog: () => undefined });
-    expect(docker.calls[1]?.args.slice(2)).toEqual(['run', '--rm', '-T', 'itest']);
-    expect(docker.calls[1]?.override).toContain('name: shipyard-build-b01abc-net');
+    expect(docker.calls[2]?.args.slice(2)).toEqual(['run', '--rm', '-T', 'itest']);
+    expect(docker.calls[2]?.override).toContain('name: shipyard-build-b01abc-net');
   });
 
   it('fails on a non-zero exit and still tears everything down', async () => {
     const docker = fakeDocker({ runExit: 3 });
     const logs: string[] = [];
     expect(await stage(docker, fakeBuilder().builder)({ onLog: (c) => logs.push(c) })).toBe(false);
-    expect(docker.events).toEqual(['compose config', 'load', 'compose run', 'compose down', `rmi ${IMAGE}`]);
+    expect(docker.events).toEqual(['compose config', 'load', 'compose create', 'compose run', 'compose down', `rmi ${IMAGE}`]);
     expect(logs.join('')).toContain('itest exited 3');
     expect(await readdir(work)).toEqual([]);
   });
@@ -260,14 +314,14 @@ describe('createIntegrationStage', () => {
     const docker = fakeDocker({ runExit: 124 });
     const logs: string[] = [];
     expect(await stage(docker, fakeBuilder().builder, { timeoutMs: 1000 })({ onLog: (c) => logs.push(c) })).toBe(false);
-    expect(docker.calls[1]?.timeoutMs).toBe(1000);
+    expect(docker.calls[2]?.timeoutMs).toBe(1000);
     expect(logs.join('')).toContain('ran past 1000ms');
   });
 
   it('tears down when the run throws', async () => {
     const docker = fakeDocker({ run: () => Promise.reject(new Error('compose vanished')) });
     await expect(stage(docker, fakeBuilder().builder)({ onLog: () => undefined })).rejects.toThrow('compose vanished');
-    expect(docker.events).toEqual(['compose config', 'load', 'compose run', 'compose down', `rmi ${IMAGE}`]);
+    expect(docker.events).toEqual(['compose config', 'load', 'compose create', 'compose run', 'compose down', `rmi ${IMAGE}`]);
     expect(await readdir(work)).toEqual([]);
   });
 
@@ -291,7 +345,7 @@ describe('createIntegrationStage', () => {
     const logs: string[] = [];
     const passed = await stage(docker, fakeBuilder().builder, { signal: controller.signal })({ onLog: (c) => logs.push(c) });
     expect(passed).toBe(false);
-    expect(docker.events).toEqual(['compose config', 'load', 'compose run', 'compose down', 'compose down', `rmi ${IMAGE}`]);
+    expect(docker.events).toEqual(['compose config', 'load', 'compose create', 'compose run', 'compose down', 'compose down', `rmi ${IMAGE}`]);
     expect(logs.join('')).toContain('cancelled');
     expect(await readdir(work)).toEqual([]);
   });
@@ -411,6 +465,7 @@ describe('composeModelProblems', () => {
     [{ cap_add: ['NET_ADMIN'] }, 'adds capabilities'],
     [{ devices: [{ source: '/dev/kvm', target: '/dev/kvm' }] }, 'maps devices'],
     [{ security_opt: ['seccomp=unconfined'] }, 'security_opt'],
+    [{ sysctls: { 'net.ipv4.ip_forward': '1' } }, 'sets sysctls'],
     [{ userns_mode: 'host' }, 'userns_mode'],
     [{ volumes_from: ['container:other'] }, 'volumes_from'],
     [{ external_links: ['other_db_1:db'] }, 'external_links'],
@@ -439,6 +494,20 @@ describe('composeModelProblems', () => {
     expect(text).toContain('network extra is declared');
   });
 
+  it('refuses ipam and driver_opts on the default network — Shipyard sets the subnet and bridge options', () => {
+    const model = goodModel();
+    model.networks = {
+      default: {
+        name: `${PROJECT}_default`,
+        ipam: { config: [{ subnet: '192.168.1.0/24' }] },
+        driver_opts: { [INTEGRATION_GATEWAY_MODE_OPTION]: 'nat' },
+      },
+    };
+    const text = composeModelProblems(model, ctx()).join('; ');
+    expect(text).toContain('network default sets ipam');
+    expect(text).toContain('network default sets driver_opts');
+  });
+
   it('refuses secrets read from the agent environment or outside the source, and a missing service', () => {
     const model = goodModel();
     model.secrets = { a: { environment: 'SHIPYARD_TOKEN' }, b: { file: '/etc/shadow' }, c: { file: join(dir, 'ci', 'ok.txt') } };
@@ -458,7 +527,22 @@ describe('integration names and override', () => {
   });
 
   it('only resets build when asked', () => {
-    expect(renderIntegrationOverride({ service: 's', image: 'i', resetBuild: false, networkName: 'n' })).not.toContain('!reset');
+    expect(renderIntegrationOverride({ service: 's', image: 'i', resetBuild: false, networkName: 'n', subnet: '172.30.1.0/24', bridge: 'shp-it-1' })).not.toContain('!reset');
+  });
+
+  it('allocates slots deterministically inside the pool, with bridge names iptables can match and Linux accepts', () => {
+    expect(integrationSubnetSlot('B01ABC')).toBe(integrationSubnetSlot('b01abc'));
+    const slots = new Set(Array.from({ length: 200 }, (_, i) => integrationSubnetSlot(`b${String(i)}`)));
+    expect(slots.size).toBeGreaterThan(100);
+    for (const slot of [0, 42, 255]) {
+      const { subnet, bridge } = integrationNetworkSlot(slot);
+      expect(subnet).toBe(`172.30.${String(slot)}.0/24`);
+      expect(bridge.startsWith(INTEGRATION_BRIDGE_PREFIX)).toBe(true);
+      expect(bridge.length).toBeLessThanOrEqual(15);
+    }
+    expect(INTEGRATION_SUBNET_POOL).toBe('172.30.0.0/16');
+    expect(() => integrationNetworkSlot(256)).toThrow(RangeError);
+    expect(() => integrationNetworkSlot(-1)).toThrow(RangeError);
   });
 });
 
@@ -500,7 +584,9 @@ describe('verifyBuildNetwork', () => {
   it('the install script and compose file carry the same constants', async () => {
     const root = join(import.meta.dirname, '../../../../docs/install');
     const script = await readFile(join(root, 'build-network.sh'), 'utf-8');
-    for (const value of [BUILD_NETWORK_NAME, BUILD_NETWORK_SUBNET, BUILD_NETWORK_BRIDGE, ...BUILD_BLOCKED_CIDRS]) expect(script).toContain(value);
+    for (const value of [BUILD_NETWORK_NAME, BUILD_NETWORK_SUBNET, BUILD_NETWORK_BRIDGE, ...BUILD_BLOCKED_CIDRS, INTEGRATION_SUBNET_POOL, INTEGRATION_BRIDGE_PREFIX, INTEGRATION_FORWARD_CHAIN, INTEGRATION_INPUT_CHAIN]) {
+      expect(script).toContain(value);
+    }
     const compose = await readFile(join(root, 'buildkit.compose.yml'), 'utf-8');
     expect(compose).toContain(BUILD_NETWORK_NAME);
     expect(compose).not.toMatch(/docker\.sock/);

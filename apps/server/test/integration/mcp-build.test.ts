@@ -33,6 +33,8 @@ const logger = pino({ enabled: false });
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b1c2d3e4f5'.repeat(4);
+const SHA_D = 'd'.repeat(40);
+const SHA_E = 'e'.repeat(40);
 
 let bus: Bus;
 let server: Server;
@@ -42,8 +44,14 @@ const clients: Client[] = [];
 
 class FakeGitHub implements Pick<GitHubPort, 'compare'> {
   compareResult: Awaited<ReturnType<GitHubPort['compare']>> = null;
+  /** Set to make the next `compare` calls reject instead (SHP-T-7.20). */
+  compareError: Error | null = null;
+  /** Counts every `compare` call actually made, past the cache (SHP-T-7.20). */
+  compareCalls = 0;
 
   compare(_repo: string, _base: string, _head: string): ReturnType<GitHubPort['compare']> {
+    this.compareCalls += 1;
+    if (this.compareError !== null) return Promise.reject(this.compareError);
     return Promise.resolve(this.compareResult);
   }
 }
@@ -149,6 +157,25 @@ function okOf<T>(result: ToolResult): T {
 }
 
 const requester = (label: string) => ({ repo: 'matdemers1/shipyard', branch: 'main', label });
+
+/** A recorded release for `appName` at `sha` — enough for `appStatuses` to call `compare`. */
+async function seedRelease(appName: string, sha: string): Promise<void> {
+  await db.deploy.create({
+    data: {
+      requestedSha: sha,
+      requesterLabel: 'earlier',
+      targets: {
+        create: {
+          appId: appIds.get(appName) ?? '',
+          state: 'succeeded',
+          dispatchedAt: new Date(),
+          endedAt: new Date(),
+          images: { create: [{ service: 'server', repo: `ghcr.io/matdemers1/${appName}`, sha, digest: `sha256:${'9'.repeat(64)}` }] },
+        },
+      },
+    },
+  });
+}
 
 beforeEach(async () => {
   await db.$executeRawUnsafe(
@@ -328,5 +355,40 @@ describe('shipyard_status: build state of waiting commits', () => {
     const status = okOf<{ apps: { buildSource: string; commits: { build: unknown }[] }[] }>(await call(client, 'shipyard_status', { app: 'web' }));
     expect(status.apps[0]?.buildSource).toBe('github');
     expect(status.apps[0]?.commits).toEqual([{ sha: SHA_A, message: 'unbuilt by shipyard', build: null }]);
+  });
+});
+
+describe('shipyard_status: cached compare (SHP-T-7.20, SHP-REQ-145)', () => {
+  it('two calls within 60 s make one compare per app', async () => {
+    await seedRelease('shipyard', SHA_D);
+    fakeGithub.compareResult = { status: 'ahead', aheadBy: 1, behindBy: 0, commits: [{ sha: SHA_A, message: 'a change' }] };
+
+    const client = await connect(await tokenFor('a', ['shipyard']));
+    const before = fakeGithub.compareCalls;
+    await call(client, 'shipyard_status', { app: 'shipyard' });
+    const afterFirst = fakeGithub.compareCalls;
+    expect(afterFirst).toBe(before + 1);
+
+    await call(client, 'shipyard_status', { app: 'shipyard' });
+    const afterSecond = fakeGithub.compareCalls;
+    expect(afterSecond).toBe(afterFirst);
+  });
+
+  it('a failing compare is not cached: the next call retries', async () => {
+    await seedRelease('web', SHA_E);
+    fakeGithub.compareError = new Error('GitHub is unreachable');
+
+    const client = await connect(await tokenFor('a', ['web']));
+    const before = fakeGithub.compareCalls;
+    const failed = okOf<{ apps: { commits: unknown[] }[] }>(await call(client, 'shipyard_status', { app: 'web' }));
+    // Per-app failure isolation: a thrown compare yields [] for that app, never a thrown tool call.
+    expect(failed.apps[0]?.commits).toEqual([]);
+    expect(fakeGithub.compareCalls).toBe(before + 1);
+
+    fakeGithub.compareError = null;
+    fakeGithub.compareResult = { status: 'ahead', aheadBy: 1, behindBy: 0, commits: [{ sha: SHA_A, message: 'retried' }] };
+    const retried = okOf<{ apps: { commits: { sha: string }[] }[] }>(await call(client, 'shipyard_status', { app: 'web' }));
+    expect(fakeGithub.compareCalls).toBe(before + 2);
+    expect(retried.apps[0]?.commits).toEqual([{ sha: SHA_A, message: 'retried', build: null }]);
   });
 });

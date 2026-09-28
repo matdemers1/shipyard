@@ -68,12 +68,21 @@ function directAudit(deps: ServiceDeps): (event: AuditEventInput) => Promise<voi
   };
 }
 
+export interface HandleBuildResultOptions {
+  /** Injected for tests, to force a throw from the request itself (SHP-T-7.20, SHP-REQ-139). */
+  createDeploy?: typeof createDeploy;
+}
+
 /**
  * The hook body itself, exported (in addition to `registerAutoDeploy`) so the test can call it
  * directly, twice at once on the same build, to prove the claim is race-safe (SHP-REQ-150) without
  * needing two real agents.
  */
-export async function handleBuildResult(deps: ServiceDeps, event: BuildResultEvent): Promise<void> {
+export async function handleBuildResult(
+  deps: ServiceDeps,
+  event: BuildResultEvent,
+  options: HandleBuildResultOptions = {},
+): Promise<void> {
   if (event.state !== 'succeeded') return;
 
   const app = await deps.db.app.findUnique({ where: { name: event.app }, select: { manifestYaml: true } });
@@ -116,7 +125,8 @@ export async function handleBuildResult(deps: ServiceDeps, event: BuildResultEve
       return;
     }
 
-    const result = await createDeploy(deps, caller, {
+    const doCreateDeploy = options.createDeploy ?? createDeploy;
+    const result = await doCreateDeploy(deps, caller, {
       kind: 'deploy',
       app: event.app,
       sha: event.sha,
@@ -132,9 +142,19 @@ export async function handleBuildResult(deps: ServiceDeps, event: BuildResultEve
     await recordAccepted(deps, event.buildId, result.deployId);
     deps.logger.info({ buildId: event.buildId, app: event.app, deployId: result.deployId, state: result.state }, 'auto-deploy requested');
   } catch (err) {
-    // Never let a bug here poison the build's own success record; the claim marker keeps it from
-    // ever being retried, matching "at most one auto-deploy per build" (SHP-REQ-150).
+    // Never let a bug here poison the build's own success record; overwrite the claim marker
+    // with a real, parseable refusal so BuildDetail shows something instead of the marker
+    // forever, and the claim keeps it from ever being retried (SHP-T-7.20, SHP-REQ-139,
+    // SHP-REQ-150).
+    const message = err instanceof Error ? err.message : String(err);
+    const truncated = message.length > 200 ? `${message.slice(0, 200)}…` : message;
+    const why = refusal(
+      'interrupted',
+      `The auto-deploy request failed unexpectedly: ${truncated}`,
+      'Deploy this build from the console or MCP.',
+    );
     deps.logger.error({ err, buildId: event.buildId, app: event.app }, 'auto-deploy failed');
+    await recordRefused(deps, event.buildId, why);
   }
 }
 

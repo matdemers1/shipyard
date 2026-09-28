@@ -1,8 +1,16 @@
 import { ACTIVE_STATES, parseManifestYaml, type BuildState } from '@shipyard/schema';
 import { createGitHubAdapter, type GitHubPort } from '@shipyard/sequence/github';
+import { cachedCompare, makeCompareCache } from '../apps/commits.js';
 import { recordedRelease } from '../apps/index.js';
 import type { ServiceDeps } from '../deps.js';
 import { TERMINAL_STATES } from '../deploys/service.js';
+
+/**
+ * Module-scoped so it lives for the process, across every `shipyard_status` call — a fresh
+ * `McpServer` (and `GitHubPort`, when none is injected) is built per HTTP request, but the cache
+ * must not be (SHP-T-7.20, SHP-REQ-145): two calls within 60 s make one `compare` per app.
+ */
+const compareCache = makeCompareCache();
 
 /**
  * The read-only view behind `shipyard_status` (SHP-T-2.8, SHP-REQ-145). Built from the same rows
@@ -71,7 +79,7 @@ async function waitingCommits(
   live: string,
 ): Promise<{ sha: string; message: string }[]> {
   try {
-    const comparison = await github.compare(repo, live, defaultBranch);
+    const comparison = await cachedCompare(compareCache, github, repo, live, defaultBranch);
     return comparison?.commits ?? [];
   } catch {
     return [];

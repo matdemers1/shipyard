@@ -10,6 +10,7 @@ import { startScheduler } from './schedules/runner.js';
 import { startBackups } from './jobs/backup.js';
 import { startHeartbeat } from './jobs/heartbeat.js';
 import { startBuildLogPrune } from './jobs/build-log-prune.js';
+import { startBuildReconcile } from './jobs/build-reconcile.js';
 import { createMailer } from './mail/index.js';
 import { liveRelay } from './mail/settings.js';
 
@@ -35,6 +36,8 @@ const backups = startBackups({ db, logger, config, bus }, mailer);
 const heartbeat = startHeartbeat({ db, logger, config, bus }, mailer);
 // Build logs go 30 days after their build ends (SHP-REQ-141).
 const buildLogPrune = startBuildLogPrune({ db, logger });
+// A default-branch head the push webhook missed is still built (SHP-REQ-114).
+const buildReconcile = startBuildReconcile({ db, logger, config, bus });
 
 const server = app.listen(config.PORT, () => {
   logger.info({ port: config.PORT }, 'listening');
@@ -43,7 +46,7 @@ const server = app.listen(config.PORT, () => {
 function shutdown(signal: string): void {
   logger.info({ signal }, 'shutting down');
   server.close(() => {
-    Promise.all([outbox.stop(), approvalExpiry.stop(), scheduler.stop(), backups.stop(), heartbeat.stop(), buildLogPrune.stop()])
+    Promise.all([outbox.stop(), approvalExpiry.stop(), scheduler.stop(), backups.stop(), heartbeat.stop(), buildLogPrune.stop(), buildReconcile.stop()])
       .then(() => db.$disconnect())
       .catch((err: unknown) => {
         logger.error({ err }, 'error disconnecting db');

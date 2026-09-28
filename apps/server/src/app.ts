@@ -28,6 +28,7 @@ import { restoreRouter } from './restore/index.js';
 import { systemRouter } from './system/index.js';
 import { setupRouter, type SetupDeps } from './setup/index.js';
 import { settingsRouter } from './settings/index.js';
+import { githubWebhookBody, githubWebhookRouter } from './webhooks/index.js';
 
 export interface AppDeps {
   db: Db;
@@ -65,15 +66,24 @@ export function createApp(deps: AppDeps): Express {
   const app = express();
   app.disable('x-powered-by');
   if (config.TRUST_PROXY_HOPS !== undefined) app.set('trust proxy', config.TRUST_PROXY_HOPS);
-  app.use(
-    express.json({
-      limit: '256kb',
-      // The agent signs the exact bytes it sent (SHP-D-064); verification needs them, not a re-encoding.
-      verify: (req, _res, buf) => {
-        (req as { rawBody?: Buffer }).rawBody = buf;
-      },
-    }),
-  );
+  // GitHub signs the exact bytes it sent (SHP-REQ-112): the webhook path gets them raw, up to 1 MB,
+  // and the JSON parser below never touches it.
+  const GITHUB_WEBHOOK_PATH = '/api/webhooks/github';
+  app.use(GITHUB_WEBHOOK_PATH, githubWebhookBody());
+  const json = express.json({
+    limit: '256kb',
+    // The agent signs the exact bytes it sent (SHP-D-064); verification needs them, not a re-encoding.
+    verify: (req, _res, buf) => {
+      (req as { rawBody?: Buffer }).rawBody = buf;
+    },
+  });
+  app.use((req, res, next) => {
+    if (req.path === GITHUB_WEBHOOK_PATH || Buffer.isBuffer(req.body)) {
+      next();
+      return;
+    }
+    json(req, res, next);
+  });
 
   app.use((req, res, next) => {
     const start = process.hrtime.bigint();
@@ -99,6 +109,8 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/auth', authRouter(authDeps));
   // Public: first-run setup is reachable only while no account exists (SHP-REQ-109).
   app.use('/api/setup', setupRouter({ db, logger, config, ...deps.setup }));
+  // Public: GitHub's push webhook, authenticated by its HMAC signature (SHP-REQ-112, SHP-REQ-113).
+  app.use(GITHUB_WEBHOOK_PATH, githubWebhookRouter(serviceDeps));
   app.use('/api', openapiRouter());
   app.use('/api/agent', agentRouter(serviceDeps));
   app.use('/api/apps', commitsRouter(serviceDeps));

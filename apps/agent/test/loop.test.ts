@@ -14,6 +14,7 @@ import {
   reportLeftovers,
   runLoop,
   toTargetResult,
+  trackInFlight,
   type Engine,
   type PollTarget,
   type Sleep,
@@ -159,6 +160,76 @@ function runnerContext(fs: FsPort) {
 }
 
 const noSleep: Sleep = () => Promise.resolve();
+
+describe('runLoop: builds (SHP-T-7.9)', () => {
+  const JOB = { buildId: '33333333-3333-4333-8333-333333333333', app: 'web', sha: SHA };
+
+  it('advertises the build capability only while the worker is idle, and never when builds are not configured', async () => {
+    const stop = new AbortController();
+    let idle = true;
+    const offered: unknown[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, build: JOB };
+      if (i === 2) stop.abort();
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      log: quiet,
+      signal: stop.signal,
+      sleep: noSleep,
+      builds: {
+        canTake: () => idle,
+        offer: (job) => {
+          offered.push(job);
+          idle = false;
+        },
+      },
+    });
+    expect(offered).toEqual([JOB]);
+    expect(client.calls.map((c) => c.body)).toEqual([{ waitSeconds: 25, capabilities: ['build'] }, { waitSeconds: 25 }, { waitSeconds: 25 }]);
+
+    const stop2 = new AbortController();
+    const plain = fakeClient(() => {
+      stop2.abort();
+      return { target: null, build: JOB };
+    });
+    await runLoop({ client: plain, runTarget: () => Promise.resolve(), log: quiet, signal: stop2.signal, sleep: noSleep });
+    expect(plain.calls[0]?.body).toEqual({ waitSeconds: 25 });
+  });
+
+  it('keeps polling while a build runs, and still runs a deploy target', async () => {
+    const stop = new AbortController();
+    const ran: string[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, build: JOB };
+      if (i === 1) return { target: target() };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: (t) => (ran.push(t.targetId), Promise.resolve()),
+      log: quiet,
+      signal: stop.signal,
+      sleep: noSleep,
+      builds: { canTake: () => true, offer: () => undefined },
+    });
+    expect(ran).toEqual([target().targetId]);
+  });
+
+  it('trackInFlight says when a target is running', async () => {
+    let release: () => void = () => undefined;
+    const tracked = trackInFlight(() => new Promise<void>((r) => (release = r)));
+    expect(tracked.inFlight()).toBe(false);
+    const running = tracked.run(target());
+    expect(tracked.inFlight()).toBe(true);
+    release();
+    await running;
+    expect(tracked.inFlight()).toBe(false);
+  });
+});
 
 describe('runLoop', () => {
   it('polls again at once after an empty poll', async () => {
@@ -496,6 +567,9 @@ describe('loadAgentConfig', () => {
       agentVersion: 'abc123',
       selfContainerId: undefined,
       dockerHost: undefined,
+      buildkitAddr: undefined,
+      buildDockerConfig: undefined,
+      buildTmpDir: '/data/shipyard/agent/build-tmp',
     });
     expect(loadAgentConfig({ ...base, SHIPYARD_AGENT_VERSION: '0.2.0', SHIPYARD_VERSION: 'abc' }, () => false).agentVersion).toBe('0.2.0');
   });
@@ -504,6 +578,22 @@ describe('loadAgentConfig', () => {
     expect(loadAgentConfig({ ...base, HOSTNAME: 'f00dcafe' }, () => true).selfContainerId).toBe('f00dcafe');
     expect(loadAgentConfig({ ...base, HOSTNAME: 'zima' }, () => false).selfContainerId).toBeUndefined();
     expect(loadAgentConfig({ ...base, HOSTNAME: 'x', SHIPYARD_SELF_CONTAINER_ID: 'abc' }, () => true).selfContainerId).toBe('abc');
+  });
+
+  it('reads the build settings; BUILDKIT_ADDR must be a unix socket or tcp address', () => {
+    const config = loadAgentConfig(
+      { ...base, BUILDKIT_ADDR: 'unix:///run/buildkit/buildkitd.sock', BUILD_DOCKER_CONFIG: '/build-docker-config', BUILD_TMP_DIR: '/tmp/b' },
+      () => false,
+    );
+    expect(config).toMatchObject({
+      buildkitAddr: 'unix:///run/buildkit/buildkitd.sock',
+      buildDockerConfig: '/build-docker-config',
+      buildTmpDir: '/tmp/b',
+    });
+    expect(loadAgentConfig({ ...base, BUILDKIT_ADDR: 'tcp://buildkitd:1234' }, () => false).buildkitAddr).toBe('tcp://buildkitd:1234');
+    expect(loadAgentConfig({ ...base, BUILDKIT_ADDR: '  ' }, () => false).buildkitAddr).toBeUndefined();
+    expect(() => loadAgentConfig({ ...base, BUILDKIT_ADDR: '/run/buildkit.sock' }, () => false)).toThrow(AgentConfigError);
+    expect(() => loadAgentConfig({ ...base, BUILDKIT_ADDR: 'docker-container://x' }, () => false)).toThrow(AgentConfigError);
   });
 
   it('refuses a missing server or data root', () => {

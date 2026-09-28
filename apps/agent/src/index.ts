@@ -3,12 +3,15 @@ import pino from 'pino';
 import {
   Journal,
   Ledger,
+  createBuildKitAdapter,
   createDockerAdapter,
   createGitHubAdapter,
   createRegistryAdapter,
   dockerConfigCredentials,
   isAppLockLive,
+  loadAgentPrivateKey,
   loadManifests,
+  lockPath,
   nodeFs,
   recoverInterrupted,
   runArgv,
@@ -19,11 +22,12 @@ import {
   type Log,
   type SequencePorts,
 } from '@shipyard/sequence';
+import { createBuildWorker, type BuildWorker } from './build.js';
 import { createAgentClient, type FetchLike } from './client.js';
 import { loadAgentConfig } from './config.js';
 import { waitForConfirmation } from './enrol.js';
 import { loadOrCreateIdentity } from './identity.js';
-import { POLL_TIMEOUT_MS, createTargetRunner, fileTargetStore, reportLeftovers, runLoop, targetStorePath } from './loop.js';
+import { POLL_TIMEOUT_MS, createTargetRunner, fileTargetStore, reportLeftovers, runLoop, targetStorePath, trackInFlight } from './loop.js';
 import { buildReport, manifestsHash, startReporting } from './report.js';
 
 /**
@@ -156,10 +160,67 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     signal: stopping.signal,
   });
 
+  // A deploy in flight on this host holds the next build stage (SHP-REQ-130): this agent running a
+  // target, or any live app lock — which is also how a host-CLI deploy shows.
+  const targets = trackInFlight(runTarget);
+  const locksDir = lockPath(config.dataRoot, 'x').slice(0, -'/x.lock'.length);
+  const anyLockLive = async (): Promise<boolean> => {
+    let files: { path: string }[];
+    try {
+      files = await ports.fs.list(locksDir);
+    } catch {
+      return false;
+    }
+    for (const file of files) {
+      const name = file.path.slice(file.path.lastIndexOf('/') + 1);
+      if (name.endsWith('.lock') && (await isAppLockLive(config.dataRoot, name.slice(0, -'.lock'.length)))) return true;
+    }
+    return false;
+  };
+
+  // Builds (SHP-T-7.9): only when BUILDKIT_ADDR names a buildkitd; otherwise the capability is
+  // never advertised and the server never sends a build.
+  let builds: BuildWorker | undefined;
+  if (config.buildkitAddr !== undefined) {
+    await ports.fs.mkdirp(config.buildTmpDir);
+    builds = createBuildWorker({
+      client,
+      manifests: async () => new Map([...(await loadManifests(ports.fs, config.dataRoot))].map(([name, loaded]) => [name, loaded.manifest])),
+      github,
+      buildkit: createBuildKitAdapter({
+        addr: config.buildkitAddr,
+        tmpDir: config.buildTmpDir,
+        ...(config.buildDockerConfig === undefined ? {} : { dockerConfigDir: config.buildDockerConfig }),
+      }),
+      docker: ports.docker,
+      fs: ports.fs,
+      dataRoot: config.dataRoot,
+      tmpDir: config.buildTmpDir,
+      privateKey: await loadAgentPrivateKey(config.dataRoot),
+      deployInFlight: async () => targets.inFlight() || (await anyLockLive()),
+      log,
+      clock: ports.clock,
+    });
+    logger.info({ buildkit: config.buildkitAddr }, 'builds enabled');
+  }
+  const worker = builds;
+
   try {
-    await runLoop({ client: pollClient, runTarget, log: logger, signal: stopping.signal });
+    await runLoop({
+      client: pollClient,
+      runTarget: targets.run,
+      log: logger,
+      signal: stopping.signal,
+      ...(worker === undefined ? {} : { builds: { canTake: () => !worker.busy(), offer: (job) => void worker.offer(job) } }),
+    });
   } finally {
     reporting.stop();
+    if (worker !== undefined && worker.busy()) {
+      // Stop at the next stage boundary and report it cancelled; a build still stuck in a stage
+      // when the process exits is failed `interrupted` by the server's stale sweep.
+      worker.stop();
+      await Promise.race([worker.idle(), new Promise((resolve) => setTimeout(resolve, 8_000).unref())]);
+    }
   }
 }
 

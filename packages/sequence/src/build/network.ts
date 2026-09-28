@@ -1,6 +1,7 @@
 import { refusal } from '@shipyard/schema';
 
 import { RefusalError } from '../ports.js';
+import type { BuildNetworkInfo, DockerPort } from '../ports.js';
 
 /**
  * The build network (SHP-T-7.8, SHP-REQ-123, SHP-REQ-124).
@@ -114,25 +115,15 @@ export function integrationNetworkSlot(slot: number): { subnet: string; bridge: 
   return { subnet: `172.30.${String(slot)}.0/24`, bridge: `${INTEGRATION_BRIDGE_PREFIX}${String(slot)}` };
 }
 
-/** What the agent can observe about a Docker network. */
-export interface BuildNetworkInfo {
-  name: string;
-  /** IPv4/IPv6 subnets from the network's IPAM config. */
-  subnets: string[];
-  internal: boolean;
-  enableIPv6: boolean;
-  /** The network's driver options (`com.docker.network.bridge.name`, …). */
-  options: Record<string, string>;
-}
+/** What the agent can observe about a Docker network. Now defined on `ports.ts`; re-exported here. */
+export type { BuildNetworkInfo } from '../ports.js';
 
 /**
- * The narrow Docker seam `verifyBuildNetwork` needs: a network inspect, null when absent. Not yet on
- * `DockerPort` (ports.ts is shared); the lead adds `inspectNetwork` there, backed by dockerode's
- * `getNetwork(name).inspect()`, and the agent passes its DockerPort straight in.
+ * The narrow Docker seam `verifyBuildNetwork` needs: a network inspect, null when absent. `DockerPort`
+ * carries `inspectNetwork` directly (SHP-T-7.18), backed by dockerode's `getNetwork(name).inspect()`;
+ * this alias exists only so a caller written against the old local seam still compiles.
  */
-export interface NetworkInspector {
-  inspectNetwork(name: string): Promise<BuildNetworkInfo | null>;
-}
+export type NetworkInspector = Pick<DockerPort, 'inspectNetwork'>;
 
 const FIX = `Run docs/install/build-network.sh as root on the Docker host (once, idempotent), then retry the build.`;
 
@@ -144,7 +135,10 @@ function refuse(message: string): never {
  * Preflight before any build (SHP-REQ-123, SHP-REQ-124): refuses when the build network is
  * missing or is not the one the script makes. Resolves with what it saw when it passes.
  */
-export async function verifyBuildNetwork(docker: NetworkInspector, name: string = BUILD_NETWORK_NAME): Promise<BuildNetworkInfo> {
+export async function verifyBuildNetwork(docker: Pick<DockerPort, 'inspectNetwork'>, name: string = BUILD_NETWORK_NAME): Promise<BuildNetworkInfo> {
+  if (docker.inspectNetwork === undefined) {
+    refuse(`This Docker port has no inspectNetwork; it cannot check the build network ${name}.`);
+  }
   const info = await docker.inspectNetwork(name);
   if (info === null) refuse(`The build network ${name} does not exist, so build steps would have no isolation.`);
   if (!info.subnets.includes(BUILD_NETWORK_SUBNET)) {

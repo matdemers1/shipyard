@@ -148,6 +148,9 @@ export async function runBuildStages(options: RunBuildStagesOptions): Promise<Bu
       const integrationLog = collector('integration');
       const passed = await options.integration({ onLog: integrationLog.onLog });
       if (!passed) {
+        // A cancel during the hook itself (SHP-REQ-143) is reported as cancelled, not failed —
+        // the hook resolving false is what a mid-run abort looks like from the outside.
+        if (await cancelled()) return CANCELLED;
         await progress('integration', 'failed', integrationLog.text());
         return { state: 'failed', digests: {}, failedStage: 'integration' };
       }

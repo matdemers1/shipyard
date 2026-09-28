@@ -93,6 +93,17 @@ export interface ExecResult {
   stderr: string;
 }
 
+/** What the agent can observe about a Docker network (SHP-T-7.18). */
+export interface BuildNetworkInfo {
+  name: string;
+  /** IPv4/IPv6 subnets from the network's IPAM config. */
+  subnets: string[];
+  internal: boolean;
+  enableIPv6: boolean;
+  /** The network's driver options (`com.docker.network.bridge.name`, …). */
+  options: Record<string, string>;
+}
+
 export interface RunningContainer {
   id: string;
   service: string;
@@ -133,6 +144,22 @@ export interface DockerPort {
   /** Local image references (`repo@digest` / `repo:tag`) for a repository, with sizes and creation. */
   images(imageRepo: string): Promise<{ id: string; repoTags: string[]; repoDigests: string[]; created: number; size: number }[]>;
   removeImage(id: string): Promise<void>;
+  /**
+   * `docker load -i <tar>` semantics (SHP-T-7.18): loads an image tar BuildKit exported as
+   * `type=docker`. Never throws on a non-zero exit; returns it.
+   *
+   * Optional so existing `DockerPort` fakes (object literals constructed elsewhere) do not have to
+   * implement it; a caller that needs it — the integration stage — refuses clearly when the
+   * configured port lacks it.
+   */
+  loadImage?(tarPath: string): Promise<ExecResult>;
+  /**
+   * A network inspect for the build-network preflight (SHP-T-7.18): the network's subnets, internal
+   * and IPv6 flags, and driver options, or null on a 404 (the network does not exist).
+   *
+   * Optional for the same reason as `loadImage`; `verifyBuildNetwork` refuses clearly when absent.
+   */
+  inspectNetwork?(name: string): Promise<BuildNetworkInfo | null>;
 }
 
 // ─── BuildKit (SHP-T-7.7) ────────────────────────────────────────────────────
@@ -156,6 +183,11 @@ export interface SolveRequest {
   labels: Record<string, string>;
   /** When present, export the image and push it to `ref` (`<repo>:sha-<40hex>`); otherwise build only. */
   push?: { ref: string };
+  /**
+   * When present, export the image as a docker-loadable tar instead of pushing (SHP-T-7.18):
+   * `--output type=docker,name=<name>,dest=<dest>`. Mutually exclusive with `push`.
+   */
+  dockerTar?: { name: string; dest: string };
 }
 
 export interface SolveResult {

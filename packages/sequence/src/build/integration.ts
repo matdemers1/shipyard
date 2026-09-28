@@ -5,7 +5,7 @@ import type { Manifest } from '@shipyard/schema';
 import { Document } from 'yaml';
 
 import { RefusalError } from '../ports.js';
-import type { BuildSecretMount, ComposeTarget, DockerPort, ExecResult, Log, SolveRequest, SolveResult } from '../ports.js';
+import type { BuildKitPort, BuildSecretMount, ComposeTarget, DockerPort, ExecResult, Log } from '../ports.js';
 import { INTEGRATION_GATEWAY_MODE_OPTION, INTEGRATION_SUBNET_SLOTS, integrationNetworkSlot, integrationSubnetSlot } from './network.js';
 
 /**
@@ -53,24 +53,20 @@ export interface DockerTarExport {
 }
 
 /**
- * The export seam. `SolveRequest` (ports.ts) can only build or push; it cannot yet name a
- * `type=docker` output. Until it gains one, the agent wires this with a one-liner over its
- * `BuildKitPort` (see the SHP-T-7.8 hand-off), and tests pass a fake.
+ * `SolveRequest.dockerTar` (SHP-T-7.18) is now the real export seam on `BuildKitPort.solve`. These
+ * aliases exist only so a caller written against the old local seams (SHP-T-7.8's hand-off) still
+ * compiles; the stage itself calls `buildkit.solve({ ...req, dockerTar: out }, …)` directly.
  */
-export interface TestImageBuilder {
-  solveToDockerTar(req: SolveRequest, out: DockerTarExport, onLog?: (chunk: string) => void, signal?: AbortSignal): Promise<SolveResult>;
-}
+export type TestImageBuilder = Pick<BuildKitPort, 'solve'>;
 
-/** `docker load -i <tar>`: not yet on `DockerPort` (ports.ts is shared). Never throws on a non-zero exit. */
-export interface ImageLoader {
-  loadImage(tarPath: string): Promise<ExecResult>;
-}
+/** `docker load -i <tar>`: now `DockerPort.loadImage` (SHP-T-7.18). Never throws on a non-zero exit. */
+export type ImageLoader = Pick<DockerPort, 'loadImage'>;
 
-export type IntegrationDocker = Pick<DockerPort, 'compose' | 'removeImage'> & ImageLoader;
+export type IntegrationDocker = Pick<DockerPort, 'compose' | 'removeImage' | 'loadImage'>;
 
 export interface IntegrationStageOptions {
   docker: IntegrationDocker;
-  buildkit: TestImageBuilder;
+  buildkit: Pick<BuildKitPort, 'solve'>;
   /** The extracted source directory (from `withBuildSource`). */
   dir: string;
   manifest: Manifest;
@@ -304,6 +300,10 @@ export function createIntegrationStage(options: IntegrationStageOptions): Integr
   const imageRef = integrationImageRef(options.manifest.name, options.buildId);
   const timeoutMs = options.timeoutMs ?? DEFAULT_INTEGRATION_TIMEOUT_MS;
   const { docker, buildkit, signal } = options;
+  if (docker.loadImage === undefined) {
+    throw new RefusalError(refusal('invalid_request', 'this Docker port has no loadImage; the integration stage cannot load its built test image'));
+  }
+  const loadImage = docker.loadImage;
   const aborted = (): boolean => signal?.aborted === true;
 
   return async ({ onLog }) => {
@@ -392,15 +392,15 @@ export function createIntegrationStage(options: IntegrationStageOptions): Integr
       const tar = join(work, 'image.tar');
       if (aborted()) return false;
       onLog(`integration: exporting target ${build?.testTarget ?? 'test'} as ${imageRef}\n`);
-      const solved = await buildkit.solveToDockerTar(
+      const solved = await buildkit.solve(
         {
           contextDir: dir,
           dockerfile: join(dir, build?.dockerfile ?? 'Dockerfile'),
           target: build?.testTarget ?? 'test',
           secrets: secretMounts,
           labels: { 'org.opencontainers.image.revision': options.sha },
+          dockerTar: { name: imageRef, dest: tar },
         },
-        { name: imageRef, dest: tar },
         onLog,
         signal,
       );
@@ -414,7 +414,7 @@ export function createIntegrationStage(options: IntegrationStageOptions): Integr
       }
       if (aborted()) return false;
       imageLoaded = true;
-      const loaded = await docker.loadImage(tar);
+      const loaded = await loadImage(tar);
       emit(onLog, loaded);
       await rm(tar, { force: true });
       if (loaded.exitCode !== 0) {

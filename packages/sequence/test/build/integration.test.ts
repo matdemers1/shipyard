@@ -30,7 +30,7 @@ import type { BuildNetworkInfo } from '../../src/build/network.js';
 import { runBuildStages } from '../../src/build/stages.js';
 import type { StageProgress } from '../../src/build/stages.js';
 import { RefusalError } from '../../src/ports.js';
-import type { ComposeTarget, ExecResult, SolveRequest } from '../../src/ports.js';
+import type { BuildKitPort, ComposeTarget, DockerPort, ExecResult, SolveRequest } from '../../src/ports.js';
 
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 const BUILD_ID = 'b01abc';
@@ -150,7 +150,9 @@ function fakeBuilder(opts: { exit?: number } = {}): { exports: Export[]; builder
   return {
     exports,
     builder: {
-      async solveToDockerTar(req, out) {
+      async solve(req) {
+        const out = req.dockerTar;
+        if (out === undefined) throw new Error('expected a dockerTar export');
         const secretContents = await Promise.all(req.secrets.map((s) => readFile(s.src, 'utf-8')));
         exports.push({ req: structuredClone(req), out: { ...out }, secretContents });
         await writeFile(out.dest, out.name);
@@ -443,6 +445,34 @@ describe('createIntegrationStage', () => {
     expect(progress.map((p) => `${p.stage}:${p.state}`)).toEqual(['test:running', 'test:succeeded', 'integration:running', 'integration:failed']);
     expect(docker.removed).toEqual([IMAGE]);
   });
+
+  it('accepts a plain DockerPort and BuildKitPort — no local seam (SHP-T-7.18)', async () => {
+    // A full DockerPort, structurally — extra methods the stage never calls included, to prove
+    // `IntegrationDocker` is a Pick of the real port rather than a separate local interface.
+    const composeFake = fakeDocker();
+    const fullDocker: DockerPort = {
+      compose: composeFake.compose,
+      containers: () => Promise.resolve([]),
+      probeHealth: () => Promise.reject(new Error('unused')),
+      freeBytes: () => Promise.resolve(0),
+      images: () => Promise.resolve([]),
+      removeImage: composeFake.removeImage,
+      loadImage: (tarPath) => Promise.resolve({ exitCode: 0, stdout: `Loaded image: ${tarPath}\n`, stderr: '' }),
+      inspectNetwork: () => Promise.resolve(null),
+    };
+    const fullBuildkit: BuildKitPort = {
+      solve: fakeBuilder().builder.solve,
+      prune: () => Promise.resolve(),
+      du: () => Promise.resolve({ bytes: 0 }),
+    };
+    const passed = await stage(fullDocker, fullBuildkit)({ onLog: () => undefined });
+    expect(passed).toBe(true);
+  });
+
+  it('refuses clearly when the configured Docker port has no loadImage', () => {
+    const docker: IntegrationDocker = { compose: fakeDocker().compose, removeImage: fakeDocker().removeImage };
+    expect(() => stage(docker, fakeBuilder().builder)).toThrow(RefusalError);
+  });
 });
 
 describe('composeModelProblems', () => {
@@ -558,6 +588,24 @@ describe('verifyBuildNetwork', () => {
 
   it('passes for the network the script creates', async () => {
     await expect(verifyBuildNetwork(inspector(good()))).resolves.toEqual(good());
+  });
+
+  it('accepts a plain DockerPort — no local NetworkInspector seam (SHP-T-7.18)', async () => {
+    const port: DockerPort = {
+      compose: () => Promise.reject(new Error('unused')),
+      containers: () => Promise.resolve([]),
+      probeHealth: () => Promise.reject(new Error('unused')),
+      freeBytes: () => Promise.resolve(0),
+      images: () => Promise.resolve([]),
+      removeImage: () => Promise.resolve(),
+      inspectNetwork: (name) => Promise.resolve(name === BUILD_NETWORK_NAME ? good() : null),
+    };
+    await expect(verifyBuildNetwork(port)).resolves.toEqual(good());
+  });
+
+  it('refuses clearly when the configured Docker port has no inspectNetwork', async () => {
+    const port: Pick<DockerPort, 'inspectNetwork'> = {};
+    await expect(verifyBuildNetwork(port)).rejects.toBeInstanceOf(RefusalError);
   });
 
   it('refuses a missing network, naming the install script as the fix', async () => {

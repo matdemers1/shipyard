@@ -219,6 +219,35 @@ describe('runBuildStages', () => {
     expect(before.calls).toHaveLength(0);
   });
 
+  it('SHP-REQ-143: a cancel during the integration hook itself yields cancelled, not failed at integration, with no push', async () => {
+    const { calls, port } = fakeBuildKit();
+    const progress: StageProgress[] = [];
+    let cancelledFlag = false;
+    const result = await runBuildStages(
+      base(port, progress, {
+        shouldCancel: () => cancelledFlag,
+        integration: () => {
+          // The hook itself observed the cancel and tore down mid-run, resolving false.
+          cancelledFlag = true;
+          return Promise.resolve(false);
+        },
+      }),
+    );
+    expect(result).toEqual({ state: 'cancelled', digests: {} });
+    expect(calls.map((c) => c.req.target)).toEqual(['test']);
+    expect(calls.filter((c) => c.req.push !== undefined)).toHaveLength(0);
+    expect(progress.map((p) => `${p.stage}:${p.state}`)).toEqual(['test:running', 'test:succeeded', 'integration:running']);
+  });
+
+  it('an integration hook returning false without a cancel still fails at integration', async () => {
+    const { calls, port } = fakeBuildKit();
+    const progress: StageProgress[] = [];
+    const result = await runBuildStages(base(port, progress, { integration: () => Promise.resolve(false) }));
+    expect(result).toEqual({ state: 'failed', digests: {}, failedStage: 'integration' });
+    expect(calls.filter((c) => c.req.push !== undefined)).toHaveLength(0);
+    expect(progress.at(-1)).toMatchObject({ stage: 'integration', state: 'failed' });
+  });
+
   it('fails at push when a release target returns no digest, and at build on a non-zero exit', async () => {
     const noDigest = fakeBuildKit({ noDigestFor: 'web' });
     const progress: StageProgress[] = [];

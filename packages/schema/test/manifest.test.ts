@@ -105,10 +105,10 @@ describe('build and autoDeploy (SHP-T-7.2, SHP-REQ-117)', () => {
     health: { service: 'server', port: 3000, path: '/health' },
   };
 
-  it('parses without a build block exactly as today, with autoDeploy defaulted false', () => {
+  it('parses without a build block exactly as today, with autoDeploy left unset', () => {
     const parsed = Manifest.parse(base);
     expect(parsed.build).toBeUndefined();
-    expect(parsed.autoDeploy).toBe(false);
+    expect(parsed.autoDeploy).toBeUndefined();
   });
 
   it('accepts build.source shipyard with releaseTargets naming exactly every service', () => {

@@ -96,11 +96,13 @@ build:
     argv: [pnpm, test:integration]
   secrets:                            # secret NAMES only; values never appear in the manifest
     - npm_token
-autoDeploy: true                      # deploy the moment a Shipyard-built image is verified; requires source: shipyard
+autoDeploy: true                      # request one deploy per green Shipyard build; requires source: shipyard
 ```
 
 - `dockerfile`, `integration.compose` and every target/service/secret name are validated the same
   way as every other host-local path and name in this file — relative, no `..`, no shell string.
   `releaseTargets` must name every key in `services`, and no extras.
-- `autoDeploy` defaults to `false` and can only be `true` when `build.source` is `shipyard` — an
+- `autoDeploy` is off when absent and can only be `true` when `build.source` is `shipyard` — an
   app built by GitHub Actions is still deployed by request (console, MCP, or token), same as today.
+  An auto-deploy is an ordinary deploy request: every gate, freeze, lock and approval still applies,
+  and a refusal is recorded on the build, never retried (SHP-REQ-138, SHP-REQ-139).

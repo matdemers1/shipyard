@@ -121,8 +121,12 @@ export const Manifest = z
      * the GitHub workflow run for the SHA, same as `{ source: 'github' }`.
      */
     build: BuildConfig.optional(),
-    /** Deploy the moment a Shipyard-built image is verified, no request needed. Requires `build.source: shipyard`. */
-    autoDeploy: z.boolean().default(false),
+    /**
+     * Request one deploy of each successful Shipyard build through the normal sequence, every gate,
+     * freeze, lock and approval applying (SHP-REQ-138). Requires `build.source: shipyard`. Undefined
+     * means false; optional rather than defaulted so hand-built Manifest values need not name it.
+     */
+    autoDeploy: z.boolean().optional(),
   })
   .refine((m) => !m.autoDeploy || m.build?.source === 'shipyard', {
     message: 'autoDeploy requires build.source to be shipyard',

@@ -507,7 +507,10 @@ export interface ProgressOutcome {
  */
 export async function recordBuildProgress(deps: ServiceDeps, progress: BuildProgress): Promise<ProgressOutcome> {
   const { db } = deps;
-  const build = await db.build.findUnique({ where: { id: progress.buildId }, select: { state: true, cancelRequestedAt: true } });
+  const build = await db.build.findUnique({
+    where: { id: progress.buildId },
+    select: { state: true, cancelRequestedAt: true, sha: true, app: { select: { name: true } } },
+  });
   if (build === null) return { accepted: false, cancel: true };
   if (build.state !== 'running') return { accepted: false, cancel: isTerminalBuild(build.state) };
 
@@ -524,6 +527,15 @@ export async function recordBuildProgress(deps: ServiceDeps, progress: BuildProg
       : []),
   ]);
   deps.bus.publish(`build:${progress.buildId}`);
+  if (progress.state !== 'running') {
+    await runBuildHooks(deps, 'onStageEnd', {
+      buildId: progress.buildId,
+      app: build.app.name,
+      sha: build.sha,
+      stage: progress.stage,
+      state: progress.state,
+    });
+  }
   return { accepted: true, cancel: build.cancelRequestedAt !== null };
 }
 
@@ -539,10 +551,15 @@ export interface ResultOutcome {
  */
 export async function recordBuildResult(deps: ServiceDeps, result: BuildResult): Promise<ResultOutcome> {
   const { db } = deps;
-  const row = await db.build.findUnique({ where: { id: result.buildId }, select: { state: true, app: { select: { name: true } } } });
+  const row = await db.build.findUnique({
+    where: { id: result.buildId },
+    select: { state: true, sha: true, app: { select: { name: true } } },
+  });
   if (row === null) return { accepted: false, state: null };
+  // Only a claimed (running) build can end by a result: a queued one was never dispatched, and a
+  // queued build that is cancelled ends through requestCancel, not here.
   const updated = await db.build.updateMany({
-    where: { id: result.buildId, state: { in: [...OPEN_BUILD_STATES] } },
+    where: { id: result.buildId, state: 'running' },
     data: {
       state: result.state,
       digests: result.digests,
@@ -555,6 +572,75 @@ export async function recordBuildResult(deps: ServiceDeps, result: BuildResult):
   deps.logger.info({ buildId: result.buildId, app: row.app.name, state: result.state }, 'build ended');
   deps.bus.publish(`build:${result.buildId}`);
   deps.bus.publish(`app:${row.app.name}`);
-  deps.bus.publish('work');
+    deps.bus.publish('work');
+  await runBuildHooks(deps, 'onResult', {
+    buildId: result.buildId,
+    app: row.app.name,
+    sha: row.sha,
+    state: result.state,
+    digests: result.digests,
+    ...(result.refusal !== undefined ? { refusal: result.refusal } : {}),
+    ...(result.failedStage !== undefined ? { failedStage: result.failedStage } : {}),
+  });
   return { accepted: true, state: result.state };
+}
+
+// ─── Hooks (SHP-P-7) ─────────────────────────────────────────────────────────
+//
+// What happens after a stage or a build ends — commit statuses and Foreman (SHP-T-7.15), the
+// auto-deploy (SHP-T-7.14) — registers here instead of editing this file. Keyed by the Bus, which
+// is one per app instance, so two apps in one test process never see each other's hooks. A hook
+// runs after the row is committed; it is awaited, and its failure is logged, never thrown into the
+// agent's report.
+
+export interface BuildStageEndEvent {
+  buildId: string;
+  app: string;
+  sha: string;
+  stage: BuildProgress['stage'];
+  state: Exclude<BuildProgress['state'], 'running'>;
+}
+
+export interface BuildResultEvent {
+  buildId: string;
+  app: string;
+  sha: string;
+  state: BuildResult['state'];
+  digests: BuildResult['digests'];
+  refusal?: NonNullable<BuildResult['refusal']>;
+  failedStage?: NonNullable<BuildResult['failedStage']>;
+}
+
+export interface BuildHooks {
+  onStageEnd?: (deps: ServiceDeps, event: BuildStageEndEvent) => Promise<void>;
+  onResult?: (deps: ServiceDeps, event: BuildResultEvent) => Promise<void>;
+}
+
+const hooksByBus = new WeakMap<ServiceDeps['bus'], BuildHooks[]>();
+
+/** Registers hooks for every build recorded through this app's Bus. Returns an unregister. */
+export function addBuildHooks(bus: ServiceDeps['bus'], hooks: BuildHooks): () => void {
+  const list = hooksByBus.get(bus) ?? [];
+  list.push(hooks);
+  hooksByBus.set(bus, list);
+  return () => {
+    const current = hooksByBus.get(bus) ?? [];
+    hooksByBus.set(bus, current.filter((h) => h !== hooks));
+  };
+}
+
+async function runBuildHooks<K extends keyof BuildHooks>(
+  deps: ServiceDeps,
+  kind: K,
+  event: K extends 'onStageEnd' ? BuildStageEndEvent : BuildResultEvent,
+): Promise<void> {
+  for (const hooks of hooksByBus.get(deps.bus) ?? []) {
+    const hook = hooks[kind] as ((d: ServiceDeps, e: typeof event) => Promise<void>) | undefined;
+    if (hook === undefined) continue;
+    try {
+      await hook(deps, event);
+    } catch (err) {
+      deps.logger.error({ err, buildId: event.buildId, hook: kind }, 'build hook failed');
+    }
+  }
 }

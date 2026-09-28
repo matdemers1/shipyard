@@ -20,6 +20,7 @@ import {
   type BuildDetail,
   type EnqueuedBuild,
 } from '../../src/builds/index.js';
+import { addBuildHooks } from '../../src/builds/service.js';
 import { loadConfig } from '../../src/config.js';
 import { createDb, type Db } from '../../src/db.js';
 import type { ServiceDeps } from '../../src/deps.js';
@@ -573,5 +574,61 @@ describe('GET /api/builds/:id/events', () => {
     const token = await issueToken(cookie, ['toy']);
     const res = await request(app).get(`/api/builds/${q.buildId}/events`).set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(403);
+  });
+});
+
+describe('hooks and the running-only result (SHP-P-7 pre-flight)', () => {
+  it('runs onStageEnd after a stage ends and onResult after a build ends, with the committed row', async () => {
+    await seedApp('toy');
+    const q = await enqueue('toy', sha('a'));
+    await claimNextBuild(deps);
+    const seen: string[] = [];
+    const remove = addBuildHooks(bus, {
+      onStageEnd: async (_d, e) => {
+        const run = await db.buildStageRun.findUniqueOrThrow({ where: { buildId_stage: { buildId: e.buildId, stage: e.stage } } });
+        seen.push(`stage:${e.app}:${e.stage}:${e.state}:${run.state}`);
+      },
+      onResult: async (_d, e) => {
+        const row = await db.build.findUniqueOrThrow({ where: { id: e.buildId } });
+        seen.push(`result:${e.app}:${e.sha.slice(0, 7)}:${e.state}:${row.state}`);
+      },
+    });
+    await recordBuildProgress(deps, { buildId: q.buildId, stage: 'test', state: 'running', at: at() });
+    await recordBuildProgress(deps, { buildId: q.buildId, stage: 'test', state: 'succeeded', at: at() });
+    await recordBuildResult(deps, { buildId: q.buildId, state: 'succeeded', digests: { web: DIGEST } });
+    // A replayed result fires nothing.
+    await recordBuildResult(deps, { buildId: q.buildId, state: 'succeeded', digests: { web: DIGEST } });
+    remove();
+    expect(seen).toEqual(['stage:toy:test:succeeded:succeeded', `result:toy:${sha('a').slice(0, 7)}:succeeded:succeeded`]);
+  });
+
+  it('a failing hook is logged and never breaks the report, and hooks on another Bus never run', async () => {
+    await seedApp('toy');
+    const q = await enqueue('toy', sha('a'));
+    await claimNextBuild(deps);
+    const other = new Bus();
+    let otherCalls = 0;
+    addBuildHooks(other, {
+      onResult: () => {
+        otherCalls += 1;
+        return Promise.resolve();
+      },
+    });
+    addBuildHooks(bus, { onResult: () => Promise.reject(new Error('boom')) });
+    expect(await recordBuildResult(deps, { buildId: q.buildId, state: 'failed', digests: {}, failedStage: 'test' })).toEqual({
+      accepted: true,
+      state: 'failed',
+    });
+    expect(otherCalls).toBe(0);
+  });
+
+  it('refuses a result for a build that was never claimed', async () => {
+    await seedApp('toy');
+    const q = await enqueue('toy', sha('a'));
+    expect(await recordBuildResult(deps, { buildId: q.buildId, state: 'succeeded', digests: { web: DIGEST } })).toEqual({
+      accepted: false,
+      state: 'queued',
+    });
+    expect((await db.build.findUniqueOrThrow({ where: { id: q.buildId } })).state).toBe('queued');
   });
 });

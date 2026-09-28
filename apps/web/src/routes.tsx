@@ -7,6 +7,8 @@ import { AcceptInvite } from './screens/AcceptInvite';
 import { Account } from './screens/Account';
 import { Agent } from './screens/Agent';
 import { AppDetail } from './screens/AppDetail';
+import { BuildDetail } from './screens/BuildDetail';
+import { Builds } from './screens/Builds';
 import { DeployProgress } from './screens/DeployProgress';
 import { DeployRecord } from './screens/DeployRecord';
 import { Home } from './screens/Home';
@@ -160,6 +162,8 @@ export function AppRoutes() {
         <Route path="apps/:app/restore" element={<Restore />} />
         <Route path="deploys/:id" element={<DeployRecord />} />
         <Route path="deploys/:id/live" element={<DeployProgress />} />
+        <Route path="builds" element={<Builds />} />
+        <Route path="builds/:id" element={<BuildDetail />} />
         <Route path="timeline" element={<Timeline />} />
         <Route path="schedules" element={<Schedules />} />
         <Route

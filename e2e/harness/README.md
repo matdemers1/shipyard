@@ -16,10 +16,12 @@ pnpm --filter e2e test:unit       # the fake GitHub's logic only, no Docker
 | `harness/harness.ts` | `startHarness()` brings the stack up under a fresh project `shp-e2e-<id>`, polls `docker info` against dind, the registry's `/v2/` and the fake GitHub until they answer, and returns `{ project, registryHostPort, dockerHost, fakeGithubUrl, … , stop() }`. `stop()` runs `down -v` and removes the host tags it made; a failed start tears itself down too. |
 | `buildToyImage({ mode, schema, revision, contract? })` | Builds `toy-app/` on the host daemon as `registry:5000/toy/app:sha-<revision>`, loads it into dind (`docker save \| docker load`), pushes it from dind, then deletes dind's copy so a deploy genuinely pulls. Returns the digest the push reported, confirmed against the registry. |
 | `deployFromManifest(manifestPath, sha)` | Reads the manifest, resolves `sha-<sha>` to its digest, renders the compose files with the image line pinned to `tag@digest`, then against dind: `pull`, the `migrate` step (`compose run --rm --no-deps <service> <argv…>`), `up -d --wait`. Reports the running container's image ID, RepoDigests, labels and `/health`. |
-| `toy-app/` | `server.mjs`, `migrate.mjs`, `backup.mjs`, `restore.mjs` and a `Dockerfile`. Build args pick the behaviour: `TOY_MODE` = `pass \| fail-health \| wrong-schema \| fail-migrate \| exit-mid \| print-secret`, `TOY_SCHEMA` (what `/health` reports), `TOY_REVISION` (also the `org.opencontainers.image.revision` label), `TOY_CONTRACT=1` (adds `dev.d3cloud.shipyard.migration=contract`). `manifest.yml` and `compose.yml` are the stack as a host would hold it. |
+| `toy-app/` | `server.mjs`, `migrate.mjs`, `backup.mjs`, `restore.mjs` and a `Dockerfile`. Build args pick the behaviour: `TOY_MODE` = `pass \| fail-health \| wrong-schema \| fail-migrate \| exit-mid \| print-secret`, `TOY_SCHEMA` (what `/health` reports), `TOY_REVISION` (also the `org.opencontainers.image.revision` label), `TOY_CONTRACT=1` (adds `dev.d3cloud.shipyard.migration=contract`). `manifest.yml` and `compose.yml` are the stack as a host would hold it. For a Shipyard build the Dockerfile also has a `test` target (runs `test.mjs`: exits 1 when the source holds `TOY_TEST_FAIL`, fetches each URL in `probes.json` and prints `TOY-PROBE <url> reached\|blocked`) and a `release` target; `manifest.build.yml` is the `build: shipyard` variant, and `prepareToyDataRoot({ shipyardBuild: true })` adds its `build` block. `.dockerignore` is an allow-list — a new file the image needs goes in it. |
 | `harness/engine.ts` | Drives the real `@shipyard/sequence` engine against the harness: `enginePorts()` (real Docker/GitHub/registry adapters), `prepareToyDataRoot()` (a temp data root with `apps/toy.yml` and the toy compose file), `openContext()`, `linearMainState()`. Its fetch shims bridge the fake GitHub's gaps (workflow-scoped runs, `commit.message` in compare). |
+| `harness/build.ts` | The build side (SHP-T-7.16). `startBuildKit(h)` runs `docs/install/build-network.sh` in dind, starts the rootless buildkitd that `docs/install/buildkit.compose.yml` pins on `shipyard-build` (image loaded from the outer daemon when it has it, else pulled by dind), and returns the **real** BuildKit adapter with `buildctl` exec'd inside that container (`spy()` records each solve's target and push ref). `toySourceTarball(repo, sha, { failTests?, probes? })` makes GitHub's archive shape (`<owner>-<repo>-<sha7>/`) of `toy-app/`; `buildMainState` puts it on `main` with no workflow runs. `pushedImage` / `registryTags` read what a build pushed. |
+| `harness/control-plane.ts` | A signed-request stand-in for the server's agent API: poll/progress/steps/result for the loop, and `build-progress` / `build-result` for the build worker. Records every request. |
 | `harness/deploy-runner.ts` | A deploy in its own process (node + tsx loader, `TSX_TSCONFIG_PATH=harness/runner.tsconfig.json`), so `tests/kill-mid-swap.test.ts` can SIGKILL it at the machine's test-only pause point. |
-| `fake-github/` | The slice of the GitHub REST API the agent uses: `GET /repos/:o/:r/actions/runs?head_sha=` and `GET /repos/:o/:r/compare/:base...:head`, in GitHub's shape. Tests drive it with `POST /_control/state` and read `GET /_control/requests` (`DELETE` clears them). All logic is in `logic.mjs` (types in `logic.d.mts`), so it is unit-tested without Docker. |
+| `fake-github/` | The slice of the GitHub REST API the agent uses: `GET /repos/:o/:r/actions/runs?head_sha=`, `GET /repos/:o/:r/compare/:base...:head` and `GET /repos/:o/:r/tarball/:sha` (200 with the tar.gz posted as base64 under the repo's `tarballs`; GitHub 302s to codeload, but the agent follows a redirect only over https), in GitHub's shape. Tests drive it with `POST /_control/state` and read `GET /_control/requests` (`DELETE` clears them). All logic is in `logic.mjs` (types in `logic.d.mts`), so it is unit-tested without Docker. |
 
 ## Backups and restores reach the host through `sharedDir`
 
@@ -46,6 +48,18 @@ uses all three.
   `registry:2` (`registry-alias`) serves the same storage on port 80 under that name; pushes still
   go to `registry:5000`. Images are built `--provenance=false`, one plain manifest, because the
   registry adapter only reads `linux/amd64` out of an index.
+
+## Builds reach the registry on a public-range address
+
+`shipyard-build` drops RFC1918 destinations, and the harness network is private address space, so
+buildkitd could not push to `registry.shipyard.test` there — correctly. `startBuildKit` makes a
+random `198.18.x.0/24` network on the outer daemon (the benchmarking range, as `build-network.test.ts`
+does for its "internet"), attaches `registry-alias` at `.10` and dind to it, and gives buildkitd
+`--add-host registry.shipyard.test:198.18.x.10` plus a `buildkitd.toml` marking the registry plain
+HTTP. That address plays GHCR. The source and `buildctl`'s metadata files live under `sharedDir`,
+mounted into buildkitd at the same path, so the paths the adapter names exist on both sides.
+`tests/build.test.ts` uses all of it; a test step's fetches of the fake GitHub's harness address and
+of dind's gateway are what prove the firewall from inside a real build.
 
 From inside the harness network the registry is `registry:5000` and the fake GitHub is
 `http://fake-github:8080`. A later phase runs the real agent as a container in dind, pointed at

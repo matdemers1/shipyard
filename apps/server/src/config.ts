@@ -50,6 +50,11 @@ export const Config = z
     // The image creates /backups for the node user; mount a host directory there to keep dumps.
     BACKUP_DIR: z.preprocess(blankAsUnset, z.string().min(1).default('/backups')),
     BACKUP_RETENTION_DAYS: z.preprocess(blankAsUnset, z.coerce.number().int().min(1).max(365).default(14)),
+    // The GitHub push webhook's shared secret (SHP-REQ-112). Unset means the webhook refuses every
+    // delivery with 503 and only the reconcile loop queues builds (SHP-REQ-114).
+    GITHUB_WEBHOOK_SECRET: z.preprocess(blankAsUnset, z.string().min(20, 'GITHUB_WEBHOOK_SECRET must be at least 20 characters').optional()),
+    // How often the default-branch head of every `build: shipyard` app is reconciled (SHP-REQ-114).
+    BUILD_RECONCILE_INTERVAL_SECONDS: z.preprocess(blankAsUnset, z.coerce.number().int().min(30).max(86_400).default(300)),
   })
   .transform((c) => ({
     ...c,

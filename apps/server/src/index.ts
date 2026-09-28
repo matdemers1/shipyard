@@ -11,6 +11,8 @@ import { startBackups } from './jobs/backup.js';
 import { startHeartbeat } from './jobs/heartbeat.js';
 import { startBuildLogPrune } from './jobs/build-log-prune.js';
 import { startBuildReconcile } from './jobs/build-reconcile.js';
+import { registerAutoDeploy } from './builds/autodeploy.js';
+import { registerBuildNotifications } from './outbox/builds.js';
 import { createMailer } from './mail/index.js';
 import { liveRelay } from './mail/settings.js';
 
@@ -38,6 +40,10 @@ const heartbeat = startHeartbeat({ db, logger, config, bus }, mailer);
 const buildLogPrune = startBuildLogPrune({ db, logger });
 // A default-branch head the push webhook missed is still built (SHP-REQ-114).
 const buildReconcile = startBuildReconcile({ db, logger, config, bus });
+// After a build: commit statuses and the Foreman record (SHP-REQ-146/147), and an opt-in deploy of
+// a green build through the normal sequence (SHP-REQ-138).
+registerBuildNotifications({ db, logger, config, bus });
+registerAutoDeploy({ db, logger, config, bus });
 
 const server = app.listen(config.PORT, () => {
   logger.info({ port: config.PORT }, 'listening');

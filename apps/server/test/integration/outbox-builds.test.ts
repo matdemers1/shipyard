@@ -18,18 +18,6 @@ if (databaseUrl === undefined) {
 const db: Db = createDb(databaseUrl);
 const logger = pino({ enabled: false });
 
-/**
- * SHP-T-7.15: `outbox.target_id` is `NOT NULL` today (a real migration is needed to make a
- * `github_status`/`foreman_build` row's `target_id` optional — see `outbox/builds.ts`'s module
- * doc, and `needsOutside` in this task's result). This relaxes the constraint on THIS PRIVATE test
- * database only, at run time — never a migration file, never touching `prisma/**`, never run
- * against a shared database. It is idempotent (`DROP NOT NULL` on an already-nullable column is a
- * no-op) and is exactly the migration reported under `needsOutside`.
- */
-async function allowNullTargetId(): Promise<void> {
-  await db.$executeRawUnsafe('ALTER TABLE "outbox" ALTER COLUMN "target_id" DROP NOT NULL');
-}
-
 async function truncateAll(): Promise<void> {
   await db.$executeRawUnsafe(
     'truncate table "outbox", "build_log", "build_stage", "build", "step", "target_image", "deploy_target", "deploy", ' +
@@ -76,7 +64,6 @@ async function makeRunningBuild(appId: string, sha = 'a'.repeat(40)): Promise<st
 }
 
 beforeAll(async () => {
-  await allowNullTargetId();
 });
 
 beforeEach(async () => {

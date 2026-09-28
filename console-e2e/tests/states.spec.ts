@@ -285,8 +285,9 @@ test.describe('as an admin, baseline world', () => {
   test('S6 error: an outbox failing badge on a deploy Foreman never received', async ({ page }) => {
     // The seeded d3auth release whose Foreman post has failed six times over three hours.
     const deployId = await withDb(async (db) => {
-      const stuck = await db.outbox.findFirstOrThrow({ where: { deliveredAt: null }, select: { targetId: true } });
-      return (await db.deployTarget.findUniqueOrThrow({ where: { id: stuck.targetId }, select: { deployId: true } })).deployId;
+      // A deploy's row: build rows (SHP-T-7.15) carry no target.
+      const stuck = await db.outbox.findFirstOrThrow({ where: { deliveredAt: null, targetId: { not: null } }, select: { targetId: true } });
+      return (await db.deployTarget.findUniqueOrThrow({ where: { id: stuck.targetId ?? '' }, select: { deployId: true } })).deployId;
     });
     await page.goto(`/deploys/${deployId}`);
     await expect(page.getByText('Outbox failing')).toBeVisible();

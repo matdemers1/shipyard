@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
@@ -13,16 +12,8 @@ import { applyRowOutcome } from './index.js';
  *
  * Both row kinds below reuse the existing `outbox` table (SHP-T-2.9) rather than a new one, with
  * the row's true shape carried entirely in the JSON `payload` column and a `kind` discriminator —
- * `outbox/index.ts` dispatches on it. That table's `target_id` column is `NOT NULL`, a foreign key
- * to `deploy_target`, and a build has no deploy target of its own (most builds are never
- * deployed) — there is no legitimate value to put there. **This needs a migration**
- * (`ALTER TABLE "outbox" ALTER COLUMN "target_id" DROP NOT NULL`, and the matching
- * `targetId String? @map("target_id")` / optional relation in `schema.prisma`) that is not this
- * task's to make (`prisma/**` is owned by the lead) — reported under `needsOutside`. Until it
- * lands, both `insertOutboxRow` below and this module's tests write the row with `$executeRaw`
- * rather than the generated Prisma client (which would refuse `target_id: null` against today's
- * schema), and integration tests relax the constraint on their own private database at setup,
- * never touching a migration file.
+ * `outbox/index.ts` dispatches on it. A build has no deploy target of its own (most builds are
+ * never deployed), so these rows leave `target_id` null.
  */
 
 const GitHubStatusPayload = z.object({
@@ -49,14 +40,9 @@ const ForemanBuildPayload = z.object({
 });
 type ForemanBuildPayload = z.infer<typeof ForemanBuildPayload>;
 
-/** Inserts one outbox row, idempotent by `idempotencyKey`, bypassing the generated Prisma client
- * so `target_id` can be left `NULL` against today's `NOT NULL` column — see the module doc. */
+/** Inserts one outbox row, idempotent by `idempotencyKey`. */
 async function insertOutboxRow(db: Db, idempotencyKey: string, payload: GitHubStatusPayload | ForemanBuildPayload): Promise<void> {
-  await db.$executeRaw`
-    INSERT INTO "outbox" ("id", "target_id", "idempotency_key", "payload", "attempts", "next_at", "created_at")
-    VALUES (${randomUUID()}::uuid, NULL, ${idempotencyKey}, ${JSON.stringify(payload)}::jsonb, 0, now(), now())
-    ON CONFLICT ("idempotency_key") DO NOTHING
-  `;
+  await db.outbox.createMany({ data: [{ idempotencyKey, payload, targetId: null }], skipDuplicates: true });
 }
 
 export async function enqueueGithubStatus(

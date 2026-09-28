@@ -83,7 +83,9 @@ async function extractTarball(
   scratchDir: string,
   limits: { maxFiles: number; maxBytes: number },
 ): Promise<void> {
-  let unsafe: string | null = null;
+  // Held in an object: the filter closure sets it, and a plain `let` would be narrowed to `null`
+  // at the checks after extraction.
+  const found: { unsafe: string | null } = { unsafe: null };
   let fileCount = 0;
   let byteTotal = 0;
 
@@ -92,43 +94,43 @@ async function extractTarball(
     strip: 1,
     strict: true,
     filter(rawPath: string, statOrEntry: Stats | ReadEntry): boolean {
-      if (unsafe !== null) return false;
+      if (found.unsafe !== null) return false;
       const entry = statOrEntry as ReadEntry;
 
       fileCount += 1;
       if (fileCount > limits.maxFiles) {
-        unsafe = `too many entries (over ${String(limits.maxFiles)})`;
+        found.unsafe = `too many entries (over ${String(limits.maxFiles)})`;
         return false;
       }
       const size = typeof entry.size === 'number' ? entry.size : 0;
       byteTotal += size;
       if (byteTotal > limits.maxBytes) {
-        unsafe = `archive exceeds ${String(limits.maxBytes)} extracted bytes`;
+        found.unsafe = `archive exceeds ${String(limits.maxBytes)} extracted bytes`;
         return false;
       }
 
       if (UNSUPPORTED_TYPES.has(entry.type)) {
-        unsafe = `entry '${rawPath}' has an unsupported type (${entry.type})`;
+        found.unsafe = `entry '${rawPath}' has an unsupported type (${entry.type})`;
         return false;
       }
 
       const target = resolveEntryPath(scratchDir, rawPath);
       if (target === null) {
-        unsafe = `entry '${rawPath}' is unsafe: it escapes the scratch directory`;
+        found.unsafe = `entry '${rawPath}' is unsafe: it escapes the scratch directory`;
         return false;
       }
       if (target === undefined) return false; // the top-level directory entry itself
 
       if (entry.type === 'SymbolicLink' && typeof entry.linkpath === 'string') {
         if (!isSafeSymlinkTarget(target, entry.linkpath, scratchDir)) {
-          unsafe = `symlink '${rawPath}' -> '${entry.linkpath}' is unsafe: it escapes the scratch directory`;
+          found.unsafe = `symlink '${rawPath}' -> '${entry.linkpath}' is unsafe: it escapes the scratch directory`;
           return false;
         }
       }
       if (entry.type === 'Link' && typeof entry.linkpath === 'string') {
         const linkTarget = resolveEntryPath(scratchDir, entry.linkpath);
         if (linkTarget === null || linkTarget === undefined) {
-          unsafe = `hardlink '${rawPath}' -> '${entry.linkpath}' is unsafe: it escapes the scratch directory`;
+          found.unsafe = `hardlink '${rawPath}' -> '${entry.linkpath}' is unsafe: it escapes the scratch directory`;
           return false;
         }
       }
@@ -142,15 +144,15 @@ async function extractTarball(
   try {
     await pipeline(nodeBody, extractor);
   } catch (err) {
-    if (unsafe !== null) {
-      throw new RefusalError(refusal('github_unreachable', `GitHub archive entry is unsafe: ${unsafe}`));
+    if (found.unsafe !== null) {
+      throw new RefusalError(refusal('github_unreachable', `GitHub archive entry is unsafe: ${found.unsafe}`));
     }
     const message = err instanceof Error ? err.message : String(err);
     throw new RefusalError(refusal('github_unreachable', `GitHub archive is malformed or could not be extracted: ${message}`));
   }
 
-  if (unsafe !== null) {
-    throw new RefusalError(refusal('github_unreachable', `GitHub archive entry is unsafe: ${unsafe}`));
+  if (found.unsafe !== null) {
+    throw new RefusalError(refusal('github_unreachable', `GitHub archive entry is unsafe: ${found.unsafe}`));
   }
 }
 

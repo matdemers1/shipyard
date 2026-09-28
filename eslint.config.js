@@ -7,7 +7,8 @@ export default defineConfig(
   {
     ignores: [
       '**/dist/**',
-      '**/build/**',
+      // Root build output only: `packages/sequence/{src,test}/build/` is source (SHP-P-7).
+      'build/**',
       '**/coverage/**',
       '**/node_modules/**',
       '**/prisma/migrations/**',

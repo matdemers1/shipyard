@@ -49,6 +49,17 @@ export interface GitHubPort {
   workflowRuns(repo: string, workflow: string, headSha: string): Promise<WorkflowRun[]>;
   /** `GET /repos/{repo}/compare/{base}...{head}`. A 404 (unknown SHA) returns null. */
   compare(repo: string, base: string, head: string): Promise<Comparison | null>;
+  /**
+   * `GET /repos/{repo}/tarball/{sha}` (SHP-T-7.6, SHP-REQ-116): the exact 40-hex SHA's source as
+   * GitHub's gzip tarball, streamed. Throws `RefusalError(invalid_request)` if `sha` is not
+   * 40 lowercase hex, and `RefusalError(github_unreachable)` if GitHub has no tarball for it (an
+   * unknown SHA/repo — a 404) or is otherwise unreachable.
+   *
+   * Optional so existing fakes of this port (constructed as object literals elsewhere) do not
+   * have to implement it; a caller that needs it — `withBuildSource` — refuses with
+   * `github_unreachable` when the configured port lacks it.
+   */
+  tarball?(repo: string, sha: string): Promise<ReadableStream<Uint8Array>>;
 }
 
 // ─── Registry (SHP-T-1.3) ────────────────────────────────────────────────────

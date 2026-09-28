@@ -1,6 +1,7 @@
 import { refusal } from '@shipyard/schema';
 import type { Manifest, Refusal } from '@shipyard/schema';
 
+import type { BuildRecord } from './build/record.js';
 import { runningDigests } from './check.js';
 import { ensureFreeSpace } from './disk.js';
 import { evaluateGates, firstRefusal } from './gates.js';
@@ -31,6 +32,12 @@ export interface ResolveOptions {
    * not named here carries no expectation.
    */
   expectDigests?: Record<string, string> | undefined;
+  /**
+   * Looks up the agent-local succeeded build record for a `build: shipyard` app (SHP-T-7.10). Read
+   * only when `manifest.build?.source === 'shipyard'`; absent then is treated as no record on file
+   * (fail closed, `build_not_green`), never as "not applicable".
+   */
+  buildRecord?: ((manifest: Manifest, sha: string) => Promise<BuildRecord | null>) | undefined;
 }
 
 /** The first service whose resolved digest differs from the expected one, as a refusal; else null. */
@@ -120,7 +127,13 @@ export async function resolveDeployTarget(
   try {
     live = await readLive(ports, ledger, manifest);
 
-    const workflowRuns = await ports.github.workflowRuns(manifest.repo, manifest.workflow, sha);
+    const isShipyardBuild = manifest.build?.source === 'shipyard';
+    const workflowRuns = isShipyardBuild
+      ? undefined
+      : await ports.github.workflowRuns(manifest.repo, manifest.workflow, sha);
+    const shipyardBuildRecord = isShipyardBuild
+      ? await (options.buildRecord ? options.buildRecord(manifest, sha) : Promise.resolve(null))
+      : undefined;
     const onDefaultBranch = await ports.github.compare(manifest.repo, sha, manifest.defaultBranch);
     const aheadOfLive = live.sha === null ? null : await ports.github.compare(manifest.repo, live.sha, sha);
 
@@ -160,13 +173,16 @@ export async function resolveDeployTarget(
       sha,
       manifest,
       live,
-      workflowRuns: workflowRuns.map((run) => ({ conclusion: run.conclusion, status: run.status, event: run.event, headBranch: run.headBranch })),
       onDefaultBranch: onDefaultBranch === null ? null : { status: onDefaultBranch.status },
       aheadOfLive: aheadOfLive === null ? null : { status: aheadOfLive.status },
       digests,
       freeBytes,
       declaredEnv: declaredEnvByService,
     };
+    if (workflowRuns !== undefined) {
+      facts.workflowRuns = workflowRuns.map((run) => ({ conclusion: run.conclusion, status: run.status, event: run.event, headBranch: run.headBranch }));
+    }
+    if (isShipyardBuild) facts.shipyardBuild = { record: shipyardBuildRecord ?? null };
     if (envNamesPresent !== undefined) facts.envNamesPresent = envNamesPresent;
 
     gates = evaluateGates(facts);

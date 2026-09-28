@@ -1,5 +1,7 @@
 import type { DeployTargetState, Digest, Manifest, Refusal } from '@shipyard/schema';
 
+import type { BuildRecord } from './build/record.js';
+
 /**
  * Shared engine types (SHP-P-1). The concrete modules own their logic; these shapes are how they
  * talk to each other, fixed up front so the modules can be built in parallel.
@@ -91,6 +93,13 @@ export interface GateFacts {
   declaredEnv?: Record<string, string[]>;
   /** Migration labels of ledger releases *after* the rollback target (rollback only, G10). */
   laterMigrationLabels?: (string | null)[];
+  /**
+   * The agent-local Shipyard build record for this SHA, when `manifest.build?.source ===
+   * 'shipyard'` (SHP-T-7.10, SHP-REQ-134). Undefined when the app builds on GitHub (`workflowRuns`
+   * is read instead). `record` is null when no succeeded build of this SHA is on record — never a
+   * server claim, only what the agent itself wrote.
+   */
+  shipyardBuild?: { record: BuildRecord | null };
   freeBytes: number;
 }
 

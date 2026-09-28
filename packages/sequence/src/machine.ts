@@ -5,6 +5,7 @@ import { refusal } from '@shipyard/schema';
 import type { DeployTargetState, Manifest, Refusal } from '@shipyard/schema';
 import { stringify as stringifyYaml } from 'yaml';
 
+import { latestSucceededBuild } from './build/record.js';
 import { checkOnce } from './check.js';
 import { tryGuard } from './guard.js';
 import type { CheckOutcome } from './check.js';
@@ -455,6 +456,7 @@ export async function runDeploy(ports: SequencePorts, ctx: MachineContext, reque
       envNamesProvider: ctx.envNamesProvider,
       // A group promotion ships the canary's digests or nothing (SHP-D-047).
       ...(request.expectDigests === undefined ? {} : { expectDigests: request.expectDigests }),
+      buildRecord: (m, sha) => latestSucceededBuild(ports.fs, ctx.dataRoot, m.name, sha),
     });
     if (resolved.refusal !== null) {
       await run.move('refused');
@@ -526,6 +528,7 @@ async function deployLocked(ports: SequencePorts, ctx: MachineContext, run: Run,
       dryRun: false,
       envNamesProvider: ctx.envNamesProvider,
       ...(run.request.expectDigests === undefined ? {} : { expectDigests: run.request.expectDigests }),
+      buildRecord: (m, sha) => latestSucceededBuild(ports.fs, ctx.dataRoot, m.name, sha),
     });
   } catch (err) {
     const refused = asRefusal(err, 'step_failed', 'Verify failed');

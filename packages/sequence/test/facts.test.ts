@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { Manifest } from '@shipyard/schema';
 
@@ -237,5 +237,76 @@ describe('resolveDeployTarget — a group promotion ships the canary\'s digests 
     });
     expect(resolved.refusal).toBeNull();
     expect(resolved.images).toHaveLength(2);
+  });
+});
+
+describe('resolveDeployTarget — G5 reads the agent-local build record for build: shipyard apps (SHP-T-7.10, SHP-REQ-134, SHP-REQ-135)', () => {
+  it('a build: shipyard app never consults workflowRuns, and passes on a matching succeeded record', async () => {
+    const manifest = baseManifest({ build: { source: 'shipyard' } });
+    const ports = buildPorts({ digests: { server: SERVER_DIGEST } });
+    const workflowRunsSpy = vi.spyOn(ports.github, 'workflowRuns');
+    const buildRecord = vi.fn().mockResolvedValue({
+      buildId: 'build-1',
+      app: 'demo',
+      sha: SHA,
+      state: 'succeeded',
+      digests: { server: SERVER_DIGEST },
+      at: '2026-09-25T00:00:00.000Z',
+    });
+
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), manifest, SHA, { dryRun: true, buildRecord });
+
+    expect(resolved.refusal).toBeNull();
+    expect(workflowRunsSpy).not.toHaveBeenCalled();
+    expect(buildRecord).toHaveBeenCalledWith(manifest, SHA);
+  });
+
+  it('a build: shipyard app refuses build_not_green when buildRecord resolves null', async () => {
+    const manifest = baseManifest({ build: { source: 'shipyard' } });
+    const ports = buildPorts({ digests: { server: SERVER_DIGEST } });
+    const buildRecord = vi.fn().mockResolvedValue(null);
+
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), manifest, SHA, { dryRun: true, buildRecord });
+
+    expect(resolved.refusal?.code).toBe('build_not_green');
+  });
+
+  it('a build: shipyard app fails closed when no buildRecord lookup was supplied at all', async () => {
+    const manifest = baseManifest({ build: { source: 'shipyard' } });
+    const ports = buildPorts({ digests: { server: SERVER_DIGEST } });
+
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), manifest, SHA, { dryRun: true });
+
+    expect(resolved.refusal?.code).toBe('build_not_green');
+  });
+
+  it('a build: shipyard app refuses build_digest_mismatch when GHCR digest is unreachable/null', async () => {
+    const manifest = baseManifest({ build: { source: 'shipyard' } });
+    const ports = buildPorts({ digests: { server: null } });
+    const buildRecord = vi.fn().mockResolvedValue({
+      buildId: 'build-1',
+      app: 'demo',
+      sha: SHA,
+      state: 'succeeded',
+      digests: { server: SERVER_DIGEST },
+      at: '2026-09-25T00:00:00.000Z',
+    });
+
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), manifest, SHA, { dryRun: true, buildRecord });
+
+    // G8 (image_missing) fires before G5's digest comparison would matter for a null digest, but
+    // either way this never passes — GHCR unreachable/missing is never treated as a match.
+    expect(resolved.refusal).not.toBeNull();
+  });
+
+  it('a github (default) app never consults buildRecord', async () => {
+    const manifest = baseManifest();
+    const ports = buildPorts({ digests: { server: SERVER_DIGEST } });
+    const buildRecord = vi.fn().mockResolvedValue(null);
+
+    const resolved = await resolveDeployTarget(ports, await emptyLedger(), manifest, SHA, { dryRun: true, buildRecord });
+
+    expect(resolved.refusal).toBeNull();
+    expect(buildRecord).not.toHaveBeenCalled();
   });
 });

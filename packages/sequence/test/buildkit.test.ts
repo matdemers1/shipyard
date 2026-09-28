@@ -95,6 +95,41 @@ describe('solveArgv', () => {
     expect(argv).not.toContain('--output');
     expect(argv.some((a) => a.includes('push=true'))).toBe(false);
   });
+
+  describe('dockerTar (SHP-T-7.18)', () => {
+    const dockerTar = { name: 'shipyard-build/toy:b01abc', dest: '/scratch/work/image.tar' };
+    const dockerTarReq: SolveRequest = {
+      contextDir: baseReq.contextDir,
+      dockerfile: baseReq.dockerfile,
+      target: 'test',
+      secrets: baseReq.secrets,
+      labels: {},
+      dockerTar,
+    };
+
+    it('emits a type=docker --output with the name and dest', () => {
+      const argv = solveArgv(ADDR, dockerTarReq, '/m/meta.json');
+      expect(argv).toContain('--output');
+      expect(argv.at(-1)).toBe('type=docker,name=shipyard-build/toy:b01abc,dest=/scratch/work/image.tar');
+      expect(argv.some((a) => a.includes('push=true'))).toBe(false);
+    });
+
+    it('refuses a name that could open another --output option', () => {
+      for (const name of ['shipyard-build/x,evil=1', 'shipyard-build/x=y', 'shipyard-build/x y', ',name=evil']) {
+        expect(() => solveArgv(ADDR, { ...dockerTarReq, dockerTar: { ...dockerTar, name } }, '/m/meta.json'), name).toThrow(RefusalError);
+      }
+    });
+
+    it('refuses a dest containing a comma, an equals sign, or whitespace', () => {
+      for (const dest of ['/scratch/work,evil/image.tar', '/scratch/work/image.tar=x', '/scratch/wo rk/image.tar', '']) {
+        expect(() => solveArgv(ADDR, { ...dockerTarReq, dockerTar: { ...dockerTar, dest } }, '/m/meta.json'), JSON.stringify(dest)).toThrow(RefusalError);
+      }
+    });
+
+    it('refuses a request that sets both push and dockerTar, before any argv is built', () => {
+      expect(() => solveArgv(ADDR, { ...dockerTarReq, push: { ref: `ghcr.io/o/r/x:sha-${SHA}` } }, '/m/meta.json')).toThrow(RefusalError);
+    });
+  });
 });
 
 describe('createBuildKitAdapter.solve', () => {

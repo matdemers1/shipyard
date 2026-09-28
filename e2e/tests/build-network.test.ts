@@ -374,7 +374,9 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
 
   /** Stand-in for the BuildKit docker-tar export: build in dind, save the tar, drop dind's copy. */
   const builder: TestImageBuilder = {
-    async solveToDockerTar(req, out) {
+    async solve(req) {
+      const out = req.dockerTar;
+      if (out === undefined) throw new Error('expected a dockerTar export');
       const env = h.dindEnv();
       const built = await runRaw('docker', ['build', '--quiet', '-f', req.dockerfile, '--target', req.target, '-t', out.name, req.contextDir], { env, timeoutMs: 300_000 });
       if (built.code !== 0) return { exitCode: built.code ?? 1 };

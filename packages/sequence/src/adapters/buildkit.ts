@@ -52,11 +52,38 @@ const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
  */
 const OUTPUT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/:-]*$/;
 
+/**
+ * What may appear as a docker-tar export's destination path: no comma, `=` or whitespace — the same
+ * characters that would close BuildKit's `dest=` field and open another `--output` option (SHP-T-7.18).
+ */
+const DOCKER_TAR_DEST_RE = /^\S+$/;
+
 export function solveArgv(addr: string, req: SolveRequest, metadataFile: string): string[] {
   if (req.push !== undefined && !OUTPUT_REF_RE.test(req.push.ref)) {
     throw new RefusalError(
       refusal('invalid_request', `The image reference '${req.push.ref}' is not a plain repository:tag`, 'Fix the service image in the manifest.'),
     );
+  }
+  if (req.push !== undefined && req.dockerTar !== undefined) {
+    throw new RefusalError(
+      refusal('invalid_request', 'a solve request cannot both push and export a docker tar', 'Pass only one of push or dockerTar.'),
+    );
+  }
+  if (req.dockerTar !== undefined) {
+    if (!OUTPUT_REF_RE.test(req.dockerTar.name)) {
+      throw new RefusalError(
+        refusal('invalid_request', `The docker tar image name '${req.dockerTar.name}' is not a plain repository:tag`, 'Fix the docker tar export name.'),
+      );
+    }
+    if (req.dockerTar.dest.includes(',') || req.dockerTar.dest.includes('=') || !DOCKER_TAR_DEST_RE.test(req.dockerTar.dest)) {
+      throw new RefusalError(
+        refusal(
+          'invalid_request',
+          `The docker tar destination '${req.dockerTar.dest}' cannot appear inside BuildKit's comma-separated --output value`,
+          'Use a plain path with no comma, equals sign or whitespace.',
+        ),
+      );
+    }
   }
   const argv = [
     '--addr',
@@ -82,6 +109,8 @@ export function solveArgv(addr: string, req: SolveRequest, metadataFile: string)
   argv.push('--metadata-file', metadataFile);
   if (req.push !== undefined) {
     argv.push('--output', `type=image,name=${req.push.ref},push=true`);
+  } else if (req.dockerTar !== undefined) {
+    argv.push('--output', `type=docker,name=${req.dockerTar.name},dest=${req.dockerTar.dest}`);
   }
   return argv;
 }

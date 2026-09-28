@@ -479,6 +479,81 @@ describe('images and removeImage', () => {
   });
 });
 
+describe('loadImage (SHP-T-7.18)', () => {
+  it('runs docker load -i <tar> via the pinned CLI and never throws on a non-zero exit', async () => {
+    const { calls, execFile } = recordingExec({ exitCode: 0, stdout: 'Loaded image: shipyard-build/toy:b01abc\n', stderr: '' });
+    const adapter = createDockerAdapter({ docker: fakeDocker().docker, execFile, env: { PATH: '/usr/bin' } });
+    const result = await adapter.loadImage('/work/image.tar');
+    expect(result).toEqual({ exitCode: 0, stdout: 'Loaded image: shipyard-build/toy:b01abc\n', stderr: '' });
+    expect(calls[0]?.file).toBe('docker');
+    expect(calls[0]?.args).toEqual(['load', '-i', '/work/image.tar']);
+  });
+
+  it('resolves with a failing exit code instead of throwing', async () => {
+    const { execFile } = recordingExec({ exitCode: 1, stdout: '', stderr: 'open /work/image.tar: no such file or directory' });
+    const adapter = createDockerAdapter({ docker: fakeDocker().docker, execFile });
+    await expect(adapter.loadImage('/work/missing.tar')).resolves.toEqual({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'open /work/image.tar: no such file or directory',
+    });
+  });
+});
+
+describe('inspectNetwork (SHP-T-7.18)', () => {
+  const networkFake = (opts: { info?: unknown; statusCode?: number } = {}) => {
+    const docker = {
+      getNetwork: vi.fn((_name: string) => ({
+        inspect: () => {
+          if (opts.statusCode !== undefined) return Promise.reject(Object.assign(new Error('not found'), { statusCode: opts.statusCode }));
+          return Promise.resolve(opts.info);
+        },
+      })),
+    };
+    return docker as unknown as Dockerode;
+  };
+
+  it('maps a dockerode network inspect into BuildNetworkInfo', async () => {
+    const docker = networkFake({
+      info: {
+        Name: 'shipyard-build',
+        Internal: false,
+        EnableIPv6: false,
+        Options: { 'com.docker.network.bridge.name': 'br-shipyard-bld' },
+        IPAM: { Config: [{ Subnet: '172.31.254.0/24' }] },
+      },
+    });
+    const adapter = createDockerAdapter({ docker });
+    await expect(adapter.inspectNetwork('shipyard-build')).resolves.toEqual({
+      name: 'shipyard-build',
+      subnets: ['172.31.254.0/24'],
+      internal: false,
+      enableIPv6: false,
+      options: { 'com.docker.network.bridge.name': 'br-shipyard-bld' },
+    });
+  });
+
+  it('returns null on a 404, and rethrows any other error', async () => {
+    const missing = createDockerAdapter({ docker: networkFake({ statusCode: 404 }) });
+    await expect(missing.inspectNetwork('shipyard-build')).resolves.toBeNull();
+
+    const broken = createDockerAdapter({ docker: networkFake({ statusCode: 500 }) });
+    await expect(broken.inspectNetwork('shipyard-build')).rejects.toThrow();
+  });
+
+  it('defaults missing IPAM config and options to empty', async () => {
+    const docker = networkFake({ info: { Name: 'shipyard-build', Internal: true, EnableIPv6: true, Options: null, IPAM: { Config: null } } });
+    const adapter = createDockerAdapter({ docker });
+    await expect(adapter.inspectNetwork('shipyard-build')).resolves.toEqual({
+      name: 'shipyard-build',
+      subnets: [],
+      internal: true,
+      enableIPv6: true,
+      options: {},
+    });
+  });
+});
+
 describe('parsers', () => {
   it('parseWgetStatus takes the last status line', () => {
     expect(parseWgetStatus(WGET_200_STDERR)).toBe(200);

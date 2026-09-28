@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 
 import Dockerode from 'dockerode';
 
-import type { ComposeTarget, DockerPort, ExecResult, HealthResponse, RunningContainer } from '../ports.js';
+import type { BuildNetworkInfo, ComposeTarget, DockerPort, ExecResult, HealthResponse, RunningContainer } from '../ports.js';
 
 /**
  * Docker adapter (SHP-T-1.6). Compose goes through the pinned `docker compose` v5 CLI, and every
@@ -221,7 +221,11 @@ function sleep(ms: number): Promise<'timeout'> {
 
 // ─── The adapter ─────────────────────────────────────────────────────────────
 
-export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerPort {
+/**
+ * The concrete adapter always implements `loadImage` and `inspectNetwork` (SHP-T-7.18) — they are
+ * optional only on `DockerPort` itself, for object-literal fakes elsewhere that predate them.
+ */
+export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerPort & Required<Pick<DockerPort, 'loadImage' | 'inspectNetwork'>> {
   const docker = options.docker ?? dockerodeFor(options.dockerHost);
   const composeBin = options.composeBin ?? 'docker';
   const probeImage = options.probeImage ?? 'busybox:1.37';
@@ -433,6 +437,30 @@ export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerP
           warn('image already gone', { id });
           return;
         }
+        throw err;
+      }
+    },
+
+    // `docker load -i <tar>` via the pinned CLI (SHP-T-7.18): its port signature mirrors `compose` —
+    // an ExecResult that never throws on a non-zero exit — which the CLI gives directly; dockerode's
+    // `loadImage` instead resolves a raw response stream with no exit code to report.
+    async loadImage(tarPath) {
+      return execFile(composeBin, ['load', '-i', tarPath], { env: composeEnv() });
+    },
+
+    async inspectNetwork(name): Promise<BuildNetworkInfo | null> {
+      try {
+        const info = await docker.getNetwork(name).inspect();
+        const config = info.IPAM?.Config ?? [];
+        return {
+          name: info.Name,
+          subnets: config.map((c) => c.Subnet).filter((s): s is string => typeof s === 'string'),
+          internal: info.Internal,
+          enableIPv6: info.EnableIPv6,
+          options: info.Options ?? {},
+        };
+      } catch (err) {
+        if (statusCodeOf(err) === 404) return null;
         throw err;
       }
     },

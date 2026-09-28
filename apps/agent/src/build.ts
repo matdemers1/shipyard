@@ -339,6 +339,9 @@ export function createBuildWorker(opts: BuildWorkerOptions): BuildWorker {
       log.warn({ err: message(err) }, 'could not journal the build result');
     }
     log.info({ state: result.state, refusal: result.refusal?.code, failedStage: result.failedStage }, 'build finished');
+    // The result first, so the console and an auto-deploy never wait on cache GC; the slot stays
+    // taken until GC ends, so the next build does not start mid-prune (SHP-REQ-132).
+    await deliver(result, log);
     if (opts.onBuildFinished !== undefined) {
       try {
         await opts.onBuildFinished();
@@ -346,7 +349,6 @@ export function createBuildWorker(opts: BuildWorkerOptions): BuildWorker {
         log.warn({ err: message(err) }, 'onBuildFinished threw; ignoring');
       }
     }
-    await deliver(result, log);
   }
 
   /** Sends the result until the server takes it, refuses it, or the agent stops. */

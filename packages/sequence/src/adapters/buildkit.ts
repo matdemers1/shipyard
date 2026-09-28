@@ -50,7 +50,7 @@ const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
  * nothing that could close the `name=` field and open another option (`,`, `=`, whitespace).
  * The manifest schema already refuses such a repository; this is the adapter's own check.
  */
-const OUTPUT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._\/:-]*$/;
+const OUTPUT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9._/:-]*$/;
 
 export function solveArgv(addr: string, req: SolveRequest, metadataFile: string): string[] {
   if (req.push !== undefined && !OUTPUT_REF_RE.test(req.push.ref)) {

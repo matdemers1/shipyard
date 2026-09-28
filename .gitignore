@@ -1,6 +1,7 @@
 node_modules/
 dist/
-build/
+# Root only: `packages/sequence/src/build/` is source (SHP-P-7), not output.
+/build/
 .vite/
 coverage/
 *.tsbuildinfo

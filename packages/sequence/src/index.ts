@@ -17,3 +17,5 @@ export * from './disk.js';
 export * from './machine.js';
 export * from './rollback.js';
 export * from './restore.js';
+export { withBuildSource } from './build/source.js';
+export type { FetchSourceOptions } from './build/source.js';

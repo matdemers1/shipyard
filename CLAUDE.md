@@ -84,8 +84,10 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   `shipyard_rollback` (to an earlier successful deploy, from the agent's own ledger) ·
   `shipyard_build` (queue a build for a `build: shipyard` app and SHA) · `shipyard_build_status`
   (poll it; see `docs/runbooks/build.md`).
-- **What you can deploy:** only a SHA on the default branch whose image workflow is green and that
-  is ahead of what is live. Shipyard re-checks all of it on the host; a refusal names the gate and
+- **What you can deploy:** only a SHA on the default branch that is ahead of what is live and whose
+  images are proven: the image workflow is green, or, for a `build: shipyard` app, Shipyard's own
+  build of that SHA succeeded and its digests still match GHCR (`build_not_green` /
+  `build_digest_mismatch` otherwise). Shipyard re-checks all of it on the host; a refusal names the gate and
   the fix — read it, don't retry the same call.
 - **Every deploy request names you:** `requester: { label: "claude: <repo> <what>", repo, branch }`.
   The label is what someone locked out will see.

@@ -79,6 +79,12 @@ export interface BuildWorkerOptions {
   readSecrets?: (app: string) => Promise<Map<string, string>>;
   /** True while a deploy is in flight on this host. */
   deployInFlight: () => boolean | Promise<boolean>;
+  /**
+   * Called once a build has ended, success or failure (SHP-T-7.11, SHP-REQ-132): the cache
+   * manager's hook to garbage-collect the BuildKit cache after every build. Never awaited by the
+   * caller's own delivery path — errors are the cache manager's problem, never the build's.
+   */
+  onBuildFinished?: () => void | Promise<void>;
   log: Log;
   clock: Pick<Clock, 'now'>;
   sleep?: Sleep;
@@ -333,6 +339,13 @@ export function createBuildWorker(opts: BuildWorkerOptions): BuildWorker {
       log.warn({ err: message(err) }, 'could not journal the build result');
     }
     log.info({ state: result.state, refusal: result.refusal?.code, failedStage: result.failedStage }, 'build finished');
+    if (opts.onBuildFinished !== undefined) {
+      try {
+        await opts.onBuildFinished();
+      } catch (err) {
+        log.warn({ err: message(err) }, 'onBuildFinished threw; ignoring');
+      }
+    }
     await deliver(result, log);
   }
 

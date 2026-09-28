@@ -23,6 +23,7 @@ import {
   type SequencePorts,
 } from '@shipyard/sequence';
 import { createBuildWorker, type BuildWorker } from './build.js';
+import { createCacheManager, type CacheManager } from './cache.js';
 import { createAgentClient, type FetchLike } from './client.js';
 import { loadAgentConfig } from './config.js';
 import { waitForConfirmation } from './enrol.js';
@@ -129,11 +130,22 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // chain onto the file's true tail, since the host CLI appends to the same file (SHP-T-6.11).
   const ledger = await Ledger.open(ports.fs, paths.ledgerPath);
 
+  // Set once builds are enabled below; a plain variable so `reporting`'s closure (built before it
+  // exists) always reads whatever it is by the time a report is actually sent (SHP-T-7.11).
+  let cacheManager: CacheManager | undefined;
+
   const reporting = startReporting(
     client,
     () =>
       buildReport(
-        { fs: ports.fs, docker: ports.docker, engineApiVersion: () => engineApiVersion(config.dockerHost), ledger, log: logger },
+        {
+          fs: ports.fs,
+          docker: ports.docker,
+          engineApiVersion: () => engineApiVersion(config.dockerHost),
+          ledger,
+          buildCache: () => cacheManager?.snapshot(),
+          log: logger,
+        },
         config.dataRoot,
         { agentVersion: config.agentVersion, patExpiresAt: github.tokenExpiresAt()?.toISOString() ?? null },
       ),
@@ -181,27 +193,45 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // Builds (SHP-T-7.9): only when BUILDKIT_ADDR names a buildkitd; otherwise the capability is
   // never advertised and the server never sends a build.
   let builds: BuildWorker | undefined;
+  let gcTimer: NodeJS.Timeout | undefined;
   if (config.buildkitAddr !== undefined) {
     await ports.fs.mkdirp(config.buildTmpDir);
+    const buildkit = createBuildKitAdapter({
+      addr: config.buildkitAddr,
+      tmpDir: config.buildTmpDir,
+      ...(config.buildDockerConfig === undefined ? {} : { dockerConfigDir: config.buildDockerConfig }),
+    });
+    // The BuildKit sidecar's own container (SHP-T-7.11): its compose labels by default, or an
+    // explicit container name/ID (BUILDKIT_CONTAINER) when the sidecar is not run by compose.
+    const explicitContainer = env['BUILDKIT_CONTAINER']?.trim();
+    cacheManager = createCacheManager({
+      buildkit,
+      ...(config.dockerHost === undefined ? {} : { dockerHost: config.dockerHost }),
+      ...(explicitContainer === undefined || explicitContainer === '' ? {} : { containerId: explicitContainer }),
+      log: logger,
+      clock: ports.clock,
+    });
+    const cache = cacheManager;
     builds = createBuildWorker({
       client,
       manifests: async () => new Map([...(await loadManifests(ports.fs, config.dataRoot))].map(([name, loaded]) => [name, loaded.manifest])),
       github,
-      buildkit: createBuildKitAdapter({
-        addr: config.buildkitAddr,
-        tmpDir: config.buildTmpDir,
-        ...(config.buildDockerConfig === undefined ? {} : { dockerConfigDir: config.buildDockerConfig }),
-      }),
+      buildkit,
       docker: ports.docker,
       fs: ports.fs,
       dataRoot: config.dataRoot,
       tmpDir: config.buildTmpDir,
       privateKey: await loadAgentPrivateKey(config.dataRoot),
       deployInFlight: async () => targets.inFlight() || (await anyLockLive()),
+      onBuildFinished: () => cache.afterBuild(),
       log,
       clock: ports.clock,
     });
     logger.info({ buildkit: config.buildkitAddr }, 'builds enabled');
+    // A build whose success or failure never came (the agent restarted, or none has run yet since
+    // start) still gets GC once a day (SHP-REQ-132).
+    gcTimer = setInterval(() => void cache.maybeDailyGc(), 60 * 60 * 1000);
+    gcTimer.unref();
   }
   const worker = builds;
 
@@ -212,9 +242,11 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       log: logger,
       signal: stopping.signal,
       ...(worker === undefined ? {} : { builds: { canTake: () => !worker.busy(), offer: (job) => void worker.offer(job) } }),
+      ...(cacheManager === undefined ? {} : { onBuildSettings: (settings) => void cacheManager.applySettings(settings) }),
     });
   } finally {
     reporting.stop();
+    if (gcTimer !== undefined) clearInterval(gcTimer);
     if (worker !== undefined && worker.busy()) {
       // Stop at the next stage boundary and report it cancelled; a build still stuck in a stage
       // when the process exits is failed `interrupted` by the server's stale sweep.

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Digest, REPORTED_RELEASES_PER_APP, type AgentReport } from '@shipyard/schema';
+import { Digest, REPORTED_RELEASES_PER_APP, type AgentBuildCache, type AgentReport } from '@shipyard/schema';
 import { loadManifests, type DockerPort, type FsPort, type LedgerEntry, type LoadedManifest } from '@shipyard/sequence';
 import type { AgentClient } from './client.js';
 
@@ -24,6 +24,8 @@ export interface ReportPorts {
    * CLI) appended; `recent` is newest first. Absent: the report carries no releases.
    */
   ledger?: { refresh(): Promise<void>; recent(app: string, n?: number): LedgerEntry[] };
+  /** The BuildKit cache manager's snapshot (SHP-T-7.11); absent when builds are disabled. */
+  buildCache?: () => AgentBuildCache | undefined;
   log?: ReportLog;
 }
 
@@ -94,6 +96,7 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
 
   const engine = (await ports.engineApiVersion()).trim();
   const releases = await ledgerReleases(ports, loaded);
+  const buildCache = ports.buildCache?.();
   return {
     agentVersion: versions.agentVersion,
     composeVersion: await composeVersion(ports.docker, loaded),
@@ -101,6 +104,7 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
     patExpiresAt: versions.patExpiresAt,
     apps,
     ...(releases === undefined ? {} : { releases }),
+    ...(buildCache === undefined ? {} : { buildCache }),
   };
 }
 

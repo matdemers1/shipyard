@@ -156,3 +156,33 @@ export const MailTestResult = z
   })
   .meta({ id: 'MailTestResult', description: 'What the mail relay answered to one test message' });
 export type MailTestResult = z.infer<typeof MailTestResult>;
+
+/**
+ * Settings → Builds (SHP-REQ-131, SHP-REQ-132, SHP-T-7.11). The CPU and memory limits the agent
+ * applies to the BuildKit container's HostConfig, and the size cap the agent's cache garbage
+ * collection keeps the BuildKit cache under. Read by the agent on its next poll (`PollResponse`
+ * carries it); the agent — never the server — talks to Docker or BuildKit.
+ */
+export const BuildSettings = z
+  .strictObject({
+    /** BuildKit container CPUs (`NanoCpus`); half-CPU steps. */
+    cpus: z.number().min(0.5).max(64).multipleOf(0.5),
+    /** BuildKit container memory, in MiB (`Memory`/`MemorySwap`). */
+    memoryMb: z.int().min(512).max(262_144),
+    /** The BuildKit cache size cap, in GiB, that garbage collection keeps the cache under. */
+    cacheCapGb: z.int().min(1).max(2000),
+  })
+  .meta({ id: 'BuildSettings', description: "The BuildKit container's CPU/memory limits and the build cache's size cap" });
+export type BuildSettings = z.infer<typeof BuildSettings>;
+
+/** Applied when nothing has been saved in Settings yet — a reasonable single-host default. */
+export const DEFAULT_BUILD_SETTINGS: BuildSettings = { cpus: 2, memoryMb: 4096, cacheCapGb: 20 };
+
+export const BuildSettingsUpdate = z
+  .strictObject({
+    cpus: z.number().min(0.5).max(64).multipleOf(0.5),
+    memoryMb: z.int().min(512).max(262_144),
+    cacheCapGb: z.int().min(1).max(2000),
+  })
+  .meta({ id: 'BuildSettingsUpdate', description: 'Save the build CPU, memory and cache-cap limits' });
+export type BuildSettingsUpdate = z.infer<typeof BuildSettingsUpdate>;

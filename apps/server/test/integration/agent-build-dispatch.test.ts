@@ -153,7 +153,7 @@ afterAll(async () => {
 describe('POST /api/agent/poll hands out builds (SHP-REQ-129, SHP-REQ-130)', () => {
   it('never to a poll without the build capability', async () => {
     const buildId = await enqueue('web', sha('a'));
-    expect(await poll()).toEqual({ target: null });
+    expect(await poll()).toMatchObject({ target: null });
     expect((await getBuild(db, buildId))?.state).toBe('queued');
   });
 
@@ -166,7 +166,7 @@ describe('POST /api/agent/poll hands out builds (SHP-REQ-129, SHP-REQ-130)', () 
     expect(await db.auditEvent.count({ where: { action: 'build.dispatched', actorAgentId: agentId, entityId: first } })).toBe(1);
 
     // One is running: the next poll gets nothing, and the second stays queued.
-    expect(await poll({ build: true })).toEqual({ target: null });
+    expect(await poll({ build: true })).toMatchObject({ target: null });
     expect((await getBuild(db, second))?.state).toBe('queued');
 
     const done = await post('/api/agent/build-result', { buildId: first, state: 'succeeded', digests: { web: DIGEST } });
@@ -194,7 +194,7 @@ describe('POST /api/agent/poll hands out builds (SHP-REQ-129, SHP-REQ-130)', () 
     expect(first.target?.deployId).toBe(accepted.deployId);
     const targetId = first.target?.targetId ?? '';
     // The target is in flight on this agent's host: the build waits.
-    expect(await poll({ build: true })).toEqual({ target: null });
+    expect(await poll({ build: true })).toMatchObject({ target: null });
     expect((await getBuild(db, buildId))?.state).toBe('queued');
 
     const result = await post('/api/agent/result', {
@@ -209,7 +209,7 @@ describe('POST /api/agent/poll hands out builds (SHP-REQ-129, SHP-REQ-130)', () 
 
   it("never hands another agent's build out, and leaves it queued for its agent", async () => {
     const theirs = await enqueue('elsewhere', sha('a'));
-    expect(await poll({ build: true })).toEqual({ target: null });
+    expect(await poll({ build: true })).toMatchObject({ target: null });
     expect((await getBuild(db, theirs))?.state).toBe('queued');
     expect(buildOf(await poll({ build: true, key: otherKey }))?.buildId).toBe(theirs);
   });
@@ -283,7 +283,7 @@ describe(`the stale sweep (${String(BUILD_STALE_MINUTES)} minutes)`, () => {
     const next = await enqueue('api', sha('b'));
 
     // Recent activity: not swept, and the slot stays taken.
-    expect(await poll({ build: true })).toEqual({ target: null });
+    expect(await poll({ build: true })).toMatchObject({ target: null });
     expect((await getBuild(db, stuck))?.state).toBe('running');
 
     await ageBuild(stuck);

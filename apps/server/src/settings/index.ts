@@ -13,6 +13,7 @@ import { D3AUTH_SETTING_KEY, envOwnsD3Auth, parseStoredD3Auth, type OidcSettings
 import { requireRole } from '../auth/scope.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
+import { addBuildRoutes } from './build.js';
 import { deriveSettingsKey, encryptSecret } from './crypto.js';
 import { testDiscovery } from './discovery.js';
 import { addMailRoutes } from './mail.js';
@@ -222,6 +223,9 @@ export function settingsRouter(deps: SettingsDeps): Router {
 
   // Settings → Alert email (SHP-T-6.9): the same guards, the same secret handling.
   addMailRoutes(router, deps, admin, bad);
+
+  // Settings → Builds (SHP-T-7.11): CPU/memory limits and the cache cap, no secret and no env override.
+  addBuildRoutes(router, deps, admin, bad);
 
   return router;
 }

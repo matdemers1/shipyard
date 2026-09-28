@@ -28,6 +28,7 @@ import {
   MailSettingsUpdate,
   BuildProgress,
   BuildResult,
+  BuildSettingsUpdate,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -89,6 +90,7 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   MailSettingsUpdate,
   BuildProgress,
   BuildResult,
+  BuildSettingsUpdate,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -120,6 +122,7 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   MailSettingsUpdate: 'mailSettingsUpdate',
   BuildProgress: 'buildProgress',
   BuildResult: 'buildResult',
+  BuildSettingsUpdate: 'buildSettingsUpdate',
 };
 
 describe('request schema coverage', () => {

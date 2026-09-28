@@ -20,6 +20,11 @@ overwrite each other's deploys.
   `org.opencontainers.image.revision` label, and `/health`'s schema all agree, then a soak.
 - Nothing in the core knows about ZimaOS or any other host dashboard — the target is "Docker
   Engine + Compose + a data root."
+- An app can opt into `build: shipyard` (`docs/runbooks/build.md`) and have Shipyard itself fetch
+  the exact commit, test it, build it with rootless BuildKit in a firewalled network, and push it
+  to GHCR — triggered by a GitHub push webhook, with a reconcile loop as the fallback — instead of
+  relying on the app's own CI to publish images. `autoDeploy` then requests one deploy per green
+  build, through the same gates as any other deploy.
 
 See `docs/manifests/README.md` for the manifest format and `CLAUDE.md` for the full non-negotiables.
 

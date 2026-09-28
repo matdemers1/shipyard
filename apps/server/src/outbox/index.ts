@@ -3,6 +3,11 @@ import { createGitHubAdapter, type GitHubPort } from '@shipyard/sequence/github'
 import type { ServiceDeps } from '../deps.js';
 import type { Db } from '../db.js';
 import { tasksFor, type ChangelogRef } from './tasks.js';
+// Circular with outbox/builds.ts on purpose (SHP-T-7.15): it calls back into this module for
+// `applyRowOutcome`/`computeBackoffMs`/`truncateError`, this module dispatches to it for a
+// `github_status` row. Both sides only reach into the other from inside a function body, never at
+// module-evaluation time, so the cycle resolves fine under Node's ESM loader.
+import { processGithubStatusRow } from './builds.js';
 
 /**
  * The Foreman outbox (SHP-T-2.9). A deploy target that succeeds and whose app names a Foreman
@@ -133,9 +138,52 @@ export function computeBackoffMs(attempts: number, random: () => number = Math.r
   return Math.round(capped * jitter);
 }
 
-function truncateError(message: string, secret?: string): string {
+/** Redacts a secret out of an error message before it is stored, and caps its length. Exported so
+ * `outbox/builds.ts` (SHP-T-7.15) reuses the same redaction/truncation rather than a second copy. */
+export function truncateError(message: string, secret?: string): string {
   const redacted = secret !== undefined && secret.length > 0 ? message.split(secret).join('[redacted]') : message;
   return redacted.length > MAX_ERROR_LENGTH ? redacted.slice(0, MAX_ERROR_LENGTH) : redacted;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** A row's kind, from its own payload — absent means the original deployment shape (SHP-T-2.9),
+ * kept undecorated for backward compatibility with rows already queued when this shipped. */
+function payloadKind(payload: unknown): string {
+  return isRecord(payload) && typeof payload.kind === 'string' ? payload.kind : 'deployment';
+}
+
+export type RowOutcome =
+  | { kind: 'delivered' }
+  /** Backs off exponentially (SHP-REQ-049): a 5xx, a network error, or GitHub's 429. */
+  | { kind: 'retry'; message: string }
+  /** Logged once and parked at the backoff cap rather than growing — a malformed payload, or (for
+   * a commit status) a 4xx GitHub will never accept on retry. Not truly terminal: SHP-D-033's "no
+   * retry limit" holds, but it stops hammering the far end. */
+  | { kind: 'parked'; message: string };
+
+/** Shared attempt bookkeeping for any outbox row kind: `processRow` below (deployments) and
+ * `outbox/builds.ts` (SHP-T-7.15: commit statuses) both funnel through this so backoff, lease and
+ * logging stay in one place rather than a second loop. */
+export async function applyRowOutcome(
+  deps: ServiceDeps,
+  row: { id: string; attempts: number },
+  now: Date,
+  outcome: RowOutcome,
+  secret?: string,
+): Promise<void> {
+  if (outcome.kind === 'delivered') {
+    await deps.db.outbox.update({ where: { id: row.id }, data: { deliveredAt: now } });
+    return;
+  }
+  const attempts = row.attempts + 1;
+  const nextAt = new Date(now.getTime() + (outcome.kind === 'retry' ? computeBackoffMs(attempts) : BACKOFF_CAP_MS));
+  await deps.db.outbox.update({
+    where: { id: row.id },
+    data: { attempts, nextAt, lastError: truncateError(outcome.message, secret) },
+  });
 }
 
 interface ForemanCreds {
@@ -305,12 +353,19 @@ export interface DrainOptions {
   now?: Date;
   /** Overrides the GitHub adapter used to compute `tasks` (SHP-T-5.9) — tests inject a fake. */
   github?: GitHubPort;
+  /** Overrides the GitHub REST base URL a `github_status` row posts to (SHP-T-7.15) — tests point
+   * this at a fake server. Default `https://api.github.com`. */
+  githubApiBaseUrl?: string;
 }
 
 /**
  * Claims due, undelivered rows under `FOR UPDATE SKIP LOCKED` (safe under concurrent drains: each
- * row is claimed by at most one caller) and posts each to Foreman. Missing Foreman config leaves
- * rows queued untouched. Returns how many rows this call processed.
+ * row is claimed by at most one caller) and posts each to its destination — Foreman for a
+ * `deployment` row (the default, undecorated shape), GitHub for a `github_status` row
+ * (SHP-T-7.15). A `foreman_build` row (SHP-REQ-147) is written by `outbox/builds.ts` but never
+ * claimed here yet — see its module doc. Missing config for a row's own destination leaves it
+ * queued untouched; it never blocks a row whose destination *is* configured. Returns how many
+ * rows this call processed.
  */
 export async function drainOnce(deps: ServiceDeps, opts: DrainOptions = {}): Promise<{ processed: number }> {
   const fetchImpl = opts.fetch ?? fetch;
@@ -322,12 +377,17 @@ export async function drainOnce(deps: ServiceDeps, opts: DrainOptions = {}): Pro
   const taskCache = new Map<string, Promise<string[]>>();
 
   const creds = foremanCreds(deps);
-  if (creds === null) return { processed: 0 };
+  const foremanReady = creds !== null;
+  const githubStatusReady = deps.config.GITHUB_TOKEN_STATUS !== undefined;
 
   const claimedIds = await deps.db.$transaction(async (tx) => {
     const locked = await tx.$queryRaw<{ id: string }[]>`
       SELECT "id" FROM "outbox"
       WHERE "delivered_at" IS NULL AND "next_at" <= ${now}
+        AND (
+          (COALESCE("payload"->>'kind', 'deployment') = 'deployment' AND ${foremanReady})
+          OR ("payload"->>'kind' = 'github_status' AND ${githubStatusReady})
+        )
       ORDER BY "next_at"
       LIMIT ${BATCH_SIZE}
       FOR UPDATE SKIP LOCKED
@@ -351,6 +411,13 @@ export async function drainOnce(deps: ServiceDeps, opts: DrainOptions = {}): Pro
   });
 
   for (const row of rows) {
+    if (payloadKind(row.payload) === 'github_status') {
+      await processGithubStatusRow(deps, row, fetchImpl, now, opts.githubApiBaseUrl);
+      continue;
+    }
+    // The claim query only selects a `deployment` row when `foremanReady`, so this is never null
+    // here — the check is defensive, not load-bearing.
+    if (creds === null) continue;
     await processRow(deps, row, creds, fetchImpl, now, github, taskCache);
   }
 

@@ -129,6 +129,10 @@ export interface BuildDetail extends BuildSummary {
   digests: Record<string, string>;
   refusal: Refusal | null;
   stages: BuildStageView[];
+  /** The one auto-deploy this build requested, if any (SHP-REQ-138, SHP-REQ-150). */
+  autoDeployId: string | null;
+  /** Why an auto-deploy request was refused, if it was (SHP-REQ-139). */
+  autoDeployRefusal: Refusal | null;
 }
 
 export interface BuildLogView {
@@ -200,6 +204,8 @@ export async function getBuild(db: Db, buildId: string): Promise<BuildDetail | n
       ...SUMMARY_SELECT,
       digests: true,
       refusal: true,
+      autoDeployId: true,
+      autoDeployRefusal: true,
       stages: { select: { stage: true, state: true, startedAt: true, endedAt: true } },
     },
   });
@@ -211,6 +217,8 @@ export async function getBuild(db: Db, buildId: string): Promise<BuildDetail | n
     ...toSummary(row),
     digests: digestsOf(row.digests),
     refusal: isRefusal(row.refusal) ? row.refusal : null,
+    autoDeployId: row.autoDeployId,
+    autoDeployRefusal: isRefusal(row.autoDeployRefusal) ? row.autoDeployRefusal : null,
     stages,
   };
 }

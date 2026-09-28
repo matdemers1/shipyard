@@ -135,6 +135,48 @@ export interface DockerPort {
   removeImage(id: string): Promise<void>;
 }
 
+// ─── BuildKit (SHP-T-7.7) ────────────────────────────────────────────────────
+
+/** One build secret handed to BuildKit as a secret mount: an ID and a host file path, never a value. */
+export interface BuildSecretMount {
+  id: string;
+  /** Absolute path of a 0600 file on the agent's host holding the value (SHP-REQ-125). */
+  src: string;
+}
+
+export interface SolveRequest {
+  /** The extracted source directory — BuildKit's `context` local. */
+  contextDir: string;
+  /** Absolute path of the Dockerfile. */
+  dockerfile: string;
+  /** The Dockerfile target to build. */
+  target: string;
+  secrets: BuildSecretMount[];
+  /** Image labels (`--opt label:<k>=<v>`). */
+  labels: Record<string, string>;
+  /** When present, export the image and push it to `ref` (`<repo>:sha-<40hex>`); otherwise build only. */
+  push?: { ref: string };
+}
+
+export interface SolveResult {
+  exitCode: number;
+  /** The pushed image's manifest digest, parsed from BuildKit's metadata file. Only with `push`. */
+  digest?: Digest;
+}
+
+/**
+ * Rootless BuildKit (SHP-REQ-122): the only seam that runs `buildctl`. The daemon is reached at an
+ * address (`unix://…` or `tcp://…`) and never through a Docker socket.
+ */
+export interface BuildKitPort {
+  /** Runs one `buildctl build`. Never throws on a non-zero exit; returns it. */
+  solve(req: SolveRequest, onLog?: (chunk: string) => void, signal?: AbortSignal): Promise<SolveResult>;
+  /** Prunes the build cache down to `keepStorageBytes`. */
+  prune(keepStorageBytes: number): Promise<void>;
+  /** Total bytes of the build cache. */
+  du(): Promise<{ bytes: number }>;
+}
+
 // ─── Filesystem & clock ──────────────────────────────────────────────────────
 
 export interface FsPort {

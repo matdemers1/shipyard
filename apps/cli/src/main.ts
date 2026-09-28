@@ -2,7 +2,7 @@ import type { SequencePorts } from '@shipyard/sequence';
 
 import { parseArgs, USAGE } from './args.js';
 import { readEnvConfig, type EnvConfig, type Sink } from './config.js';
-import { runCheckManifestsCommand, runDeployCommand, runRecoverCommand, runStatusCommand } from './commands.js';
+import { runBuildSecretCommand, runCheckManifestsCommand, runDeployCommand, runRecoverCommand, runStatusCommand } from './commands.js';
 
 /**
  * `shipyard-run` (SHP-T-1.12, SHP-REQ-032): parse args, build ports and context, call the
@@ -16,6 +16,15 @@ export interface CliDeps {
   requesterLabel: () => string;
   stdout: Sink;
   stderr: Sink;
+  /** The whole of stdin (`build-secret set`); defaults to reading `process.stdin`. */
+  readStdin?: () => Promise<string>;
+}
+
+/** Reads all of `process.stdin` as UTF-8. */
+export async function readProcessStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer));
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 export async function main(argv: string[], env: NodeJS.ProcessEnv, deps: CliDeps): Promise<number> {
@@ -37,6 +46,15 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv, deps: CliDeps
     return 1;
   }
   const { config } = envResult;
+
+  // Build secrets need no Docker, GitHub or registry: only the data root and the agent's key.
+  if (command.kind === 'build-secret') {
+    return runBuildSecretCommand(config.dataRoot, command, {
+      readStdin: deps.readStdin ?? readProcessStdin,
+      stdout: deps.stdout,
+      stderr: deps.stderr,
+    });
+  }
 
   const ports = deps.buildPorts(config);
   const commandDeps = { deployId: deps.deployId, requesterLabel: deps.requesterLabel, stdout: deps.stdout, stderr: deps.stderr };

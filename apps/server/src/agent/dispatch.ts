@@ -1,5 +1,8 @@
-import type { DeployTargetState, PollResponse } from '@shipyard/schema';
+import { BuildStage, refusal, type BuildJob, type DeployTargetState, type PollResponse } from '@shipyard/schema';
 import type { Db } from '../db.js';
+import type { ServiceDeps } from '../deps.js';
+import { claimNextBuild, directAudit, recordBuildResult } from '../builds/service.js';
+import { TERMINAL_STATES } from '../deploys/service.js';
 import { expectedDigestsFor } from '../groups/service.js';
 
 /**
@@ -98,4 +101,113 @@ export async function describeTarget(db: Db, targetId: string): Promise<PollTarg
 export function lastLines(text: string, n = 50): string {
   const lines = text.split('\n');
   return lines.length <= n ? text : lines.slice(lines.length - n).join('\n');
+}
+
+// ─── Builds (SHP-T-7.9) ──────────────────────────────────────────────────────
+
+/**
+ * A running build with no sign of life for this long is failed `interrupted` by the next poll, so
+ * an agent that died mid-build cannot hold the one build slot (SHP-REQ-129) forever. "Sign of
+ * life" is the latest of the build's dispatch/start, any stage starting or ending, any log chunk,
+ * and `build.updated_at` — which every accepted `/build-progress` bumps, heartbeats included. A
+ * building agent sends a heartbeat progress every 60 s (apps/agent/src/build.ts,
+ * `BUILD_HEARTBEAT_MS`), even while it holds a stage back for a deploy, so thirty minutes of
+ * silence means the agent is gone, not busy.
+ */
+export const BUILD_STALE_MINUTES = 30;
+
+/** True while one of this agent's deploy targets is dispatched and not yet finished. */
+export async function agentHasTargetInFlight(db: Db, agentId: string): Promise<boolean> {
+  const row = await db.deployTarget.findFirst({
+    where: { dispatchedAt: { not: null }, state: { notIn: [...TERMINAL_STATES] }, app: { agentId } },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
+/** Puts a claimed build back in the queue, for a poll that could not hand it over. */
+export async function releaseBuild(deps: ServiceDeps, buildId: string): Promise<void> {
+  const released = await deps.db.build.updateMany({
+    where: { id: buildId, state: 'running' },
+    data: { state: 'queued', dispatchedAt: null, startedAt: null },
+  });
+  if (released.count > 0) deps.bus.publish('work');
+}
+
+/**
+ * The next build for `agentId`, claimed through the build service (strict FIFO, one running build
+ * across the install — SHP-REQ-129, SHP-REQ-137), or null. The queue's head must be one of this
+ * agent's apps: another agent's build is never handed out and stays queued. The service claims
+ * without an owner filter, so a head that changed between the look and the claim is put back.
+ */
+export async function claimBuildFor(deps: ServiceDeps, agentId: string): Promise<BuildJob | null> {
+  const { db } = deps;
+  const [running, head] = await Promise.all([
+    db.build.count({ where: { state: 'running' } }),
+    db.build.findFirst({ where: { state: 'queued' }, orderBy: { queueSeq: 'asc' }, select: { app: { select: { agentId: true } } } }),
+  ]);
+  if (running > 0 || head?.app.agentId !== agentId) return null;
+  const job = await claimNextBuild(deps);
+  if (job === null) return null;
+  const owner = await db.app.findUnique({ where: { name: job.app }, select: { agentId: true } });
+  if (owner?.agentId !== agentId) {
+    await releaseBuild(deps, job.buildId);
+    return null;
+  }
+  return job;
+}
+
+const STALE_ACTOR = { type: 'system', label: 'shipyard: stale build sweep' } as const;
+
+/**
+ * Fails every running build that has shown no sign of life for `BUILD_STALE_MINUTES` with
+ * `interrupted`, naming the stage it was in. Goes through `recordBuildResult` (guarded on
+ * `running`, publishes `work` so the next queued build is dispatched, runs the build hooks), and
+ * audits each as `build.interrupted`. One indexed query when nothing is stale. Returns the IDs.
+ */
+export async function sweepStaleBuilds(deps: ServiceDeps, now: Date = new Date()): Promise<string[]> {
+  const cutoff = new Date(now.getTime() - BUILD_STALE_MINUTES * 60_000);
+  const stale = await deps.db.$queryRaw<{ id: string; app: string; stage: string | null }[]>`
+    select b."id"::text as "id", a."name" as "app",
+      (select s."stage"::text from "build_stage" s
+        where s."build_id" = b."id" and s."state" = 'running'
+        order by s."started_at" desc limit 1) as "stage"
+    from "build" b
+    join "app" a on a."id" = b."app_id"
+    where b."state" = 'running'
+      and greatest(
+            b."updated_at",
+            coalesce(b."dispatched_at", b."updated_at"),
+            coalesce(b."started_at", b."updated_at"),
+            coalesce((select max(greatest(s."started_at", coalesce(s."ended_at", s."started_at")))
+                      from "build_stage" s where s."build_id" = b."id"), b."updated_at"),
+            coalesce((select max(l."at") from "build_log" l where l."build_id" = b."id"), b."updated_at")
+          ) < ${cutoff}`;
+  const failed: string[] = [];
+  for (const row of stale) {
+    const stage = BuildStage.safeParse(row.stage);
+    const why = refusal(
+      'interrupted',
+      `The agent stopped reporting on this build for over ${String(BUILD_STALE_MINUTES)} minutes${stage.success ? `, during ${stage.data}` : ''}.`,
+      'Check the agent is running and can reach the server, then rebuild.',
+    );
+    const outcome = await recordBuildResult(deps, {
+      buildId: row.id,
+      state: 'failed',
+      digests: {},
+      refusal: why,
+      ...(stage.success ? { failedStage: stage.data } : {}),
+    });
+    if (!outcome.accepted) continue;
+    failed.push(row.id);
+    await directAudit(deps.db, STALE_ACTOR)({
+      action: 'build.interrupted',
+      entityType: 'build',
+      entityId: row.id,
+      before: { state: 'running' },
+      after: { state: 'failed', refusal: 'interrupted', app: row.app, ...(stage.success ? { failedStage: stage.data } : {}) },
+    });
+    deps.logger.warn({ buildId: row.id, app: row.app, stage: row.stage }, 'running build failed: the agent stopped reporting');
+  }
+  return failed;
 }

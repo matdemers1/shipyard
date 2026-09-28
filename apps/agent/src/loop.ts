@@ -1,4 +1,4 @@
-import { PollResponse, refusal, type Refusal, type StepJournal, type TargetProgress, type TargetResult } from '@shipyard/schema';
+import { PollResponse, refusal, type BuildJob, type PollRequest, type Refusal, type StepJournal, type TargetProgress, type TargetResult } from '@shipyard/schema';
 import type {
   DeployRequest,
   DeployResult,
@@ -82,10 +82,50 @@ function message(err: unknown): string {
 
 // ─── The poll loop ───────────────────────────────────────────────────────────
 
+/**
+ * The loop's side of the build worker (SHP-T-7.9). Absent when builds are not configured
+ * (`BUILDKIT_ADDR` unset): the agent then never advertises the capability and is never sent a build.
+ */
+export interface LoopBuilds {
+  /** True when the worker is idle and could take a build now (SHP-REQ-129). */
+  canTake: () => boolean;
+  /** Starts a build in the background; the loop keeps polling, so deploys still arrive. */
+  offer: (job: BuildJob) => void;
+}
+
+/** The poll body: `capabilities: ['build']` only while a build could be taken. */
+export function pollBody(builds: LoopBuilds | undefined): PollRequest {
+  return builds?.canTake() === true ? { waitSeconds: POLL_WAIT_SECONDS, capabilities: ['build'] } : { waitSeconds: POLL_WAIT_SECONDS };
+}
+
+/**
+ * Wraps a target runner so the agent knows when a deploy is in flight (SHP-REQ-130): the build
+ * worker holds its next stage while `inFlight()` is true.
+ */
+export function trackInFlight(runTarget: (target: PollTarget) => Promise<void>): {
+  run: (target: PollTarget) => Promise<void>;
+  inFlight: () => boolean;
+} {
+  let running = 0;
+  return {
+    run: async (target) => {
+      running += 1;
+      try {
+        await runTarget(target);
+      } finally {
+        running -= 1;
+      }
+    },
+    inFlight: () => running > 0,
+  };
+}
+
 export interface LoopOptions {
   /** The client polls go through; its HTTP timeout should be `POLL_TIMEOUT_MS`. */
   client: AgentClient;
   runTarget: (target: PollTarget) => Promise<void>;
+  /** The build worker, when builds are configured. */
+  builds?: LoopBuilds;
   log: LoopLog;
   /** Aborting stops the loop: after the current target, never in the middle of one. */
   signal: AbortSignal;
@@ -106,9 +146,12 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
 
   while (!stopped()) {
     let target: PollTarget | null;
+    let build: BuildJob | undefined;
     try {
-      const body = await opts.client.request('POST', POLL_PATH, { waitSeconds: POLL_WAIT_SECONDS });
-      target = PollResponse.parse(body).target;
+      const body = await opts.client.request('POST', POLL_PATH, pollBody(opts.builds));
+      const parsed = PollResponse.parse(body);
+      target = parsed.target;
+      build = 'build' in parsed ? parsed.build : undefined;
       delay = backoff.initialMs;
     } catch (err) {
       if (stopped()) break;
@@ -116,6 +159,13 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       await sleep(delay, opts.signal);
       delay = nextDelay(delay, backoff);
       continue;
+    }
+    if (build !== undefined) {
+      if (opts.builds === undefined) {
+        opts.log.warn({ buildId: build.buildId }, 'sent a build without asking for one; ignoring it');
+      } else {
+        opts.builds.offer(build);
+      }
     }
     if (target === null) continue;
     try {

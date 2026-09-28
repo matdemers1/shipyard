@@ -97,6 +97,7 @@ model User {
   deploysRequested Deploy[]     @relation("DeployRequesterUser")
   auditEvents      AuditEvent[] @relation("AuditActorUser")
   invitesSent      Invite[]     @relation("InviteBy")
+  buildsRequested  Build[]      @relation("BuildRequesterUser")
 
   @@map("user")
 }
@@ -149,6 +150,7 @@ model ApiToken {
 
   deploysRequested Deploy[]     @relation("DeployRequesterToken")
   auditEvents      AuditEvent[] @relation("AuditActorToken")
+  buildsRequested  Build[]      @relation("BuildRequesterToken")
 
   @@map("api_token")
 }
@@ -217,6 +219,7 @@ model App {
   driftEvents     DriftEvent[]
   freezes         Freeze[]
   backupArtifacts BackupArtifact[]
+  builds          Build[]
 
   @@map("app")
 }
@@ -243,6 +246,7 @@ model Deploy {
   targets        DeployTarget[]
   approval       Approval?
   schedule       Schedule?
+  autoDeployOf   Build?         @relation("BuildAutoDeploy")
 
   @@map("deploy")
 }
@@ -482,4 +486,118 @@ model Setting {
   updatedById String?  @map("updated_by_id") @db.Uuid
 
   @@map("setting")
+}
+
+// ─── Builds (SHP-P-7, SHP-ADR-004) ─────────────────────────────────────────────
+//
+// A build is Shipyard testing and building one (app, sha) on the host (SHP-REQ-112). Builds queue —
+// deploys never do — and the agent runs at most one at a time, oldest `queue_seq` first
+// (SHP-REQ-129, SHP-REQ-137). The enums mirror `@shipyard/schema`'s BuildState, BuildTrigger and
+// BuildStage value for value.
+
+enum BuildState {
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+  refused
+}
+
+enum BuildTrigger {
+  webhook
+  reconcile
+  manual
+  mcp
+  rebuild
+}
+
+enum BuildStage {
+  fetch
+  test
+  integration
+  build
+  push
+}
+
+enum BuildStageState {
+  running
+  succeeded
+  failed
+  skipped
+}
+
+model Build {
+  id               String       @id @default(uuid()) @db.Uuid
+  appId            String       @map("app_id") @db.Uuid
+  sha              String       @db.Char(40)
+  state            BuildState   @default(queued)
+  trigger          BuildTrigger
+  /// Arrival order: the dispatcher hands out the lowest queued `queue_seq` (SHP-REQ-137).
+  queueSeq         BigInt       @unique @default(autoincrement()) @map("queue_seq")
+  requesterUserId  String?      @map("requester_user_id") @db.Uuid
+  requesterTokenId String?      @map("requester_token_id") @db.Uuid
+  requesterLabel   String       @map("requester_label")
+  /// A rebuild names the build it repeats.
+  rebuildOfId      String?      @map("rebuild_of_id") @db.Uuid
+  /// service → pushed digest, reported by the agent on success (SHP-REQ-128).
+  digests          Json?
+  refusal          Json?
+  failedStage      BuildStage?  @map("failed_stage")
+  /// Set by Cancel; the agent stops at the next stage boundary (SHP-REQ-143).
+  cancelRequestedAt DateTime?   @map("cancel_requested_at") @db.Timestamptz(3)
+  /// The one auto-deploy this build requested, if any (SHP-REQ-138, SHP-REQ-150).
+  autoDeployId     String?      @unique @map("auto_deploy_id") @db.Uuid
+  /// Why an auto-deploy request was refused — recorded, never retried (SHP-REQ-139).
+  autoDeployRefusal Json?       @map("auto_deploy_refusal")
+  dispatchedAt     DateTime?    @map("dispatched_at") @db.Timestamptz(3)
+  startedAt        DateTime?    @map("started_at") @db.Timestamptz(3)
+  endedAt          DateTime?    @map("ended_at") @db.Timestamptz(3)
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  app            App         @relation(fields: [appId], references: [id])
+  requesterUser  User?       @relation("BuildRequesterUser", fields: [requesterUserId], references: [id])
+  requesterToken ApiToken?   @relation("BuildRequesterToken", fields: [requesterTokenId], references: [id])
+  rebuildOf      Build?      @relation("BuildRebuildOf", fields: [rebuildOfId], references: [id])
+  rebuilds       Build[]     @relation("BuildRebuildOf")
+  autoDeploy     Deploy?     @relation("BuildAutoDeploy", fields: [autoDeployId], references: [id])
+  stages         BuildStageRun[]
+  logs           BuildLog[]
+
+  // "At most one open build per (app, sha)" — so a webhook and the reconcile loop enqueue a push
+  // once — is a partial unique index Prisma cannot express, hand-written into the migration:
+  // `build_one_open_per_app_sha` in prisma/migrations/*_builds/migration.sql.
+  @@index([appId, createdAt])
+  @@index([state, queueSeq])
+  @@index([endedAt])
+  @@map("build")
+}
+
+model BuildStageRun {
+  id        String          @id @default(uuid()) @db.Uuid
+  buildId   String          @map("build_id") @db.Uuid
+  stage     BuildStage
+  state     BuildStageState
+  startedAt DateTime        @default(now()) @map("started_at") @db.Timestamptz(3)
+  endedAt   DateTime?       @map("ended_at") @db.Timestamptz(3)
+
+  build Build @relation(fields: [buildId], references: [id], onDelete: Cascade)
+
+  @@unique([buildId, stage])
+  @@map("build_stage")
+}
+
+/// Redacted by the agent before it is sent (SHP-REQ-140); deleted 30 days after its build ends (SHP-REQ-141).
+model BuildLog {
+  id      BigInt     @id @default(autoincrement())
+  buildId String     @map("build_id") @db.Uuid
+  stage   BuildStage
+  chunk   String
+  at      DateTime   @default(now()) @db.Timestamptz(3)
+
+  build Build @relation(fields: [buildId], references: [id], onDelete: Cascade)
+
+  @@index([buildId, id])
+  @@map("build_log")
 }

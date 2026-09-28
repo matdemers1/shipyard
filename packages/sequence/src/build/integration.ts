@@ -6,6 +6,7 @@ import { Document } from 'yaml';
 
 import { RefusalError } from '../ports.js';
 import type { BuildSecretMount, ComposeTarget, DockerPort, ExecResult, Log, SolveRequest, SolveResult } from '../ports.js';
+import { INTEGRATION_GATEWAY_MODE_OPTION, INTEGRATION_SUBNET_SLOTS, integrationNetworkSlot, integrationSubnetSlot } from './network.js';
 
 /**
  * The integration test stage (SHP-T-7.8): the hook `runBuildStages` calls between the test target
@@ -15,9 +16,9 @@ import type { BuildSecretMount, ComposeTarget, DockerPort, ExecResult, Log, Solv
  *    --format json` (compose's own normalised model — `extends`, `include`, short syntax all
  *    resolved) and **refuse** it when it uses anything that would reach outside the build: published
  *    ports, `privileged`, `network_mode`, host `pid`/`ipc`/`uts`/`userns`/`cgroup`, `cap_add`,
- *    `devices`, `security_opt`, host bind mounts (including a `local` volume with `driver_opts`),
+ *    `devices`, `security_opt`, `sysctls`, host bind mounts (including a `local` volume with `driver_opts`),
  *    external or foreign-named volumes and networks, `volumes_from`, `external_links`, any network
- *    but `default`, a sidecar with `build:` (that would build on the host daemon, outside the build
+ *    but `default`, `ipam` or `driver_opts` on `default` (Shipyard sets both), a sidecar with `build:` (that would build on the host daemon, outside the build
  *    network), env files or secret/config files outside the source tree, and any `${VAR}`
  *    interpolation (compose would fill it from the agent's own environment). Refusing rather than
  *    stripping is deliberate: a silently stripped port or mount makes a test pass or fail for a
@@ -28,8 +29,13 @@ import type { BuildSecretMount, ComposeTarget, DockerPort, ExecResult, Log, Solv
  * 3. **Run** it as compose project `shipyard-build-<buildId>` (SHP-REQ-119) with the source file plus
  *    a generated override that pins the integration service to the loaded image (`pull_policy:
  *    never`, any `build:` reset) and makes the project's one network, `default`, `internal: true`
- *    with IPv6 off — every service is on it and nothing on it has a route anywhere else
- *    (SHP-REQ-123). `compose run --rm -T <service> <argv…>` starts the sidecars, runs the service
+ *    with IPv6 off, bridge gateway mode `isolated` (the host takes no address on it), a /24 from
+ *    `INTEGRATION_SUBNET_POOL` and a `shp-it-<n>` bridge name that `build-network.sh` firewalls off
+ *    the host — every service is on it and nothing on it has a route anywhere else, the Docker host
+ *    included (SHP-REQ-123; see network.ts). `compose create` makes the network, volumes and
+ *    containers first; when the daemon reports the subnet overlaps an existing network, the stage
+ *    takes the next slot of the pool and tries again. `compose run --rm -T <service> <argv…>` then
+ *    starts the sidecars, runs the service
  *    with the manifest's argv (an array, never a string; absent → the image's default command) under
  *    a timeout, and exit 0 is a pass.
  * 4. **Always tear down** (SHP-REQ-121), on pass, fail, throw or cancel: `compose down -v
@@ -90,6 +96,10 @@ export const INTEGRATION_PROJECT_PREFIX = 'shipyard-build-';
 export const DEFAULT_INTEGRATION_TIMEOUT_MS = 15 * 60_000;
 /** How long teardown waits for a cancelled `compose run` to exit before its second `down`. */
 const RUN_SETTLE_MS = 60_000;
+/** How many slots of the subnet pool `compose create` tries before the stage gives up. */
+export const INTEGRATION_SUBNET_ATTEMPTS = 8;
+/** The daemon's answer when a requested subnet overlaps an existing network. */
+const POOL_OVERLAP_RE = /pool overlaps|overlaps with/i;
 const BUILD_ID_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 
@@ -171,6 +181,9 @@ export function composeModelProblems(model: unknown, ctx: ComposeCheckContext): 
     if (nonEmpty(n.external)) problems.push('network default is external');
     if (n.name !== undefined && n.name !== `${ctx.project}_default`) problems.push(`network default names another network (${show(n.name)})`);
     if (n.driver !== undefined && n.driver !== 'bridge') problems.push(`network default uses driver ${show(n.driver)}`);
+    if (nonEmpty(n.driver_opts)) problems.push('network default sets driver_opts (Shipyard sets the bridge options)');
+    const ipam = isObj(n.ipam) ? n.ipam : {};
+    if (nonEmpty(ipam.config) || nonEmpty(ipam.driver) || nonEmpty(ipam.options)) problems.push('network default sets ipam (Shipyard allocates the subnet)');
   }
 
   for (const kind of ['secrets', 'configs'] as const) {
@@ -204,6 +217,7 @@ export function composeModelProblems(model: unknown, ctx: ComposeCheckContext): 
     if (nonEmpty(s.devices)) problems.push(`${at} maps devices`);
     if (nonEmpty(s.device_cgroup_rules)) problems.push(`${at} sets device_cgroup_rules`);
     if (nonEmpty(s.security_opt)) problems.push(`${at} sets security_opt`);
+    if (nonEmpty(s.sysctls)) problems.push(`${at} sets sysctls`);
     if (nonEmpty(s.volumes_from)) problems.push(`${at} uses volumes_from`);
     if (nonEmpty(s.external_links)) problems.push(`${at} uses external_links`);
     if (Array.isArray(s.volumes)) {
@@ -233,7 +247,7 @@ export function composeModelProblems(model: unknown, ctx: ComposeCheckContext): 
 }
 
 /** The generated override (YAML) layered after the source compose file. */
-export function renderIntegrationOverride(opts: { service: string; image: string; resetBuild: boolean; networkName: string }): string {
+export function renderIntegrationOverride(opts: { service: string; image: string; resetBuild: boolean; networkName: string; subnet: string; bridge: string }): string {
   const doc = new Document({
     services: {
       [opts.service]: { image: opts.image, pull_policy: 'never' },
@@ -244,6 +258,11 @@ export function renderIntegrationOverride(opts: { service: string; image: string
         driver: 'bridge',
         internal: true,
         enable_ipv6: false,
+        driver_opts: {
+          'com.docker.network.bridge.name': opts.bridge,
+          [INTEGRATION_GATEWAY_MODE_OPTION]: 'isolated',
+        },
+        ipam: { config: [{ subnet: opts.subnet }] },
       },
     },
   });
@@ -348,7 +367,12 @@ export function createIntegrationStage(options: IntegrationStageOptions): Integr
       }
       const services = (model as { services: Obj }).services;
       const resetBuild = isObj(services[integration.service]) && (services[integration.service] as Obj).build !== undefined;
-      await writeFile(overrideFile, renderIntegrationOverride({ service: integration.service, image: imageRef, resetBuild, networkName }), { mode: 0o600 });
+      const writeOverride = async (slot: number): Promise<void> => {
+        const { subnet, bridge } = integrationNetworkSlot(slot);
+        await writeFile(overrideFile, renderIntegrationOverride({ service: integration.service, image: imageRef, resetBuild, networkName, subnet, bridge }), { mode: 0o600 });
+      };
+      const firstSlot = integrationSubnetSlot(options.buildId);
+      await writeOverride(firstSlot);
 
       // ── 2. build the test target as a docker tar and load it ──
       const build = options.manifest.build;
@@ -399,8 +423,34 @@ export function createIntegrationStage(options: IntegrationStageOptions): Integr
       }
       if (aborted()) return false;
 
-      // ── 3. run ──
+      // ── 3. create the project (network from the pool, retrying on overlap), then run ──
       composeTouched = true;
+      let created = false;
+      for (let attempt = 0; attempt < INTEGRATION_SUBNET_ATTEMPTS; attempt++) {
+        const slot = (firstSlot + attempt) % INTEGRATION_SUBNET_SLOTS;
+        if (attempt > 0) {
+          await down();
+          await writeOverride(slot);
+        }
+        const create = await docker.compose(target, [...envArgs, 'create']);
+        if (create.exitCode === 0) {
+          created = true;
+          break;
+        }
+        const overlap = POOL_OVERLAP_RE.test(`${create.stdout}\n${create.stderr}`);
+        if (!overlap) {
+          emit(onLog, create);
+          onLog(`integration: compose create failed (exit ${String(create.exitCode)})\n`);
+          return false;
+        }
+        onLog(`integration: subnet ${integrationNetworkSlot(slot).subnet} is taken; trying the next\n`);
+        if (aborted()) return false;
+      }
+      if (!created) {
+        onLog(`integration: no free subnet after ${String(INTEGRATION_SUBNET_ATTEMPTS)} tries in the build pool\n`);
+        return false;
+      }
+      if (aborted()) return false;
       const runArgs = [...envArgs, 'run', '--rm', '-T', integration.service, ...(integration.argv ?? [])];
       running = docker.compose(target, runArgs, { timeoutMs });
       const settle = (): void => {

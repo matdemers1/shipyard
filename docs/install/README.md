@@ -43,7 +43,7 @@ pushes the image itself instead of reading CI's. Two more files, installed in th
 
 | Order | File | Run by | What it does |
 |---|---|---|---|
-| 1 | `build-network.sh` | the operator, as root on the Docker host (`sudo sh build-network.sh`) — **never the agent** | Creates the Docker network `shipyard-build` (`172.31.254.0/24`, IPv6 off, bridge `br-shipyard-bld`) and installs two iptables chains: from that bridge, `DOCKER-USER` drops everything to `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10` (tailnets), loopback, multicast, reserved, the network's gateway and the host's default gateway; `INPUT` drops everything addressed to the host itself. The public internet stays reachable, for package registries. Idempotent. |
+| 1 | `build-network.sh` | the operator, as root on the Docker host (`sudo sh build-network.sh`) — **never the agent** | Creates the Docker network `shipyard-build` (`172.31.254.0/24`, IPv6 off, bridge `br-shipyard-bld`) and installs two iptables chains: from that bridge, `DOCKER-USER` drops everything to `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10` (tailnets), loopback, multicast, reserved, the network's gateway and the host's default gateway; `INPUT` drops everything addressed to the host itself. The public internet stays reachable, for package registries. Also firewalls the per-build integration networks (below). Idempotent. |
 | 2 | `buildkit.compose.yml` | the operator: `docker compose -f buildkit.compose.yml -p shipyard-buildkit up -d` | Rootless `buildkitd`, attached **only** to `shipyard-build`, no Docker socket, no published port, listening on a unix socket in the volume `shipyard-buildkit-socket`, cache in its own volume, public DNS resolvers (a LAN resolver would be dropped). `cpus` / `mem_limit` are placeholders. |
 
 Then give the agent the socket: add `shipyard-buildkit-socket:/run/buildkit` to its `volumes:` (and
@@ -62,9 +62,25 @@ with this script as the fix when it does not. It cannot see the host's iptables,
 
 **Integration tests** (`build.integration` in a manifest) do not use this network. Each run gets its
 own compose project `shipyard-build-<buildId>` on a per-build network created `internal: true` — no
-route anywhere but its own sidecars — and is removed with its volumes when the stage ends. Its
-compose file is refused, not silently edited, if it publishes ports, is privileged, joins another
-network, mounts host paths, adds capabilities or devices, or uses `${VAR}` interpolation.
+route anywhere but its own sidecars — and is removed with its volumes when the stage ends. An
+internal network alone is not enough: by default the host owns the bridge's gateway address, and a
+connection to it lands on whatever the host listens on (dockerd, SSH, …). So each per-build network
+also gets:
+
+- bridge gateway mode `isolated` (`com.docker.network.bridge.gateway_mode_ipv4`, Docker Engine 28+):
+  the host takes no address on the bridge at all;
+- a `/24` from the reserved pool **`172.30.0.0/16`** on a bridge named `shp-it-<n>`, which
+  `build-network.sh` firewalls: `INPUT` and `DOCKER-USER` drop everything from a `shp-it-*` bridge
+  or a `172.30.0.0/16` source, except replies and traffic between one network's own containers.
+
+> [!warning] Keep `172.30.0.0/16` for Shipyard
+> The script refuses to run while a Docker network or route that is not Shipyard's overlaps the
+> pool. If Docker could hand it to a new compose project later, exclude it: set
+> `default-address-pools` in `/etc/docker/daemon.json` to ranges that do not include it.
+
+The compose file is refused, not silently edited, if it publishes ports, is privileged, joins
+another network, sets `ipam` or `driver_opts` on its network, mounts host paths, adds capabilities
+or devices, sets `sysctls`, or uses `${VAR}` interpolation.
 
 **The trade-off in the BuildKit container.** Rootless BuildKit inside a container needs
 `seccomp=unconfined`/`apparmor=unconfined` (for RootlessKit's user namespace) and

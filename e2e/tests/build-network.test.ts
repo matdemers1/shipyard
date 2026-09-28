@@ -10,6 +10,9 @@ import {
   BUILD_NETWORK_NAME,
   createDockerAdapter,
   createIntegrationStage,
+  INTEGRATION_BRIDGE_PREFIX,
+  INTEGRATION_GATEWAY_MODE_OPTION,
+  INTEGRATION_SUBNET_POOL,
   integrationProjectName,
   verifyBuildNetwork,
   type BuildNetworkInfo,
@@ -85,6 +88,8 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
   const addr = { public: '', lan10: '', lan192: '' };
   let pgIp = '';
   let controlGateway = '';
+  /** Every IPv4 address dind (the "Docker host") owns, loopback aside. */
+  let hostAddrs: string[] = [];
   const outer = (args: string[]) => run('docker', args, { timeoutMs: 240_000 });
 
   beforeAll(async () => {
@@ -145,7 +150,15 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
     // ── the control network: ordinary, not shipyard-build ──
     await h.dind(['network', 'create', `shp-control-${id}`]);
     controlGateway = (await h.dind(['network', 'inspect', '-f', '{{range .IPAM.Config}}{{.Gateway}}{{end}}', `shp-control-${id}`])).stdout.trim();
+    hostAddrs = await dindAddrs();
+    expect(hostAddrs).toContain(controlGateway);
   });
+
+  /** dind's own IPv4 addresses (every interface, loopback aside), from inside dind. */
+  const dindAddrs = async (): Promise<string[]> => {
+    const out = (await outer(['exec', dindId, 'ip', '-4', '-o', 'addr', 'show'])).stdout;
+    return [...out.matchAll(/inet (\d+\.\d+\.\d+\.\d+)\//g)].map((m) => m[1] ?? '').filter((a) => a !== '' && !a.startsWith('127.'));
+  };
 
   afterAll(async () => {
     await runRaw('docker', ['rm', '-f', standIn]);
@@ -178,6 +191,34 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
     expect(rules.split('\n').filter((l) => l.includes('SHIPYARD-BUILD')).length).toBe(1);
     const input = (await outer(['exec', dindId, 'iptables', '-S', 'INPUT'])).stdout;
     expect(input.split('\n').filter((l) => l.includes('SHIPYARD-BUILD-INPUT')).length).toBe(1);
+    // The per-build integration pool: one jump per match, in INPUT and in DOCKER-USER.
+    const count = (text: string, needle: string): number => text.split('\n').filter((l) => l.includes(needle)).length;
+    expect(count(input, `-s ${INTEGRATION_SUBNET_POOL} -j SHIPYARD-ITEST-INPUT`)).toBe(1);
+    expect(count(input, `-i ${INTEGRATION_BRIDGE_PREFIX}+ -j SHIPYARD-ITEST-INPUT`)).toBe(1);
+    expect(count(rules, `-s ${INTEGRATION_SUBNET_POOL} -j SHIPYARD-ITEST`)).toBe(1);
+    expect(count(rules, `-i ${INTEGRATION_BRIDGE_PREFIX}+ -j SHIPYARD-ITEST`)).toBe(1);
+  });
+
+  it('the firewall alone keeps an internal network in the pool off the host, even when the host owns its gateway — which an internal network outside the pool does not', async () => {
+    // What the integration stage's gateway mode `isolated` removes, recreated on purpose: an
+    // internal network whose gateway address the host (dind) owns, so traffic to it takes INPUT.
+    const inPool = `shp-fallback-pool-${id}`;
+    const outside = `shp-fallback-out-${id}`;
+    const slot = randomInt(200, 250);
+    try {
+      await h.dind(['network', 'create', '--internal', '--subnet', `172.30.${String(slot)}.0/24`, '--gateway', `172.30.${String(slot)}.1`, '-o', `com.docker.network.bridge.name=${INTEGRATION_BRIDGE_PREFIX}${String(slot)}`, inPool]);
+      await h.dind(['network', 'create', '--internal', '--subnet', `172.29.${String(slot)}.0/24`, '--gateway', `172.29.${String(slot)}.1`, outside]);
+      const control = await probe(outside, `http://172.29.${String(slot)}.1:2375/_ping`);
+      expect(reached(control), `the gap this closes: ${control.output}`).toBe(true);
+      for (const url of [`http://172.30.${String(slot)}.1:2375/_ping`, `http://${controlGateway}:2375/_ping`]) {
+        const p = await probe(inPool, url);
+        expect(p.exit, `${url}: ${p.output}`).not.toBe(0);
+      }
+      const gw = await probe(inPool, `http://172.30.${String(slot)}.1:2375/_ping`);
+      expect(blocked(gw), gw.output).toBe(true);
+    } finally {
+      await runRaw('docker', ['network', 'rm', inPool, outside], { env: h.dindEnv() });
+    }
   });
 
   it('a container on shipyard-build reaches the public stand-in, and not the host, 10.x, 192.168.x or another project’s Postgres — which a control container does reach', async () => {
@@ -273,10 +314,15 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
       [
         'set -u',
         'for i in $(seq 1 30); do wget -q -T 2 -O - http://sidecar:8080/ && break; sleep 1; done | grep -q sidecar-ok || { echo "sidecar unreachable"; exit 98; }',
+        'if ip -4 route | grep -q "^default"; then echo "a default route exists"; ip -4 route; exit 97; fi',
         `if wget -q -T 3 -O /dev/null http://${addr.public}:8080/; then echo "public reachable from the internal network"; exit 99; fi`,
-        // The host through this network's own first address (Docker's bridge address), if any.
+        // The host through this network's own first address (where Docker would put the gateway),
+        // and through every address the host owns: its other bridges' gateways, its own interfaces.
         'gw=$(ip -4 route | awk \'/src/ { split($1, a, "/"); split(a[1], o, "."); print o[1] "." o[2] "." o[3] "." (o[4] + 1); exit }\')',
-        'if wget -q -T 3 -O /dev/null "http://$gw:2375/_ping"; then echo "docker host reachable at $gw"; exit 99; fi',
+        `for h in "$gw" ${[...new Set([...hostAddrs, BUILD_NETWORK_GATEWAY, controlGateway])].join(' ')}; do`,
+        '  if wget -q -T 3 -O /dev/null "http://$h:2375/_ping"; then echo "docker host reachable at $h"; exit 99; fi',
+        '  echo "host $h:2375 unreachable"',
+        'done',
         'echo "isolation holds; exiting $1"',
         'exit "$1"',
         '',
@@ -351,8 +397,7 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
   };
   const volumes = async (): Promise<string[]> => (await h.dind(['volume', 'ls', '-q'])).stdout.split('\n').filter(Boolean).sort();
 
-  const runStage = async (argv: string[], signal?: AbortSignal): Promise<{ passed: boolean; log: string; buildId: string; newVolumes: string[] }> => {
-    const buildId = `b${randomBytes(4).toString('hex')}`;
+  const runStage = async (argv: string[], signal?: AbortSignal, buildId = `b${randomBytes(4).toString('hex')}`): Promise<{ passed: boolean; log: string; buildId: string; newVolumes: string[] }> => {
     const dir = await sourceTree();
     const work = await mkdtemp(join(tmpdir(), 'shp-itest-work-'));
     const before = await volumes();
@@ -382,6 +427,7 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
     const r = await runStage(['sh', '/itest.sh', '0']);
     expect(r.passed, r.log).toBe(true);
     expect(r.log).toContain('isolation holds; exiting 0');
+    for (const a of [BUILD_NETWORK_GATEWAY, controlGateway, ...hostAddrs]) expect(r.log).toContain(`host ${a}:2375 unreachable`);
     expect(await leftovers(r.buildId)).toEqual([]);
     expect(r.newVolumes).toEqual([]);
   });
@@ -395,9 +441,10 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
     expect(r.newVolumes).toEqual([]);
   });
 
-  it('cancelled mid-run, resolves false and leaves nothing behind', async () => {
+  it('cancelled mid-run, resolves false and leaves nothing behind — and while it ran, the host had no address on its network', async () => {
     const controller = new AbortController();
-    const running = runStage(['sleep', '300'], controller.signal);
+    const buildId = `b${randomBytes(4).toString('hex')}`;
+    const running = runStage(['sleep', '300'], controller.signal, buildId);
     // Cancel once the one-off test container is actually running.
     await pollUntil(
       'the integration run container',
@@ -407,7 +454,25 @@ describe('build network isolation and the integration stage (SHP-T-7.8)', () => 
       },
       { timeoutMs: 180_000 },
     );
-    controller.abort();
+    try {
+      const net = JSON.parse((await h.dind(['network', 'inspect', `${integrationProjectName(buildId)}_default`])).stdout) as {
+        Internal: boolean;
+        EnableIPv6: boolean;
+        Options: Record<string, string>;
+        IPAM: { Config: { Subnet: string; Gateway?: string }[] };
+      }[];
+      const info = net[0];
+      expect(info?.Internal).toBe(true);
+      expect(info?.EnableIPv6).toBe(false);
+      expect(info?.Options[INTEGRATION_GATEWAY_MODE_OPTION]).toBe('isolated');
+      expect(info?.Options['com.docker.network.bridge.name']).toMatch(new RegExp(`^${INTEGRATION_BRIDGE_PREFIX}\\d+$`));
+      const subnet = info?.IPAM.Config[0]?.Subnet ?? '';
+      expect(subnet).toMatch(/^172\.30\.\d+\.0\/24$/);
+      const prefix = subnet.split('.').slice(0, 3).join('.');
+      expect((await dindAddrs()).filter((a) => a.startsWith(`${prefix}.`))).toEqual([]);
+    } finally {
+      controller.abort();
+    }
     const r = await running;
     expect(r.passed).toBe(false);
     expect(r.log).toContain('cancelled');

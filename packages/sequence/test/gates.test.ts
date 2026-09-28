@@ -39,6 +39,7 @@ interface FactsOverride {
   envNamesPresent?: GateFacts['envNamesPresent'];
   declaredEnv?: GateFacts['declaredEnv'];
   laterMigrationLabels?: GateFacts['laterMigrationLabels'];
+  shipyardBuild?: GateFacts['shipyardBuild'];
   freeBytes?: number;
 }
 
@@ -217,6 +218,114 @@ describe('refusal shape and specificity', () => {
     const result = evaluateGates(facts).find((r) => r.gate === 'G5');
     expect(result?.refusal?.message).toContain('.github/workflows/image.yml');
     expect(result?.refusal?.message).toContain('c0ffeec');
+  });
+
+  it('G5 for a build: shipyard app passes when the record digests match GHCR', () => {
+    const facts = buildFacts({
+      manifest: { build: { source: 'shipyard' } },
+      shipyardBuild: {
+        record: {
+          buildId: 'build-1',
+          app: 'demo',
+          sha: SHA,
+          state: 'succeeded',
+          digests: { web: 'sha256:1111111111111111111111111111111111111111111111111111111111111111' },
+          at: '2026-09-28T00:00:00.000Z',
+        },
+      },
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G5');
+    expect(result?.pass).toBe(true);
+    expect(result?.reason).toContain('build-1');
+  });
+
+  it('G5 for a build: shipyard app refuses build_not_green when there is no record', () => {
+    const facts = buildFacts({ manifest: { build: { source: 'shipyard' } }, shipyardBuild: { record: null } });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G5');
+    expect(result?.pass).toBe(false);
+    expect(result?.refusal?.code).toBe('build_not_green');
+  });
+
+  it('G5 for a build: shipyard app refuses build_not_green when shipyardBuild is entirely absent (fail closed)', () => {
+    const facts = buildFacts({ manifest: { build: { source: 'shipyard' } } });
+    delete (facts as { shipyardBuild?: unknown }).shipyardBuild;
+    const result = evaluateGates(facts).find((r) => r.gate === 'G5');
+    expect(result?.pass).toBe(false);
+    expect(result?.refusal?.code).toBe('build_not_green');
+  });
+
+  it('G5 for a build: shipyard app refuses build_digest_mismatch when the recorded digest differs from GHCR', () => {
+    const facts = buildFacts({
+      manifest: { build: { source: 'shipyard' } },
+      digests: { web: 'sha256:2222222222222222222222222222222222222222222222222222222222222222' },
+      shipyardBuild: {
+        record: {
+          buildId: 'build-1',
+          app: 'demo',
+          sha: SHA,
+          state: 'succeeded',
+          digests: { web: 'sha256:1111111111111111111111111111111111111111111111111111111111111111' },
+          at: '2026-09-28T00:00:00.000Z',
+        },
+      },
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G5');
+    expect(result?.pass).toBe(false);
+    expect(result?.refusal?.code).toBe('build_digest_mismatch');
+    expect(result?.refusal?.message).toContain('web');
+  });
+
+  it('G5 for a build: shipyard app refuses build_digest_mismatch when a mapped service is missing from the record', () => {
+    const facts = buildFacts({
+      manifest: {
+        services: { web: { image: 'ghcr.io/acme/demo/web' }, worker: { image: 'ghcr.io/acme/demo/worker' } },
+        build: { source: 'shipyard' },
+      },
+      digests: {
+        web: 'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+        worker: 'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+      },
+      shipyardBuild: {
+        record: {
+          buildId: 'build-1',
+          app: 'demo',
+          sha: SHA,
+          state: 'succeeded',
+          digests: { web: 'sha256:1111111111111111111111111111111111111111111111111111111111111111' },
+          at: '2026-09-28T00:00:00.000Z',
+        },
+      },
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G5');
+    expect(result?.pass).toBe(false);
+    expect(result?.refusal?.code).toBe('build_digest_mismatch');
+    expect(result?.refusal?.message).toContain('worker');
+  });
+
+  it('G5 for a build: shipyard app refuses build_digest_mismatch when GHCR resolves no digest at all', () => {
+    const facts = buildFacts({
+      manifest: { build: { source: 'shipyard' } },
+      digests: { web: null },
+      shipyardBuild: {
+        record: {
+          buildId: 'build-1',
+          app: 'demo',
+          sha: SHA,
+          state: 'succeeded',
+          digests: { web: 'sha256:1111111111111111111111111111111111111111111111111111111111111111' },
+          at: '2026-09-28T00:00:00.000Z',
+        },
+      },
+    });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G5');
+    expect(result?.pass).toBe(false);
+    expect(result?.refusal?.code).toBe('build_digest_mismatch');
+  });
+
+  it('G5 for a github (default) app never consults shipyardBuild', () => {
+    const facts = buildFacts({ shipyardBuild: { record: null } });
+    const result = evaluateGates(facts).find((r) => r.gate === 'G5');
+    expect(result?.pass).toBe(true);
   });
 
   it('G6 refusal messages name the short SHA and the default branch', () => {

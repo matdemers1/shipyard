@@ -28,8 +28,14 @@ export const Config = z
     // Optional: record deploys in Foreman through the outbox (SHP-D-033, SHP-D-062).
     FOREMAN_URL: optionalString,
     FOREMAN_TOKEN: optionalString,
-    // Read-only PAT for changelogs on the console (the agent holds its own, SHP-D-043).
+    // Read-only PAT for changelogs on the console (the agent holds its own, SHP-D-043). Never
+    // used to write — see GITHUB_TOKEN_STATUS below, which is a separate token on purpose.
     GITHUB_TOKEN_SERVER: optionalString,
+    // Optional: a fine-grained, WRITE-scoped PAT ("Commit statuses: Read and write" on the built
+    // repos only) used to post `shipyard/test` and `shipyard/build` commit statuses (SHP-REQ-146).
+    // Unset means statuses are not posted — logged once, never a fallback to GITHUB_TOKEN_SERVER,
+    // which is read-only by design.
+    GITHUB_TOKEN_STATUS: optionalString,
     // The built console (apps/web/dist), served at / with an SPA fallback. Unset in development.
     CONSOLE_DIST: optionalString,
     // How many reverse-proxy hops sit in front of the server (a tunnel is one). Unset means none,

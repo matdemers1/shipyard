@@ -18,6 +18,7 @@ import { tokensRouter } from './tokens/index.js';
 import { approvalsRouter, pendingApprovalsRouter } from './approvals/index.js';
 import { commitsRouter } from './apps/commits.js';
 import { deployEventsRouter } from './deploys/events.js';
+import { buildEventsRouter, buildsRouter } from './builds/index.js';
 import { usersRouter } from './users/index.js';
 import { healthRouter } from './routes/health.js';
 import { freezeRouter } from './freeze/index.js';
@@ -110,6 +111,8 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/deploys', deployEventsRouter(serviceDeps));
   app.use('/api/deploys', approvalsRouter(serviceDeps));
   app.use('/api/deploys', deploysRouter(serviceDeps));
+  app.use('/api/builds', buildEventsRouter(serviceDeps));
+  app.use('/api/builds', buildsRouter(serviceDeps));
   app.use('/api', usersRouter(serviceDeps));
   app.use('/api', pendingApprovalsRouter(serviceDeps));
   app.use('/api/tokens', tokensRouter(serviceDeps));

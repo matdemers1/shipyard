@@ -40,7 +40,7 @@ function buildComponentSchemas(): Record<string, unknown> {
   for (const [id, schema] of Object.entries(schemas)) {
     components[id] = stripSchemaKeys(schema);
   }
-  return components;
+  return { ...components, ...BUILD_COMPONENT_SCHEMAS };
 }
 
 const ERROR_RESPONSE = {
@@ -52,8 +52,241 @@ const ERROR_RESPONSE = {
   },
 };
 
+/**
+ * Response and request shapes of `/api/builds` (SHP-T-7.4). They are server views over the build
+ * tables rather than shared-package contracts, so they are written here; their enums and
+ * primitives reference the registry's `BuildState`, `BuildStage`, `BuildTrigger`, `AppName`,
+ * `Sha40` and `Refusal`.
+ */
+const NULLABLE_DATE = { type: ['string', 'null'], format: 'date-time' };
+const BUILD_COMPONENT_SCHEMAS: Record<string, unknown> = {
+  BuildRequestBody: {
+    type: 'object',
+    description: 'Queue a Shipyard build of one SHA of one app (trigger manual).',
+    properties: {
+      app: { $ref: '#/components/schemas/AppName' },
+      sha: { $ref: '#/components/schemas/Sha40' },
+      requester: {
+        type: 'object',
+        properties: { label: { type: 'string', minLength: 1, maxLength: 200 } },
+        required: ['label'],
+        additionalProperties: false,
+      },
+    },
+    required: ['app', 'sha'],
+    additionalProperties: false,
+  },
+  BuildActionBody: {
+    type: 'object',
+    description: 'Optional body for rebuild and cancel.',
+    properties: {
+      requester: {
+        type: 'object',
+        properties: { label: { type: 'string', minLength: 1, maxLength: 200 } },
+        required: ['label'],
+        additionalProperties: false,
+      },
+    },
+    additionalProperties: false,
+  },
+  BuildSummary: {
+    type: 'object',
+    properties: {
+      buildId: { type: 'string', format: 'uuid' },
+      app: { $ref: '#/components/schemas/AppName' },
+      sha: { $ref: '#/components/schemas/Sha40' },
+      state: { $ref: '#/components/schemas/BuildState' },
+      trigger: { $ref: '#/components/schemas/BuildTrigger' },
+      queueSeq: { type: 'string', description: 'Arrival order (a bigint, as a decimal string).' },
+      requesterLabel: { type: 'string' },
+      rebuildOfId: { type: ['string', 'null'], format: 'uuid' },
+      failedStage: { oneOf: [{ $ref: '#/components/schemas/BuildStage' }, { type: 'null' }] },
+      cancelRequestedAt: NULLABLE_DATE,
+      dispatchedAt: NULLABLE_DATE,
+      startedAt: NULLABLE_DATE,
+      endedAt: NULLABLE_DATE,
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+    required: [
+      'buildId', 'app', 'sha', 'state', 'trigger', 'queueSeq', 'requesterLabel', 'rebuildOfId', 'failedStage',
+      'cancelRequestedAt', 'dispatchedAt', 'startedAt', 'endedAt', 'createdAt',
+    ],
+  },
+  BuildStageView: {
+    type: 'object',
+    properties: {
+      stage: { $ref: '#/components/schemas/BuildStage' },
+      state: { type: 'string', enum: ['running', 'succeeded', 'failed', 'skipped'] },
+      startedAt: { type: 'string', format: 'date-time' },
+      endedAt: NULLABLE_DATE,
+    },
+    required: ['stage', 'state', 'startedAt', 'endedAt'],
+    additionalProperties: false,
+  },
+  BuildDetail: {
+    allOf: [
+      { $ref: '#/components/schemas/BuildSummary' },
+      {
+        type: 'object',
+        properties: {
+          digests: { type: 'object', additionalProperties: { type: 'string' } },
+          refusal: { oneOf: [{ $ref: '#/components/schemas/Refusal' }, { type: 'null' }] },
+          stages: { type: 'array', items: { $ref: '#/components/schemas/BuildStageView' } },
+        },
+        required: ['digests', 'refusal', 'stages'],
+      },
+    ],
+  },
+  BuildPage: {
+    type: 'object',
+    properties: {
+      items: { type: 'array', items: { $ref: '#/components/schemas/BuildSummary' } },
+      nextCursor: { type: ['string', 'null'] },
+    },
+    required: ['items', 'nextCursor'],
+    additionalProperties: false,
+  },
+  BuildLogs: {
+    type: 'object',
+    properties: {
+      logs: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            stage: { $ref: '#/components/schemas/BuildStage' },
+            chunk: { type: 'string' },
+            at: { type: 'string', format: 'date-time' },
+          },
+          required: ['id', 'stage', 'chunk', 'at'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['logs'],
+    additionalProperties: false,
+  },
+  BuildEnqueued: {
+    type: 'object',
+    properties: {
+      buildId: { type: 'string', format: 'uuid' },
+      state: { $ref: '#/components/schemas/BuildState' },
+      created: { type: 'boolean', description: 'False when an open build of this app and SHA already existed.' },
+    },
+    required: ['buildId', 'state', 'created'],
+    additionalProperties: false,
+  },
+  BuildCancelled: {
+    type: 'object',
+    properties: {
+      buildId: { type: 'string', format: 'uuid' },
+      state: { $ref: '#/components/schemas/BuildState' },
+      cancelRequested: { type: 'boolean', description: 'True when the build was running and stops at its next stage boundary.' },
+    },
+    required: ['buildId', 'state', 'cancelRequested'],
+    additionalProperties: false,
+  },
+};
+
+const BUILD_ID_PARAM = { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } };
+
+function jsonResponse(description: string, ref: string): Record<string, unknown> {
+  return { description, content: { 'application/json': { schema: { $ref: `#/components/schemas/${ref}` } } } };
+}
+
+function buildPathsForBuilds(): Record<string, unknown> {
+  const actionBody = {
+    required: false,
+    content: { 'application/json': { schema: { $ref: '#/components/schemas/BuildActionBody' } } },
+  };
+  return {
+    '/builds': {
+      get: {
+        summary: 'List builds, newest first (a token sees only its apps)',
+        operationId: 'listBuilds',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [
+          { name: 'app', in: 'query', required: false, schema: { $ref: '#/components/schemas/AppName' } },
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100 } },
+          { name: 'cursor', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        responses: { '200': jsonResponse('One page of builds.', 'BuildPage'), '4XX': ERROR_RESPONSE },
+      },
+      post: {
+        summary: 'Queue a build of one SHA (deployer and up); an open build of that SHA is returned instead',
+        operationId: 'postBuild',
+        security: [{ session: [] }, { bearer: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/BuildRequestBody' } } } },
+        responses: {
+          '201': jsonResponse('Queued; it runs after every build that arrived before it.', 'BuildEnqueued'),
+          '200': jsonResponse('An open build of this app and SHA already existed.', 'BuildEnqueued'),
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+    '/builds/{id}': {
+      get: {
+        summary: 'One build with its stages',
+        operationId: 'getBuild',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [BUILD_ID_PARAM],
+        responses: { '200': jsonResponse('The build.', 'BuildDetail'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/builds/{id}/logs': {
+      get: {
+        summary: "A build's log chunks, oldest first (kept 30 days after it ends)",
+        operationId: 'getBuildLogs',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [BUILD_ID_PARAM, { name: 'after', in: 'query', required: false, schema: { type: 'string' } }],
+        responses: { '200': jsonResponse('The log chunks after `after`.', 'BuildLogs'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/builds/{id}/events': {
+      get: {
+        summary: 'Live build progress as Server-Sent Events: build, logs, end',
+        operationId: 'getBuildEvents',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [BUILD_ID_PARAM],
+        responses: {
+          '200': { description: 'An event stream; closes after `end` on a terminal state.', content: { 'text/event-stream': { schema: { type: 'string' } } } },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+    '/builds/{id}/rebuild': {
+      post: {
+        summary: 'Queue a new build of the same SHA (deployer and up)',
+        operationId: 'postBuildRebuild',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [BUILD_ID_PARAM],
+        requestBody: actionBody,
+        responses: {
+          '201': jsonResponse('Queued. 409 when a build of that SHA is still open.', 'BuildEnqueued'),
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+    '/builds/{id}/cancel': {
+      post: {
+        summary: 'Cancel a build: at once when queued, at its next stage boundary when running (deployer and up)',
+        operationId: 'postBuildCancel',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [BUILD_ID_PARAM],
+        requestBody: actionBody,
+        responses: {
+          '200': jsonResponse('Cancelled, or cancel requested. 409 when the build has already ended.', 'BuildCancelled'),
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+  };
+}
+
 function buildPaths(): Record<string, unknown> {
   return {
+    ...buildPathsForBuilds(),
     '/health': {
       get: {
         summary: 'Health check',

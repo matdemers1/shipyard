@@ -4,9 +4,10 @@ import { EventEmitter } from 'node:events';
  * In-process wake-ups for the long polls (SHP-P-2): the agent's poll waits for `work`, and
  * `shipyard_deploy_status` / `GET /deploys/:id?wait=` wait for `deploy:<id>`. One server process,
  * so an EventEmitter is enough; the database stays the source of truth — a waiter that wakes
- * re-reads it, and a waiter that times out re-reads it too.
+ * re-reads it, and a waiter that times out re-reads it too. `build:<id>` wakes a build's live
+ * stream (SHP-T-7.4); a queued build also publishes `work`, so the agent's poll can claim it.
  */
-export type Topic = 'work' | `deploy:${string}` | `app:${string}`;
+export type Topic = 'work' | `deploy:${string}` | `app:${string}` | `build:${string}`;
 
 export class Bus {
   private readonly emitter = new EventEmitter();

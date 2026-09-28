@@ -23,6 +23,8 @@ import { FreezeSheet, UnfreezeButton } from '../components/FreezeSheet';
 import { RefusalError, request, unreachableRefusal } from '../lib/api';
 import type { PendingApproval } from '../lib/home';
 import { useCan } from '../lib/auth';
+import { builds as buildsApi, type BuildSummary } from '../lib/builds';
+import { BuildRow } from './Builds';
 import {
   age,
   appDetail,
@@ -45,7 +47,24 @@ import {
 type Load =
   | { status: 'loading' }
   | { status: 'error'; error: RefusalError }
-  | { status: 'ready'; detail: Detail; drift: DriftState; freeze: FreezeInfo | null; approval: PendingApproval | undefined };
+  | {
+      status: 'ready';
+      detail: Detail;
+      drift: DriftState;
+      freeze: FreezeInfo | null;
+      approval: PendingApproval | undefined;
+      /** The latest few builds; null when they could not be read. */
+      builds: BuildSummary[] | null;
+    };
+
+/** Whether the manifest has Shipyard build this app's images (`build.source: shipyard`). */
+function builtByShipyard(manifest: unknown): boolean {
+  if (typeof manifest !== 'object' || manifest === null) return false;
+  const build = (manifest as { build?: unknown }).build;
+  return typeof build === 'object' && build !== null && (build as { source?: unknown }).source === 'shipyard';
+}
+
+const RECENT_BUILDS = 5;
 
 function stateTone(state: string): 'neutral' | 'attention' | 'danger' {
   if (state === 'failed' || state === 'rolled_back' || state === 'refused') return 'danger';
@@ -89,9 +108,21 @@ export function AppDetail() {
       freeze.get(app, controller.signal),
       // A deploy of this app waiting on a deployer (SHP-REQ-060). Reading it must not break the page.
       request<PendingApproval[]>('/api/approvals', { signal: controller.signal }).catch(() => [] as PendingApproval[]),
+      // The app's latest builds (SHP-REQ-142). Reading them must not break the page either.
+      buildsApi
+        .list({ app, limit: RECENT_BUILDS, signal: controller.signal })
+        .then((page) => page.items)
+        .catch(() => null),
     ])
-      .then(([detail, drift, freezeStatus, approvals]) => {
-        setLoad({ status: 'ready', detail, drift, freeze: freezeStatus.freeze, approval: approvals.find((a) => a.app === app) });
+      .then(([detail, drift, freezeStatus, approvals, recentBuilds]) => {
+        setLoad({
+          status: 'ready',
+          detail,
+          drift,
+          freeze: freezeStatus.freeze,
+          approval: approvals.find((a) => a.app === app),
+          builds: recentBuilds,
+        });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -137,6 +168,8 @@ export function AppDetail() {
   const neverDeployed = detail.liveSha === null;
   const running = Object.entries(detail.running ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const history = detail.targets;
+  const recentBuilds = load.builds ?? [];
+  const showBuilds = builtByShipyard(detail.manifest) || recentBuilds.length > 0;
 
   return (
     <Page>
@@ -353,6 +386,30 @@ export function AppDetail() {
             <RouterLink to="/schedules">See and schedule deploys</RouterLink>
           </Link>
         </Section>
+
+        {showBuilds ? (
+          <Section title="Builds" description="Images Shipyard built for this app, newest first.">
+            <Stack gap="12">
+              <DataList
+                aria-label="Recent builds"
+                empty={
+                  <EmptyState kind="empty" size="inline" heading={load.builds === null ? 'Builds could not be read' : 'No builds yet'}>
+                    {load.builds === null
+                      ? 'Open the builds list to try again.'
+                      : `${detail.name} is built here when it is pushed to ${detail.defaultBranch ?? 'its default branch'}.`}
+                  </EmptyState>
+                }
+              >
+                {recentBuilds.map((build) => (
+                  <BuildRow key={build.buildId} build={build} />
+                ))}
+              </DataList>
+              <Link asChild>
+                <RouterLink to={`/builds?app=${encodeURIComponent(detail.name)}`}>All builds of {detail.name}</RouterLink>
+              </Link>
+            </Stack>
+          </Section>
+        ) : null}
 
         <Section title="History" description="The last twenty deploys, rollbacks and dry runs.">
           <DataList

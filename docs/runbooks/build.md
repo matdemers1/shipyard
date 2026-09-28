@@ -109,6 +109,16 @@ it yet, so a dropped webhook delivery still gets built (`apps/server/src/jobs/bu
 Uses `GITHUB_TOKEN_SERVER` when set; public repos work without one, at GitHub's unauthenticated
 rate limit.
 
+## 2a. Build resources and cache
+
+**Settings → Builds** in the console (admins only) sets the BuildKit container's CPU and memory
+limits and the cache cap (defaults: 2 CPUs, 4096 MB, 20 GB). The agent receives them on its next
+poll, applies them to the `buildkitd` container with `docker update` (found by its compose labels,
+or `BUILDKIT_CONTAINER`), and garbage-collects the cache down to the cap after every build and at
+least daily. The **System** screen shows the cache's size, its cap, the last GC and whether the
+limits are applied. The `cpus` / `mem_limit` values in `docs/install/buildkit.compose.yml` are only
+the starting point until the first poll.
+
 ## 3. Watching a build
 
 Console: **Builds** (list, live log per stage, rebuild, cancel) or the app detail screen. Over MCP:

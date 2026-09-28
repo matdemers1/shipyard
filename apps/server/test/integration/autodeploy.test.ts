@@ -6,6 +6,7 @@ import { claimNextBuild, enqueueBuild, getBuild, isRefusal, recordBuildResult, t
 import { loadConfig } from '../../src/config.js';
 import { createDb, type Db } from '../../src/db.js';
 import type { ServiceDeps } from '../../src/deps.js';
+import type { createDeploy } from '../../src/deploys/service.js';
 import { setFreeze } from '../../src/freeze/service.js';
 import { Bus } from '../../src/events.js';
 
@@ -278,5 +279,35 @@ describe('autoDeploy true', () => {
     expect(await db.deploy.count()).toBe(1);
     const d = await detail(q.buildId);
     expect(d.autoDeployId).not.toBeNull();
+  });
+
+  it('a createDeploy that throws after the claim leaves a parseable refusal, and is never retried (SHP-T-7.20, SHP-REQ-139)', async () => {
+    await seedApp('toy', { autoDeploy: true });
+    const q = await enqueueBuild(deps, { app: 'toy', sha: sha('a'), trigger: 'webhook', requester: SYSTEM });
+    if (isRefusal(q)) throw new Error('unexpected refusal');
+    await claimNextBuild(deps);
+    await recordBuildResult(deps, { buildId: q.buildId, state: 'succeeded', digests: { web: DIGEST } });
+
+    const event = { buildId: q.buildId, app: 'toy', sha: sha('a'), state: 'succeeded' as const, digests: { web: DIGEST } };
+    const throwingCreateDeploy: typeof createDeploy = () => {
+      throw new Error('boom: the deploy service exploded');
+    };
+    await handleBuildResult(deps, event, { createDeploy: throwingCreateDeploy });
+
+    expect(await db.deploy.count()).toBe(0);
+    const d = await detail(q.buildId);
+    expect(d.autoDeployId).toBeNull();
+    expect(d.autoDeployRefusal).toMatchObject({
+      code: 'interrupted',
+      message: expect.stringContaining('boom: the deploy service exploded') as string,
+    });
+
+    // A second invocation (a replayed or concurrent result) does nothing further: the claim
+    // marker was overwritten with the refusal, which is a terminal, non-null autoDeployRefusal —
+    // `claim`'s guard (`autoDeployRefusal: null`) never matches it again.
+    await handleBuildResult(deps, event, { createDeploy: throwingCreateDeploy });
+    expect(await db.deploy.count()).toBe(0);
+    const d2 = await detail(q.buildId);
+    expect(d2.autoDeployRefusal).toMatchObject({ code: 'interrupted' });
   });
 });

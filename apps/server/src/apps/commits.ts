@@ -54,10 +54,38 @@ function conclusionToCi(conclusion: string | null, status: string): CiState {
   return status === 'completed' ? 'failure' : 'pending';
 }
 
-interface CacheEntry {
-  key: string;
+interface CompareCacheEntry {
   expiresAt: number;
-  value: CommitsResponse;
+  value: Awaited<ReturnType<GitHubPort['compare']>>;
+}
+
+/**
+ * A shared 60 s TTL cache in front of `GitHubPort#compare`, keyed on `repo`/`base`/`head`
+ * (SHP-T-7.20, SHP-REQ-145). One `Map` per caller — the console's `/commits` route and
+ * `shipyard_status` each hold their own, so a failure in one never poisons the other, but two
+ * calls through the same map within the TTL make one `compare` call. A rejected `compare` is
+ * never cached, so the next call retries it.
+ */
+export function makeCompareCache(): Map<string, CompareCacheEntry> {
+  return new Map();
+}
+
+export async function cachedCompare(
+  cache: Map<string, CompareCacheEntry>,
+  github: Pick<GitHubPort, 'compare'>,
+  repo: string,
+  base: string,
+  head: string,
+  now: number = Date.now(),
+): Promise<Awaited<ReturnType<GitHubPort['compare']>>> {
+  const key = `${repo}@${head}:${base}`;
+  const cached = cache.get(key);
+  if (cached !== undefined && cached.expiresAt > now) {
+    return cached.value;
+  }
+  const value = await github.compare(repo, base, head);
+  cache.set(key, { expiresAt: now + CACHE_TTL_MS, value });
+  return value;
 }
 
 /** For a token, the apps it is scoped to; for a user, undefined (every app). */
@@ -78,7 +106,7 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
   const { db, config } = deps;
   const github = options.github ?? createGitHubAdapter(config.GITHUB_TOKEN_SERVER === undefined ? {} : { token: config.GITHUB_TOKEN_SERVER });
   const router = Router();
-  const cache = new Map<string, CacheEntry>();
+  const compareCache = makeCompareCache();
 
   router.get('/:app/commits', async (req, res) => {
     if (!readerOrRefuse(req, res)) return;
@@ -112,7 +140,7 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
     const live = release?.sha ?? null;
 
     try {
-      const value = await computeCommits(github, cache, row.repo, row.defaultBranch, workflow, live, to);
+      const value = await computeCommits(github, compareCache, row.repo, row.defaultBranch, workflow, live, to);
       res.json(value);
     } catch (error) {
       if (error instanceof SequenceRefusalError) {
@@ -128,7 +156,7 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
 
 async function computeCommits(
   github: GitHubPort,
-  cache: Map<string, CacheEntry>,
+  compareCache: Map<string, CompareCacheEntry>,
   repo: string,
   defaultBranch: string,
   workflow: string | null,
@@ -137,17 +165,11 @@ async function computeCommits(
 ): Promise<CommitsResponse> {
   // `to` (SHP-REQ-087) is the candidate SHA the console already knows; the range narrows from the
   // default branch's HEAD to exactly that commit rather than the always-moving branch tip. The
-  // comparison itself names the head, so the cache key is keyed on live + repo/branch/to; a
-  // changed head naturally falls out of a fresh `compare` call each time the cache expires.
+  // comparison itself names the head, so `cachedCompare`'s key is repo/base/head — a changed head
+  // naturally falls out of a fresh `compare` call each time the cache expires.
   const target = to ?? defaultBranch;
-  const now = Date.now();
-  const cacheKey = `${repo}@${target}:${live ?? 'none'}`;
-  const cached = cache.get(cacheKey);
-  if (cached !== undefined && cached.expiresAt > now && cached.value.source === 'github') {
-    return cached.value;
-  }
 
-  const comparison = live === null ? null : await github.compare(repo, live, target);
+  const comparison = live === null ? null : await cachedCompare(compareCache, github, repo, live, target);
   let commits: { sha: string; message: string }[];
   let head: string | null;
 
@@ -162,7 +184,7 @@ async function computeCommits(
   } else {
     // No recorded release, or GitHub does not know the recorded SHA any more: fall back to the
     // last 10 commits on the default branch against itself (self-compare), i.e. just the head.
-    const selfCompare = await github.compare(repo, defaultBranch, defaultBranch);
+    const selfCompare = await cachedCompare(compareCache, github, repo, defaultBranch, defaultBranch);
     head = selfCompare?.commits[selfCompare.commits.length - 1]?.sha ?? null;
     commits = [];
   }
@@ -186,9 +208,7 @@ async function computeCommits(
     }
   }
 
-  const value: CommitsResponse = { live, head, commits: entries, newestGreen, source: 'github' };
-  cache.set(cacheKey, { key: cacheKey, expiresAt: now + CACHE_TTL_MS, value });
-  return value;
+  return { live, head, commits: entries, newestGreen, source: 'github' };
 }
 
 async function ciStateFor(github: GitHubPort, repo: string, workflow: string, sha: string, branch: string): Promise<CiState> {

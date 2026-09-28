@@ -9,6 +9,7 @@ import { startOutbox } from './outbox/index.js';
 import { startScheduler } from './schedules/runner.js';
 import { startBackups } from './jobs/backup.js';
 import { startHeartbeat } from './jobs/heartbeat.js';
+import { startBuildLogPrune } from './jobs/build-log-prune.js';
 import { createMailer } from './mail/index.js';
 import { liveRelay } from './mail/settings.js';
 
@@ -32,6 +33,8 @@ const mailer = createMailer(config, logger, { relay: liveRelay({ db, config, log
 // Shipyard's own nightly dump and restore drill (SHP-D-035), and the stale-agent alert.
 const backups = startBackups({ db, logger, config, bus }, mailer);
 const heartbeat = startHeartbeat({ db, logger, config, bus }, mailer);
+// Build logs go 30 days after their build ends (SHP-REQ-141).
+const buildLogPrune = startBuildLogPrune({ db, logger });
 
 const server = app.listen(config.PORT, () => {
   logger.info({ port: config.PORT }, 'listening');
@@ -40,7 +43,7 @@ const server = app.listen(config.PORT, () => {
 function shutdown(signal: string): void {
   logger.info({ signal }, 'shutting down');
   server.close(() => {
-    Promise.all([outbox.stop(), approvalExpiry.stop(), scheduler.stop(), backups.stop(), heartbeat.stop()])
+    Promise.all([outbox.stop(), approvalExpiry.stop(), scheduler.stop(), backups.stop(), heartbeat.stop(), buildLogPrune.stop()])
       .then(() => db.$disconnect())
       .catch((err: unknown) => {
         logger.error({ err }, 'error disconnecting db');

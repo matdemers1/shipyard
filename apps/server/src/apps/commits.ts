@@ -54,6 +54,11 @@ function conclusionToCi(conclusion: string | null, status: string): CiState {
   return status === 'completed' ? 'failure' : 'pending';
 }
 
+interface ResponseCacheEntry {
+  expiresAt: number;
+  value: CommitsResponse;
+}
+
 interface CompareCacheEntry {
   expiresAt: number;
   value: Awaited<ReturnType<GitHubPort['compare']>>;
@@ -70,6 +75,19 @@ export function makeCompareCache(): Map<string, CompareCacheEntry> {
   return new Map();
 }
 
+/** Entries kept per cache; the oldest goes first. A long-lived process never grows without bound. */
+const CACHE_MAX_ENTRIES = 500;
+
+function setBounded<V>(cache: Map<string, V>, key: string, value: V): void {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
 export async function cachedCompare(
   cache: Map<string, CompareCacheEntry>,
   github: Pick<GitHubPort, 'compare'>,
@@ -84,7 +102,7 @@ export async function cachedCompare(
     return cached.value;
   }
   const value = await github.compare(repo, base, head);
-  cache.set(key, { expiresAt: now + CACHE_TTL_MS, value });
+  setBounded(cache, key, { expiresAt: now + CACHE_TTL_MS, value });
   return value;
 }
 
@@ -107,6 +125,8 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
   const github = options.github ?? createGitHubAdapter(config.GITHUB_TOKEN_SERVER === undefined ? {} : { token: config.GITHUB_TOKEN_SERVER });
   const router = Router();
   const compareCache = makeCompareCache();
+  // The whole response, per-commit CI state included: a hit makes no GitHub call at all.
+  const responseCache = new Map<string, ResponseCacheEntry>();
 
   router.get('/:app/commits', async (req, res) => {
     if (!readerOrRefuse(req, res)) return;
@@ -140,7 +160,7 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
     const live = release?.sha ?? null;
 
     try {
-      const value = await computeCommits(github, compareCache, row.repo, row.defaultBranch, workflow, live, to);
+      const value = await computeCommits(github, compareCache, responseCache, row.repo, row.defaultBranch, workflow, live, to);
       res.json(value);
     } catch (error) {
       if (error instanceof SequenceRefusalError) {
@@ -157,6 +177,7 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
 async function computeCommits(
   github: GitHubPort,
   compareCache: Map<string, CompareCacheEntry>,
+  responseCache: Map<string, ResponseCacheEntry>,
   repo: string,
   defaultBranch: string,
   workflow: string | null,
@@ -168,6 +189,12 @@ async function computeCommits(
   // comparison itself names the head, so `cachedCompare`'s key is repo/base/head — a changed head
   // naturally falls out of a fresh `compare` call each time the cache expires.
   const target = to ?? defaultBranch;
+  const now = Date.now();
+  const responseKey = `${repo}@${target}:${live ?? 'none'}`;
+  const cachedResponse = responseCache.get(responseKey);
+  if (cachedResponse !== undefined && cachedResponse.expiresAt > now) {
+    return cachedResponse.value;
+  }
 
   const comparison = live === null ? null : await cachedCompare(compareCache, github, repo, live, target);
   let commits: { sha: string; message: string }[];
@@ -208,7 +235,9 @@ async function computeCommits(
     }
   }
 
-  return { live, head, commits: entries, newestGreen, source: 'github' };
+  const value: CommitsResponse = { live, head, commits: entries, newestGreen, source: 'github' };
+  setBounded(responseCache, responseKey, { expiresAt: now + CACHE_TTL_MS, value });
+  return value;
 }
 
 async function ciStateFor(github: GitHubPort, repo: string, workflow: string, sha: string, branch: string): Promise<CiState> {

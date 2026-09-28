@@ -8,12 +8,16 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
 - **Connect once:** remote MCP server `https://shipyard.d3cloud.io/mcp`, header
   `Authorization: Bearer <token>`. A token is scoped to the apps it names; ask the operator for one
   (`host-admin issue-token --apps <app>` on the host). Never paste it into a file in this repo.
-- **What exists:** `shipyard_status` (live release, commits waiting, CI) · `shipyard_dry_run` ·
-  `shipyard_deploy` (an `app`, or a `group`, and a 40-hex `sha`) · `shipyard_deploy_status` ·
-  `shipyard_rollback` (to an earlier successful deploy, from the agent's own ledger).
+- **What exists:** `shipyard_status` (live release, `buildSource`, commits waiting with their build
+  state, CI) · `shipyard_dry_run` · `shipyard_deploy` (an `app`, or a `group`, and a 40-hex `sha`) ·
+  `shipyard_deploy_status` · `shipyard_rollback` (to an earlier successful deploy, from the agent's
+  own ledger) · `shipyard_build` and `shipyard_build_status` (only for an app whose manifest says
+  `build.source: shipyard` — its images come from Shipyard itself, not GitHub CI).
 - **What you can deploy:** only a SHA on the default branch whose image workflow is green and that
-  is ahead of what is live. Shipyard re-checks all of it on the host; a refusal names the gate and
-  the fix — read it, don't retry the same call.
+  is ahead of what is live. For a `build: shipyard` app, "green" means a Shipyard build of that SHA
+  has succeeded — queue one with `shipyard_build` if none has, then poll `shipyard_build_status`
+  (`deployable: true` once it has succeeded) before calling `shipyard_deploy`. Shipyard re-checks
+  all of it on the host; a refusal names the gate and the fix — read it, don't retry the same call.
 - **Every deploy request names you:** `requester: { label: "claude: <repo> <what>", repo, branch }`.
   The label is what someone locked out will see.
 - **Shipyard never queues.** `locked` means someone else is deploying: wait for their deploy to

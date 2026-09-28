@@ -1,6 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
+  ShipyardBuildInput,
+  ShipyardBuildStatusInput,
   ShipyardDeployInput,
   ShipyardDeployStatusInput,
   ShipyardDryRunInput,
@@ -10,8 +12,10 @@ import {
   type DeployStatus,
   type Refusal,
 } from '@shipyard/schema';
+import type { GitHubPort } from '@shipyard/sequence/github';
 import { z } from 'zod';
 import type { ServiceDeps } from '../deps.js';
+import { enqueueBuild, getBuild, type BuildRequester } from '../builds/service.js';
 import {
   MAX_WAIT_SECONDS,
   createDeploy,
@@ -25,10 +29,10 @@ import { getGroupDeployStatus, waitForGroupChange } from '../groups/service.js';
 import { appStatuses } from './status.js';
 
 /**
- * The five MCP tools (SHP-REQ-041). Every tool is a thin shell over the deploy service: no deploy
- * logic lives here, and no tool accepts a command, a path or an image reference (SHP-REQ-053) —
- * only app names, 40-hex SHAs, deploy IDs and who is asking. Freeze, schedule, restore and approval
- * are console-only (SHP-D-072).
+ * The seven MCP tools (SHP-REQ-041, SHP-REQ-144). Every tool is a thin shell over the deploy or
+ * build service: no deploy or build logic lives here, and no tool accepts a command, a path or an
+ * image reference (SHP-REQ-053) — only app names, 40-hex SHAs, deploy/build IDs and who is asking.
+ * Freeze, schedule, restore and approval are console-only (SHP-D-072).
  */
 
 export interface McpOptions {
@@ -37,6 +41,8 @@ export interface McpOptions {
    * answers "still running". Under the 90 s cap (SHP-D-025); tests shorten it.
    */
   dryRunWaitSeconds?: number;
+  /** Injected for tests; `shipyard_status` defaults to the real GitHub API (SHP-REQ-145). */
+  github?: Pick<GitHubPort, 'compare'>;
 }
 
 export const DEFAULT_DRY_RUN_WAIT_SECONDS = 85;
@@ -104,8 +110,11 @@ export function buildMcpServer(
       title: 'Shipyard status',
       description:
         'Read-only. For each app this token is scoped to (or just `app`): the live release (SHA, image digest per ' +
-        'service, schema revision), open drift, who holds the deploy lock and at which step, and the last finished ' +
-        'result. The newest green SHA on main is not included: the server does not track CI. Changes nothing.',
+        'service, schema revision), open drift, who holds the deploy lock and at which step, the last finished ' +
+        'result, `buildSource` (`shipyard` or `github`), and the commits waiting on the default branch ahead of the ' +
+        'live release — each with `build: { state, buildId } | null`, the state of the latest Shipyard build of that ' +
+        'SHA when this app is `build: shipyard` (queue one with shipyard_build). The newest green SHA on main is not ' +
+        'included: the server does not track CI. Changes nothing.',
       inputSchema: toolInput(ShipyardStatusInput),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -118,7 +127,7 @@ export function buildMcpServer(
       } else {
         names = [...scopeOf(caller)];
       }
-      const apps = await appStatuses(deps.db, names);
+      const apps = await appStatuses(deps, names, options.github !== undefined ? { github: options.github } : {});
       if (app !== undefined && apps.length === 0) {
         return refused(refusal('unknown_app', `No app named ${app} has been reported by the agent.`));
       }
@@ -259,6 +268,58 @@ export function buildMcpServer(
       }
       const result = await createDeploy(deps, caller, { kind: 'rollback', app, toDeployId, requester });
       return isRefusal(result) ? refused(result) : ok(result);
+    },
+  );
+
+  server.registerTool(
+    'shipyard_build',
+    {
+      title: 'Build an app',
+      description:
+        'Queues a build of `app` at the full 40-character `sha`, only for an app whose manifest declares ' +
+        '`build.source: shipyard` (its images come from Shipyard itself, not GitHub CI). Returns ' +
+        '{ buildId, state, created } at once; follow it with shipyard_build_status. Idempotent: a second call for ' +
+        'the same app and SHA while a build is still open (queued or running) returns that build\'s id with ' +
+        'created: false rather than starting a second one. `requester` (repo, branch, label) is required and ' +
+        'recorded. Only shipyard_deploy makes the result live — a build only produces images to deploy from.',
+      inputSchema: toolInput(ShipyardBuildInput),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ app, sha, requester }) => {
+      const denied = outOfScope(caller, app);
+      if (denied !== null) return refused(denied);
+      const actor = caller.actor ?? { type: 'system' as const, label: requester.label };
+      const buildRequester: BuildRequester = {
+        label: requester.label,
+        ...(actor.type === 'user' && actor.id !== undefined ? { userId: actor.id } : {}),
+        ...(actor.type === 'token' && actor.id !== undefined ? { tokenId: actor.id } : {}),
+      };
+      const result = await enqueueBuild(deps, { app, sha, trigger: 'mcp', requester: buildRequester }, { actor, audit: (event) => caller.audit(event) });
+      if (isRefusal(result)) return refused(result);
+      return ok({ ...result, message: 'Poll shipyard_build_status with this buildId to follow it.' });
+    },
+  );
+
+  server.registerTool(
+    'shipyard_build_status',
+    {
+      title: 'Build status',
+      description:
+        "Returns a build's status by `buildId`: state, each stage's state (fetch, test, integration, build, push), " +
+        'the failed stage if any, any refusal verbatim, and the digest pushed for each service once it has ' +
+        'succeeded. `deployable` is true once the build has succeeded — only then can shipyard_deploy use its ' +
+        'images. Changes nothing.',
+      inputSchema: toolInput(ShipyardBuildStatusInput),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ buildId }) => {
+      const build = await getBuild(deps.db, buildId);
+      if (build === null) {
+        return refused(refusal('not_found', 'No such build.', 'Use the buildId that shipyard_build returned.'));
+      }
+      const denied = outOfScope(caller, build.app);
+      if (denied !== null) return refused(denied);
+      return ok({ ...build, deployable: build.state === 'succeeded' });
     },
   );
 

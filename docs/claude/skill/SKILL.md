@@ -12,9 +12,21 @@ refuse the next deploy until it is resolved.
 ## 1. Know what you are shipping
 
 Call `shipyard_status` for the app (or with no `app` for every app the token covers). It returns
-the live SHA, the commits waiting on the default branch with their CI state and Foreman task IDs,
-and the newest green commit. Pick the SHA you mean to ship: normally the newest green one, or the
-exact commit the user named. It must be on the default branch, green, and ahead of live.
+the live SHA, `buildSource` (`shipyard` or `github`), and the commits waiting on the default branch
+ahead of live — each with `build: { state, buildId } | null`, the state of the latest Shipyard
+build of that SHA when this app is `build: shipyard`. Pick the SHA you mean to ship: normally the
+newest one, or the exact commit the user named. It must be on the default branch and ahead of live;
+for a `build: github` app it must also be CI-green (`shipyard_dry_run` checks this on the host).
+
+## 1a. Build it, if Shipyard builds this app
+
+When `buildSource` is `shipyard`, a commit is only deployable once Shipyard has built it — GitHub CI
+never publishes its image. A push usually queues a build automatically; if the commit you want has
+no `build` yet (or you want a fresh one), queue it yourself: `shipyard_build { app, sha, requester }`
+returns `{ buildId, state, created }` at once — `created: false` means a build of that SHA was
+already open, and you got its id back instead of starting a second one. Poll
+`shipyard_build_status { buildId }` until `deployable: true` (state `succeeded`); on `failed` or
+`refused`, report the `failedStage` and `refusal` verbatim rather than deploying anyway.
 
 ## 2. Dry run
 

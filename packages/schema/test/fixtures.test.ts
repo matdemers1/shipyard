@@ -70,6 +70,14 @@ import {
   MailSettingsUpdate,
   MailSettings,
   MailTestResult,
+  BuildName,
+  BuildStage,
+  BuildState,
+  BuildTrigger,
+  BuildJob,
+  BuildProgress,
+  BuildResult,
+  BuildConfig,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -152,6 +160,14 @@ const SCHEMAS: Record<string, ZodType> = {
   mailSettingsUpdate: MailSettingsUpdate,
   mailSettings: MailSettings,
   mailTestResult: MailTestResult,
+  buildName: BuildName,
+  buildStage: BuildStage,
+  buildState: BuildState,
+  buildTrigger: BuildTrigger,
+  buildJob: BuildJob,
+  buildProgress: BuildProgress,
+  buildResult: BuildResult,
+  buildConfig: BuildConfig,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

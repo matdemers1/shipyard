@@ -1,0 +1,5 @@
+{
+  "source": "shipyard",
+  "dockerfile": "/etc/passwd",
+  "releaseTargets": { "server": "release-server" }
+}

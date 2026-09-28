@@ -1,0 +1,17 @@
+name: toy
+repo: example/toy
+workflow: ci.yml
+compose:
+  files:
+    - /srv/toy/docker-compose.yml
+  project: toy
+services:
+  server:
+    image: ghcr.io/example/toy/server
+health:
+  service: server
+  port: 3000
+  path: /health
+build:
+  source: github
+  testTarget: test

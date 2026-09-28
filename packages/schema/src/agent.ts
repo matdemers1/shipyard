@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AppName, Digest, Sha40 } from './primitives.js';
 import { Manifest } from './manifest.js';
 import { Refusal } from './errors.js';
+import { BuildJob } from './build.js';
 
 /**
  * The agent protocol (SHP-REQ-004): what the portless agent reports and what it
@@ -108,6 +109,8 @@ export type AgentReport = z.infer<typeof AgentReport>;
 export const PollRequest = z
   .strictObject({
     waitSeconds: z.int().min(0).max(25),
+    /** An agent that sends `['build']` can receive a build job; older agents omit it and never are sent one. */
+    capabilities: z.array(z.enum(['build'])).max(10).optional(),
   })
   .meta({ id: 'PollRequest', description: 'The agent long-poll request body' });
 export type PollRequest = z.infer<typeof PollRequest>;
@@ -140,8 +143,9 @@ export const PollResponse = z
   .union([
     z.strictObject({ target: z.null() }),
     z.strictObject({ target: PollTarget }),
+    z.strictObject({ target: z.null(), build: BuildJob }),
   ])
-  .meta({ id: 'PollResponse', description: 'Either no work, or one target to execute' });
+  .meta({ id: 'PollResponse', description: 'Either no work, one target to execute, or one build to run' });
 export type PollResponse = z.infer<typeof PollResponse>;
 
 export const StepJournal = z

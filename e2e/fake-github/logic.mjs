@@ -62,7 +62,20 @@ export function normalizeState(input) {
         return { sha: c.sha, parent };
       });
     }
-    repos[fullName] = { runs, branches };
+    const out = { runs, branches };
+    // Source archives (SHP-T-7.16): { <sha>: <base64 tar.gz> }. Only present when posted, so a
+    // state without them normalises exactly as before.
+    if (repo.tarballs !== undefined) {
+      if (!isObject(repo.tarballs)) fail(`${fullName}.tarballs: expected { <sha>: <base64 tar.gz> }`);
+      const tarballs = {};
+      for (const [sha, data] of Object.entries(repo.tarballs)) {
+        if (!SHA.test(sha)) fail(`${fullName}.tarballs: ${JSON.stringify(sha)} is not a 40-hex sha`);
+        if (typeof data !== 'string' || data.length === 0) fail(`${fullName}.tarballs.${sha}: expected base64`);
+        tarballs[sha] = data;
+      }
+      out.tarballs = tarballs;
+    }
+    repos[fullName] = out;
   }
   return { repos };
 }
@@ -184,6 +197,22 @@ export function compare(state, fullName, baseRef, headRef) {
 }
 
 /**
+ * GET /repos/:owner/:repo/tarball/:ref — the archive itself, answered 200 directly. (GitHub answers
+ * 302 to codeload; the agent's adapter follows a redirect only over https, which this plain-HTTP
+ * fake does not speak, and it accepts a direct 200 the same way.)
+ * @param {import('./logic.d.mts').State} state
+ * @param {string} fullName
+ * @param {string} ref
+ * @returns {import('./logic.d.mts').Reply}
+ */
+export function tarball(state, fullName, ref) {
+  const repo = state.repos[fullName];
+  const data = repo?.tarballs?.[ref];
+  if (data === undefined) return notFound();
+  return { status: 200, body: Buffer.from(data, 'base64'), contentType: 'application/x-gzip' };
+}
+
+/**
  * Route a GitHub API request (not /_control) to the logic above.
  * @param {import('./logic.d.mts').State} state
  * @param {string} method
@@ -196,6 +225,10 @@ export function route(state, method, rawUrl) {
   const runs = /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/?$/.exec(url.pathname);
   if (runs) {
     return listRuns(state, `${decodeURIComponent(runs[1])}/${decodeURIComponent(runs[2])}`, url.searchParams);
+  }
+  const tar = /^\/repos\/([^/]+)\/([^/]+)\/tarball\/([^/]+)$/.exec(url.pathname);
+  if (tar) {
+    return tarball(state, `${decodeURIComponent(tar[1])}/${decodeURIComponent(tar[2])}`, decodeURIComponent(tar[3]));
   }
   const cmp = /^\/repos\/([^/]+)\/([^/]+)\/compare\/(.+)$/.exec(url.pathname);
   if (cmp) {

@@ -20,6 +20,15 @@ USER node
 EXPOSE 3000
 CMD ["node", "server.mjs"]
 
+# A Shipyard build (SHP-T-7.16): `test` runs test.mjs against the source tree (a TOY_TEST_FAIL
+# file makes it exit 1), `release` is the plain image. A `docker build` with no target never
+# builds either: the last stage below is still the default.
+FROM base AS test
+COPY --chown=node . /app/toy-src/
+RUN node /app/toy-src/test.mjs
+
+FROM base AS release
+
 # TOY_CONTRACT=1 marks the release as a contract migration (never auto-rolled back).
 FROM base AS contract-0
 FROM base AS contract-1

@@ -17,6 +17,8 @@ export interface RepoState {
   runs: Record<string, StoredRun[]>;
   /** Commits per branch, oldest first; the last one is the tip. */
   branches: Record<string, Commit[]>;
+  /** Source archives by SHA, base64 tar.gz; present only when posted. */
+  tarballs?: Record<string, string>;
 }
 
 export interface State {
@@ -31,6 +33,8 @@ export interface StateInput {
     {
       runs?: Record<string, (Partial<StoredRun> & { workflow: string })[]>;
       branches?: Record<string, Commit[]>;
+      /** `GET /repos/:o/:r/tarball/:sha` answers 200 with these bytes (base64 tar.gz). */
+      tarballs?: Record<string, string>;
     }
   >;
 }
@@ -62,11 +66,14 @@ export interface CompareBody {
 
 export interface Reply {
   status: number;
+  /** JSON, or raw bytes (a Buffer) sent with `contentType`. */
   body: unknown;
+  contentType?: string;
 }
 
 export function emptyState(): State;
 export function normalizeState(input: unknown): State;
 export function listRuns(state: State, fullName: string, query: URLSearchParams): Reply;
 export function compare(state: State, fullName: string, baseRef: string, headRef: string): Reply;
+export function tarball(state: State, fullName: string, ref: string): Reply;
 export function route(state: State, method: string, rawUrl: string): Reply;

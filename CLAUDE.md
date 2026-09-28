@@ -22,6 +22,10 @@ decisions SHP-D-001…087, risks SHP-R-001…010.
   source for validation, types and OpenAPI.
 - **`apps/web`** — React 19 on `@d3cloud/ui`, **phone-first** (375 px).
 - **`e2e/`** — Docker-in-Docker + `registry:2` + fake GitHub + a toy app with failure modes.
+- **Builds** (SHP-REQ-117, `build: shipyard` opt-in per app, docs/runbooks/build.md) — the agent
+  fetches a GitHub push-verified commit, tests it, builds it with rootless BuildKit in a firewalled
+  build network, and pushes it to GHCR, gated on the same fail-closed rules as a deploy. Shipyard's
+  own manifest stays `build: github` permanently (SHP-REQ-136).
 
 ## Non-negotiables — a change that breaks one is wrong
 
@@ -77,7 +81,9 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   (`host-admin issue-token --apps <app>` on the host). Never paste it into a file in this repo.
 - **What exists:** `shipyard_status` (live release, commits waiting, CI) · `shipyard_dry_run` ·
   `shipyard_deploy` (an `app`, or a `group`, and a 40-hex `sha`) · `shipyard_deploy_status` ·
-  `shipyard_rollback` (to an earlier successful deploy, from the agent's own ledger).
+  `shipyard_rollback` (to an earlier successful deploy, from the agent's own ledger) ·
+  `shipyard_build` (queue a build for a `build: shipyard` app and SHA) · `shipyard_build_status`
+  (poll it; see `docs/runbooks/build.md`).
 - **What you can deploy:** only a SHA on the default branch whose image workflow is green and that
   is ahead of what is live. Shipyard re-checks all of it on the host; a refusal names the gate and
   the fix — read it, don't retry the same call.

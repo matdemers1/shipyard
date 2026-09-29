@@ -132,6 +132,46 @@ describe('rollback targets', () => {
   });
 });
 
+describe('status and waiting commits (SHP-T-3.10)', () => {
+  const commits = {
+    live: sha('9'),
+    head: sha('c'),
+    newestGreen: sha('b'),
+    ahead: 3,
+    source: 'github',
+    commits: [
+      { sha: sha('a'), message: 'SHP-T-1.1: first\n\nbody', ci: 'none', taskIds: ['SHP-T-1.1'] },
+      { sha: sha('b'), message: 'second', ci: 'success', taskIds: [] },
+      { sha: sha('c'), message: 'third', ci: 'pending', taskIds: [] },
+    ],
+  };
+
+  it('explains the status, lists the waiting commits newest first, and ships from the list', async () => {
+    routes('deployer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: commits } });
+    const user = userEvent.setup();
+    renderAt('/apps/web');
+    expect(await screen.findByText('Ready to ship bbbbbbb', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByText(/1 newer commit is still being built/)).toBeInTheDocument();
+
+    const list = screen.getByRole('list', { name: 'Commits waiting to ship' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows.map((r) => within(r).getByText(/first|second|third/).textContent)).toEqual(['third', 'second', 'SHP-T-1.1: first']);
+    expect(within(list).getByText('CI running')).toBeInTheDocument();
+    expect(within(list).getByText('No images')).toBeInTheDocument();
+
+    await user.click(within(list).getByRole('button', { name: 'Ship bbbbbbb' }));
+    expect(opened.at(-1)).toEqual({ kind: 'deploy', app: 'web', sha: sha('b') });
+  });
+
+  it('shows a viewer the status and the commits but no ship button', async () => {
+    routes('viewer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: commits } });
+    renderAt('/apps/web');
+    expect(await screen.findByText('Ready to ship bbbbbbb', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Commits waiting to ship' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ship / })).not.toBeInTheDocument();
+  });
+});
+
 describe('drift banner', () => {
   it('keeps adopt disabled until a reason is typed, then sends it', async () => {
     const calls = routes('deployer', detail(), openDrift, {

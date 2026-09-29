@@ -129,8 +129,56 @@ describe('Home', () => {
     render(<App />);
     await screen.findByRole('heading', { level: 1, name: 'Home' });
     await screen.findByRole('link', { name: 'api' });
-    expect(screen.getByRole('button', { name: 'Up to date' })).toBeDisabled();
+    expect(screen.getByText(/^Live is the newest commit on .*Nothing to ship\.$/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Ship /i })).not.toBeInTheDocument();
+  });
+
+  it('commits ahead with no images say why there is nothing to ship, and count every commit ahead', async () => {
+    mockFetch({
+      ...baseRoutes(),
+      'GET /api/auth/me': meReply('deployer'),
+      'GET /api/apps': { status: 200, body: { apps: [appRow('web', { defaultBranch: 'main' })] } },
+      'GET /api/approvals': { status: 200, body: [] },
+      'GET /api/apps/web/commits': {
+        status: 200,
+        body: {
+          live: SHA_LIVE,
+          head: SHA_HEAD,
+          newestGreen: null,
+          ahead: 14,
+          source: 'github',
+          commits: [
+            { sha: SHA_MID, message: 'docs', ci: 'none', taskIds: [] },
+            { sha: SHA_HEAD, message: 'docs again', ci: 'none', taskIds: [] },
+          ],
+        },
+      },
+    });
+    render(<App />);
+    await screen.findByRole('heading', { level: 1, name: 'Home' });
+    expect(await screen.findByText('14 commits since live, none with images')).toBeInTheDocument();
+    expect(screen.getByText(/none of these has a finished build on main yet/)).toBeInTheDocument();
+    expect(screen.getByText('2 without images · 12 older unchecked')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Ship /i })).not.toBeInTheDocument();
+  });
+
+  it('puts an app that is ready to ship before one that is up to date, and counts them in the overview', async () => {
+    mockFetch({
+      ...baseRoutes(),
+      'GET /api/auth/me': meReply('deployer'),
+      'GET /api/apps': { status: 200, body: { apps: [appRow('api'), appRow('web')] } },
+      'GET /api/approvals': { status: 200, body: [] },
+      'GET /api/apps/web/commits': { status: 200, body: commitsAheadPending() },
+      'GET /api/apps/api/commits': { status: 200, body: commitsUpToDate() },
+    });
+    render(<App />);
+    await screen.findByRole('heading', { level: 1, name: 'Home' });
+    await screen.findByRole('link', { name: 'web' });
+    const titles = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
+    expect(titles.slice(0, 2)).toEqual(['web', 'api']);
+    const overview = screen.getByRole('list', { name: 'Overview' });
+    expect(overview).toHaveTextContent('1 ready to ship');
+    expect(overview).toHaveTextContent('1 nothing to ship');
   });
 
   it('shows a group card with its members and canary, and a deployer can open its sheet', async () => {

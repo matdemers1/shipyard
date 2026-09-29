@@ -1,25 +1,31 @@
-import { Badge, Button, Card, CardBody, CardTitle, Cluster, Link, Stack } from '@d3cloud/ui';
-import { GitCommitHorizontal } from 'lucide-react';
+import { Badge, Button, Card, CardBody, CardTitle, Cluster, Link } from '@d3cloud/ui';
 import { Link as RouterLink } from 'react-router-dom';
-import { ageFrom, primaryActionFor, shortSha, waitingCount, type HomeApp, type PendingApproval } from '../lib/home';
+import { sha7, stateWords, summarizeCommits, type AppStatus } from '../lib/appstatus';
+import { ageFrom, type HomeApp, type PendingApproval } from '../lib/home';
 import type { SheetAction } from './DryRunSheet';
+import { StatusLine } from './StatusLine';
 
-/** CI-state tones for the commits-waiting dot, drawn from the newest checked commit. */
-function ciTone(app: HomeApp): 'neutral' | 'attention' | 'danger' {
-  const entries = app.commits?.commits ?? [];
-  if (entries.some((c) => c.ci === 'failure')) return 'danger';
-  if (entries.some((c) => c.ci === 'pending')) return 'attention';
-  return 'neutral';
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${String(n)} ${n === 1 ? one : many}`;
 }
 
-function lastResultText(app: HomeApp): string {
-  if (app.lastDeploy === null) return 'No deploys yet';
-  const { state } = app.lastDeploy;
-  return state === 'succeeded' ? 'Last: succeeded' : `Last: ${state}`;
+/** "12 commits" and, under it, what they are made of: "2 built · 10 without images". */
+function waitingFact(app: HomeApp): { value: string; sub: string | null } {
+  if (app.commits === null || app.commits.source === 'unavailable') return { value: 'Unknown', sub: null };
+  const s = summarizeCommits(app.commits);
+  if (s.ahead === 0) return { value: 'None', sub: null };
+  const parts: string[] = [];
+  if (s.green > 0) parts.push(`${String(s.green)} built`);
+  if (s.running > 0) parts.push(`${String(s.running)} building`);
+  if (s.failed > 0) parts.push(`${String(s.failed)} failed`);
+  if (s.noRun > 0) parts.push(`${String(s.noRun)} without images`);
+  if (s.ahead > s.checked) parts.push(`${String(s.ahead - s.checked)} older unchecked`);
+  return { value: plural(s.ahead, 'commit'), sub: parts.join(' · ') || null };
 }
 
 export interface AppCardProps {
   app: HomeApp;
+  status: AppStatus;
   /** Hidden for a viewer (SHP-REQ-105). */
   canDeploy: boolean;
   onShip: (action: SheetAction) => void;
@@ -27,77 +33,95 @@ export interface AppCardProps {
   approval?: PendingApproval | undefined;
 }
 
-/** One app, one card (SHP-D-023, SHP-REQ-056, SHP-REQ-059). */
-export function AppCard({ app, canDeploy, onShip, approval }: AppCardProps) {
-  const action = primaryActionFor(app);
-  const waiting = waitingCount(app.commits);
+/**
+ * One app, one card (SHP-D-023, SHP-REQ-056, SHP-REQ-059, SHP-T-3.10): what it is doing and why
+ * first, then the facts behind it, then the one thing you can do about it.
+ */
+export function AppCard({ app, status, canDeploy, onShip, approval }: AppCardProps) {
+  const waiting = waitingFact(app);
+  const detailHref = `/apps/${encodeURIComponent(app.name)}`;
+
+  let action: React.ReactNode = null;
+  if (canDeploy && approval !== undefined) {
+    action = (
+      <Button
+        type="button"
+        variant="primary"
+        size="sm"
+        onClick={() => {
+          onShip({ kind: 'approve', app: app.name, sha: approval.sha, deployId: approval.deployId });
+        }}
+      >
+        Review approval · {sha7(approval.sha)}
+      </Button>
+    );
+  } else if (canDeploy && status.shipSha !== null) {
+    const sha = status.shipSha;
+    action = (
+      <Button
+        type="button"
+        variant="primary"
+        size="sm"
+        onClick={() => {
+          onShip({ kind: 'deploy', app: app.name, sha });
+        }}
+      >
+        Ship {sha7(sha)}
+      </Button>
+    );
+  } else if (app.active !== null) {
+    action = (
+      <Link asChild>
+        <RouterLink to={`/deploys/${app.active.deployId}/live`}>Watch it live</RouterLink>
+      </Link>
+    );
+  }
 
   return (
-    <Card as="li" padding="md">
+    <Card as="li" padding="md" className="shp-card-fill">
       <CardBody>
-        <Stack gap="8">
-          <Cluster justify="between" align="center">
+        <div className="shp-card-stack">
+          <Cluster justify="between" align="center" gap="8">
             <CardTitle as="h3">
               <Link asChild variant="inline">
-                <RouterLink to={`/apps/${app.name}`}>{app.name}</RouterLink>
+                <RouterLink to={detailHref}>{app.name}</RouterLink>
               </Link>
             </CardTitle>
-            <Cluster gap="4">
-              {app.drift !== null ? <Badge tone="danger">Drift</Badge> : null}
-              {app.approvalPending ? <Badge tone="attention">Approval pending</Badge> : null}
-            </Cluster>
+            <Badge tone={status.tone}>{status.label}</Badge>
           </Cluster>
 
-          <div>
-            <code>{shortSha(app.liveSha)}</code> · {ageFrom(app.reportedAt)}
-          </div>
+          <StatusLine status={status} />
 
-          <Cluster gap="4" align="center">
-            <GitCommitHorizontal aria-hidden size={14} />
-            <Badge tone={ciTone(app)}>{waiting} waiting</Badge>
-          </Cluster>
-
-          {app.active !== null ? (
+          <dl className="shp-facts">
             <div>
-              deploying by {app.active.holder}
-              {app.active.currentStep !== null ? ` · ${app.active.currentStep}` : ''}
+              <dt>Live</dt>
+              <dd>{app.liveSha === null ? 'Nothing recorded' : <code>{sha7(app.liveSha)}</code>}</dd>
             </div>
-          ) : null}
+            <div>
+              <dt>Since live</dt>
+              <dd>
+                {waiting.value}
+                {waiting.sub !== null ? <span className="shp-facts__sub">{waiting.sub}</span> : null}
+              </dd>
+            </div>
+            <div>
+              <dt>Last deploy</dt>
+              <dd>
+                {app.lastDeploy === null ? 'None yet' : stateWords(app.lastDeploy.state)}
+                {app.lastDeploy !== null && app.lastDeploy.endedAt !== null ? <span className="shp-facts__sub">{ageFrom(app.lastDeploy.endedAt)}</span> : null}
+              </dd>
+            </div>
+          </dl>
 
-          <div>{lastResultText(app)}</div>
-
-          {canDeploy && approval !== undefined ? (
-            <Button
-              type="button"
-              variant="primary"
-              size="sm"
-              onClick={() => {
-                onShip({ kind: 'approve', app: app.name, sha: approval.sha, deployId: approval.deployId });
-              }}
-            >
-              Review approval · {shortSha(approval.sha)}
-            </Button>
-          ) : null}
-
-          {canDeploy ? (
-            action.kind === 'ship' ? (
-              <Button
-                type="button"
-                variant="primary"
-                size="sm"
-                onClick={() => {
-                  onShip({ kind: 'deploy', app: app.name, sha: action.sha });
-                }}
-              >
-                Ship {shortSha(action.sha)}
-              </Button>
-            ) : (
-              <Button type="button" variant="secondary" size="sm" disabled title={action.kind === 'nothing-green' ? action.reason : undefined}>
-                {action.kind === 'up-to-date' ? 'Up to date' : 'Nothing green'}
-              </Button>
-            )
-          ) : null}
-        </Stack>
+          <div className="shp-card-stack__foot">
+            {action ?? <span className="shp-facts__sub">Agent checked {ageFrom(app.reportedAt)}</span>}
+            <Link asChild>
+              <RouterLink to={detailHref} aria-label={`Details for ${app.name}`}>
+                Details
+              </RouterLink>
+            </Link>
+          </div>
+        </div>
       </CardBody>
     </Card>
   );

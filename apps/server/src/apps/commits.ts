@@ -29,7 +29,10 @@ export interface CommitEntry {
 export interface CommitsResponse {
   live: string | null;
   head: string | null;
+  /** The newest ten commits ahead of live, oldest first, each with its CI state. */
   commits: CommitEntry[];
+  /** Every commit ahead of live, not just the ten listed — the count a person reads. */
+  ahead: number;
   newestGreen: string | null;
   source: 'github' | 'unavailable';
 }
@@ -143,7 +146,7 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
       return;
     }
     if (row.repo === null || row.defaultBranch === null) {
-      res.json({ live: null, head: null, commits: [], newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
+      res.json({ live: null, head: null, commits: [], ahead: 0, newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
       return;
     }
 
@@ -164,7 +167,7 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
       res.json(value);
     } catch (error) {
       if (error instanceof SequenceRefusalError) {
-        res.json({ live, head: null, commits: [], newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
+        res.json({ live, head: null, commits: [], ahead: 0, newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
         return;
       }
       throw error;
@@ -199,9 +202,12 @@ async function computeCommits(
   const comparison = live === null ? null : await cachedCompare(compareCache, github, repo, live, target);
   let commits: { sha: string; message: string }[];
   let head: string | null;
+  let ahead = 0;
 
   if (live !== null && comparison !== null) {
     commits = comparison.commits;
+    // GitHub lists at most 250 commits in a comparison; `aheadBy` is the exact count.
+    ahead = Math.max(comparison.aheadBy, commits.length);
     head = commits.length > 0 ? (commits[commits.length - 1]?.sha ?? live) : live;
   } else if (to !== null) {
     // No recorded release, or GitHub does not know the recorded SHA any more, but the caller
@@ -235,7 +241,7 @@ async function computeCommits(
     }
   }
 
-  const value: CommitsResponse = { live, head, commits: entries, newestGreen, source: 'github' };
+  const value: CommitsResponse = { live, head, commits: entries, ahead, newestGreen, source: 'github' };
   setBounded(responseCache, responseKey, { expiresAt: now + CACHE_TTL_MS, value });
   return value;
 }

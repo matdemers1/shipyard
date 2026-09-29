@@ -201,6 +201,7 @@ describe('GET /api/apps/:app/commits', () => {
     expect(res.body).toMatchObject({
       live: SHA_LIVE,
       head: SHA_HEAD,
+      ahead: 2,
       newestGreen: SHA_MID,
       source: 'github',
       commits: [

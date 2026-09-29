@@ -22,7 +22,10 @@ export interface CommitEntry {
 export interface CommitsInfo {
   live: string | null;
   head: string | null;
+  /** The newest ten commits ahead of live, oldest first. */
   commits: CommitEntry[];
+  /** Every commit ahead of live; absent from a server older than SHP-T-3.10. */
+  ahead?: number;
   newestGreen: string | null;
   source: 'github' | 'unavailable';
 }
@@ -31,6 +34,7 @@ export interface CommitsInfo {
 export interface AppRow {
   name: string;
   repo: string | null;
+  defaultBranch?: string | null;
   liveSha: string | null;
   reportedAt: string | null;
   drift: { id: string; detectedAt: string } | null;
@@ -206,39 +210,4 @@ export function ageFrom(iso: string | null, now: number = Date.now()): string {
   if (hours < 24) return `${String(hours)}h ago`;
   const days = Math.floor(hours / 24);
   return `${String(days)}d ago`;
-}
-
-/** Commits waiting: everything the commits endpoint listed (base..head, oldest first). */
-export function waitingCount(commits: CommitsInfo | null): number {
-  return commits?.commits.length ?? 0;
-}
-
-export type PrimaryAction =
-  | { kind: 'ship'; sha: string }
-  | { kind: 'up-to-date' }
-  | { kind: 'nothing-green'; reason: string };
-
-/**
- * The card's primary action (SHP-REQ-059): ship the newest green commit when it is ahead of live.
- * "Ahead of live" means it appears in the waiting list at all — a live SHA GitHub no longer knows
- * about, or no commits data, never invents a ship target.
- */
-export function primaryActionFor(app: HomeApp): PrimaryAction {
-  const commits = app.commits;
-  if (commits === null || commits.source === 'unavailable') {
-    return { kind: 'nothing-green', reason: 'GitHub is unavailable.' };
-  }
-  if (commits.newestGreen === null) {
-    return waitingCount(commits) === 0
-      ? { kind: 'up-to-date' }
-      : { kind: 'nothing-green', reason: 'No commit ahead of live has passed CI yet.' };
-  }
-  if (commits.newestGreen === app.liveSha) {
-    return { kind: 'up-to-date' };
-  }
-  const isWaiting = commits.commits.some((c) => c.sha === commits.newestGreen);
-  if (!isWaiting) {
-    return { kind: 'up-to-date' };
-  }
-  return { kind: 'ship', sha: commits.newestGreen };
 }

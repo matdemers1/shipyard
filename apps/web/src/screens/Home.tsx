@@ -1,19 +1,75 @@
-import { Alert, Badge, Button, Card, CardBody, CardTitle, Cluster, EmptyState, Grid, Link, Page, PageHeader, Skeleton, Stack } from '@d3cloud/ui';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardBody,
+  CardTitle,
+  Cluster,
+  EmptyState,
+  Grid,
+  Link,
+  Page,
+  PageHeader,
+  Section,
+  Skeleton,
+  Stack,
+} from '@d3cloud/ui';
 import type { GroupSummary } from '@shipyard/schema';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { AppCard } from '../components/AppCard';
 import { ApprovalsBanner } from '../components/ApprovalsBanner';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { GroupDeploySheet } from '../components/GroupDeploySheet';
+import { appStatus, statusRank, type AppStatus, type StatusKind } from '../lib/appstatus';
 import { useCan } from '../lib/auth';
 import { fetchGroups } from '../lib/groups';
-import { useHomeData } from '../lib/home';
+import { useHomeData, type HomeApp, type PendingApproval } from '../lib/home';
 
 /** How to add an app: a manifest on the agent's host (docs/runbooks/onboard-app.md). */
 const ONBOARD_RUNBOOK_URL = 'https://github.com/matdemers1/shipyard/blob/main/docs/runbooks/onboard-app.md';
 
-/** S2 Home: the approvals banner, the stale-agent banner, then one card per app (SHP-D-023). */
+/** The overview line's buckets: what needs you, what is moving, what is fine. */
+const SUMMARY: { label: string; kinds: StatusKind[] }[] = [
+  { label: 'ready to ship', kinds: ['ready'] },
+  { label: 'need attention', kinds: ['approval', 'drift', 'ci-failed'] },
+  { label: 'in progress', kinds: ['deploying', 'ci-running'] },
+  { label: 'nothing to ship', kinds: ['up-to-date', 'no-images'] },
+];
+
+/** What each status means, for the "What do these mean?" disclosure. */
+const GLOSSARY: { term: string; meaning: string }[] = [
+  {
+    term: 'Ready to ship',
+    meaning: 'A commit ahead of live has passed CI and its images are built. Ship deploys it and everything before it.',
+  },
+  {
+    term: 'Nothing to ship',
+    meaning:
+      'There are commits since live, but none has images. GitHub builds images once per push, for the newest commit in it; the others ride along when that one ships.',
+  },
+  { term: 'Building', meaning: 'CI is running on the newest push. When it passes, that commit becomes shippable.' },
+  { term: 'CI failed', meaning: 'The newest push failed CI, so no images were published. Fix it and push again.' },
+  { term: 'Needs approval', meaning: 'Someone asked to deploy an app that requires a deployer to approve first.' },
+  {
+    term: 'Drift',
+    meaning: 'What is running on the host is not what Shipyard deployed. Resolve it on the app page before the next deploy.',
+  },
+  { term: 'Deploying', meaning: 'A deploy is running: backup, pull, swap, health check, then a soak before it counts as done.' },
+  { term: 'Up to date', meaning: 'Live is the newest commit on the default branch.' },
+];
+
+interface Row {
+  app: HomeApp;
+  status: AppStatus;
+  approval: PendingApproval | undefined;
+}
+
+/**
+ * S2 Home (SHP-D-023, SHP-T-3.10): an overview line, the approvals and stale-agent banners, then
+ * one card per app — what needs you first — and the groups.
+ */
 export function Home() {
   const { status, apps, approvals, noAgent, noApps, agentStale, error, refresh } = useHomeData();
   const canDeploy = useCan();
@@ -23,6 +79,17 @@ export function Home() {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<GroupSummary | null>(null);
   const [groupSheetOpen, setGroupSheetOpen] = useState(false);
+
+  const rows = useMemo<Row[]>(
+    () =>
+      apps
+        .map((app) => {
+          const approval = approvals.find((a) => a.app === app.name);
+          return { app, approval, status: appStatus({ ...app, approval }) };
+        })
+        .sort((a, b) => statusRank(a.status.kind) - statusRank(b.status.kind) || a.app.name.localeCompare(b.app.name)),
+    [apps, approvals],
+  );
 
   const openSheet = (next: SheetAction) => {
     setAction(next);
@@ -52,7 +119,20 @@ export function Home() {
   return (
     <Page>
       <Stack gap="16">
-        <PageHeader title="Home" />
+        <PageHeader title="Home" description="Every app on the host: what is live, what is waiting, and what you can ship." />
+
+        {status === 'ready' && rows.length > 0 ? (
+          <ul className="shp-summary" aria-label="Overview">
+            {SUMMARY.map((bucket) => {
+              const n = rows.filter((r) => bucket.kinds.includes(r.status.kind)).length;
+              return n === 0 ? null : (
+                <li key={bucket.label}>
+                  <strong>{n}</strong> {bucket.label}
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
 
         {status === 'error' ? (
           <Alert tone="danger" title={error?.message ?? 'Shipyard is not answering.'}>
@@ -79,7 +159,16 @@ export function Home() {
         ) : null}
 
         {status === 'ready' && noAgent ? (
-          <EmptyState kind="empty" heading="No agent enrolled yet" headingLevel={2} action={<Link asChild><RouterLink to="/agent">Enrol an agent</RouterLink></Link>}>
+          <EmptyState
+            kind="empty"
+            heading="No agent enrolled yet"
+            headingLevel={2}
+            action={
+              <Link asChild>
+                <RouterLink to="/agent">Enrol an agent</RouterLink>
+              </Link>
+            }
+          >
             Shipyard has no agent to deploy through. Enrol one from a Docker host to get started.
           </EmptyState>
         ) : null}
@@ -95,8 +184,8 @@ export function Home() {
               </Link>
             }
           >
-            The agent is enrolled but has not reported any manifests yet. Add a manifest to the agent's host and wait
-            for its next report, or see the onboarding runbook.
+            The agent is enrolled but has not reported any manifests yet. Add a manifest to the agent's host and wait for its next report,
+            or see the onboarding runbook.
           </EmptyState>
         ) : null}
 
@@ -108,52 +197,75 @@ export function Home() {
 
         {status === 'ready' ? <ApprovalsBanner approvals={approvals} canDeny={canDeploy} onReview={openSheet} onDenied={refresh} /> : null}
 
-        {status === 'ready' && apps.length > 0 ? (
-          <Grid as="ul" minItemWidth="sm">
-            {apps.map((app) => (
-              <AppCard
-                key={app.name}
-                app={app}
-                canDeploy={canDeploy}
-                onShip={openSheet}
-                approval={approvals.find((a) => a.app === app.name)}
-              />
-            ))}
-          </Grid>
+        {status === 'ready' && rows.length > 0 ? (
+          <Section title="Apps" surface="plain">
+            <Grid as="ul" minItemWidth="sm">
+              {rows.map((row) => (
+                <AppCard
+                  key={row.app.name}
+                  app={row.app}
+                  status={row.status}
+                  canDeploy={canDeploy}
+                  onShip={openSheet}
+                  approval={row.approval}
+                />
+              ))}
+            </Grid>
+          </Section>
         ) : null}
 
         {status === 'ready' && groups.length > 0 ? (
-          <Grid as="ul" minItemWidth="sm">
-            {groups.map((group) => (
-              <Card key={group.name} as="li" padding="md">
-                <CardBody>
-                  <Stack gap="8">
-                    <CardTitle as="h3">{group.name}</CardTitle>
-                    <Cluster gap="4">
-                      {group.members.map((member) => (
-                        <Badge key={member} tone={member === group.canary ? 'attention' : 'neutral'}>
-                          {member}
-                          {member === group.canary ? ' · canary' : ''}
-                        </Badge>
-                      ))}
-                    </Cluster>
-                    {canDeploy ? (
-                      <Button
-                        type="button"
-                        variant="primary"
-                        size="sm"
-                        onClick={() => {
-                          openGroupSheet(group);
-                        }}
-                      >
-                        Deploy group
-                      </Button>
-                    ) : null}
-                  </Stack>
-                </CardBody>
-              </Card>
-            ))}
-          </Grid>
+          <Section
+            title="Groups"
+            surface="plain"
+            description="Apps that deploy together at one SHA. The canary deploys and soaks first; the rest follow with the same images, and any failure stops the group."
+          >
+            <Grid as="ul" minItemWidth="sm">
+              {groups.map((group) => (
+                <Card key={group.name} as="li" padding="md">
+                  <CardBody>
+                    <Stack gap="8">
+                      <CardTitle as="h3">{group.name}</CardTitle>
+                      <Cluster gap="4">
+                        {group.members.map((member) => (
+                          <Badge key={member} tone={member === group.canary ? 'attention' : 'neutral'}>
+                            {member}
+                            {member === group.canary ? ' · canary' : ''}
+                          </Badge>
+                        ))}
+                      </Cluster>
+                      {canDeploy ? (
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          onClick={() => {
+                            openGroupSheet(group);
+                          }}
+                        >
+                          Deploy group
+                        </Button>
+                      ) : null}
+                    </Stack>
+                  </CardBody>
+                </Card>
+              ))}
+            </Grid>
+          </Section>
+        ) : null}
+
+        {status === 'ready' && rows.length > 0 ? (
+          <details className="shp-disclosure">
+            <summary>What do these statuses mean?</summary>
+            <dl className="shp-glossary">
+              {GLOSSARY.map((g) => (
+                <div key={g.term}>
+                  <dt>{g.term}</dt>
+                  <dd>{g.meaning}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
         ) : null}
 
         <GroupDeploySheet

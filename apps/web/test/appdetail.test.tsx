@@ -163,6 +163,26 @@ describe('status and waiting commits (SHP-T-3.10)', () => {
     expect(opened.at(-1)).toEqual({ kind: 'deploy', app: 'web', sha: sha('b') });
   });
 
+  it("links a Shipyard-built app's commits to their builds and words them as Shipyard's", async () => {
+    const built = {
+      ...commits,
+      buildSource: 'shipyard',
+      commits: [
+        { ...commits.commits[0], ci: 'none' },
+        { ...commits.commits[1], ci: 'success', buildId: 'b-2' },
+        { ...commits.commits[2], ci: 'pending', buildId: 'b-3' },
+      ],
+    };
+    routes('deployer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: built } });
+    renderAt('/apps/web');
+    expect(await screen.findByText(/^Shipyard built its images\./, {}, { timeout: 4000 })).toBeInTheDocument();
+    const list = screen.getByRole('list', { name: 'Commits waiting to ship' });
+    expect(within(list).getByRole('link', { name: 'second' })).toHaveAttribute('href', '/builds/b-2');
+    expect(within(list).getByText('Built')).toBeInTheDocument();
+    expect(within(list).getByText('Building')).toBeInTheDocument();
+    expect(within(list).getByText('Not built')).toBeInTheDocument();
+  });
+
   it('shows a viewer the status and the commits but no ship button', async () => {
     routes('viewer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: commits } });
     renderAt('/apps/web');

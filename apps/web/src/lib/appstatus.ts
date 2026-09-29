@@ -104,8 +104,20 @@ export function stateTone(state: string): StatusTone {
   return 'neutral';
 }
 
-/** Per-commit CI state in words, for the waiting list. */
-export function ciWords(ci: CommitEntry['ci']): string {
+/** Per-commit build state in words, for the waiting list: GitHub CI's, or Shipyard's own build's. */
+export function ciWords(ci: CommitEntry['ci'], source: CommitsInfo['buildSource'] = 'github'): string {
+  if (source === 'shipyard') {
+    switch (ci) {
+      case 'success':
+        return 'Built';
+      case 'failure':
+        return 'Build failed';
+      case 'pending':
+        return 'Building';
+      case 'none':
+        return 'Not built';
+    }
+  }
   switch (ci) {
     case 'success':
       return 'Images built';
@@ -153,7 +165,7 @@ function newestWithRun(entries: CommitEntry[]): CommitEntry | undefined {
 }
 
 /** Why the commits after the ship target are not in it yet. */
-function afterShipNote(entries: CommitEntry[], shipSha: string): string {
+function afterShipNote(entries: CommitEntry[], shipSha: string, shipyard: boolean): string {
   const index = entries.findIndex((c) => c.sha === shipSha);
   const after = entries.slice(index + 1);
   if (after.length === 0) return '';
@@ -161,7 +173,7 @@ function afterShipNote(entries: CommitEntry[], shipSha: string): string {
     return ` ${plural(after.length, 'newer commit')} ${after.length === 1 ? 'is' : 'are'} still being built; wait if you want ${after.length === 1 ? 'it' : 'them'} too.`;
   }
   if (after.some((c) => c.ci === 'failure')) {
-    return ` CI failed on a newer commit, so ${plural(after.length, 'commit')} after this one can't ship yet.`;
+    return ` ${shipyard ? 'A newer build failed' : 'CI failed on a newer commit'}, so ${plural(after.length, 'commit')} after this one can't ship yet.`;
   }
   return ` ${plural(after.length, 'newer commit')} ${after.length === 1 ? 'has' : 'have'} no images yet and will ship with a later green commit.`;
 }
@@ -172,6 +184,9 @@ export function appStatus(input: StatusInput): AppStatus {
   const summary = summarizeCommits(commits);
   const entries = commits?.commits ?? [];
   const aheadWords = plural(summary.ahead, 'commit');
+  // A `build: shipyard` app's images come from Shipyard's own builds, not GitHub CI (SHP-T-3.11).
+  const shipyard = commits?.buildSource === 'shipyard';
+  const builder = shipyard ? 'Shipyard' : 'CI';
 
   if (active !== null) {
     const step = active.currentStep ?? stateWords(active.state).toLowerCase();
@@ -254,7 +269,7 @@ export function appStatus(input: StatusInput): AppStatus {
       tone: 'attention',
       label: 'Ready to ship',
       headline: `Ready to ship ${sha7(ship)}`,
-      detail: `Its images are built and CI passed. Shipping it brings live forward by ${plural(includes, 'commit')}.${afterShipNote(entries, ship)}`,
+      detail: `${shipyard ? 'Shipyard built its images.' : 'Its images are built and CI passed.'} Shipping it brings live forward by ${plural(includes, 'commit')}.${afterShipNote(entries, ship, shipyard)}`,
       shipSha: ship,
     };
   }
@@ -276,8 +291,8 @@ export function appStatus(input: StatusInput): AppStatus {
       kind: 'ci-running',
       tone: 'neutral',
       label: 'Building',
-      headline: `CI is building ${sha7(decider.sha)}`,
-      detail: `${aheadWords} since live, none deployable yet. When this run passes, ${sha7(decider.sha)} becomes the one to ship.`,
+      headline: `${builder} is building ${sha7(decider.sha)}`,
+      detail: `${aheadWords} since live, none deployable yet. When this ${shipyard ? 'build succeeds' : 'run passes'}, ${sha7(decider.sha)} becomes the one to ship.`,
       shipSha: null,
     };
   }
@@ -286,9 +301,11 @@ export function appStatus(input: StatusInput): AppStatus {
     return {
       kind: 'ci-failed',
       tone: 'danger',
-      label: 'CI failed',
-      headline: `CI failed on ${sha7(decider.sha)}`,
-      detail: `${aheadWords} since live, and the newest build failed, so no images were published. Fix it and push again — a green push makes all of them shippable.`,
+      label: shipyard ? 'Build failed' : 'CI failed',
+      headline: shipyard ? `Shipyard's build of ${sha7(decider.sha)} failed` : `CI failed on ${sha7(decider.sha)}`,
+      detail: shipyard
+        ? `${aheadWords} since live, and the newest build failed, so nothing new is deployable. Open the build to see which stage failed, then push a fix or rebuild it.`
+        : `${aheadWords} since live, and the newest build failed, so no images were published. Fix it and push again — a green push makes all of them shippable.`,
       shipSha: null,
     };
   }
@@ -297,8 +314,10 @@ export function appStatus(input: StatusInput): AppStatus {
     kind: 'no-images',
     tone: 'neutral',
     label: 'Nothing to ship',
-    headline: `${aheadWords} since live, none with images`,
-    detail: `GitHub builds images once per push, for its newest commit, and none of these has a finished build on ${branch} yet. A new push's build shows up here within a minute; if none ever does, check the manifest's workflow name.`,
+    headline: `${aheadWords} since live, none ${shipyard ? 'built' : 'with images'}`,
+    detail: shipyard
+      ? `Shipyard builds this app itself, and none of these has a succeeded build yet. Pushes to ${branch} build on their own; to build one now, queue it from Builds (or ask Claude to run shipyard_build).`
+      : `GitHub builds images once per push, for its newest commit, and none of these has a finished build on ${branch} yet. A new push's build shows up here within a minute; if none ever does, check the manifest's workflow name.`,
     shipSha: null,
   };
 }

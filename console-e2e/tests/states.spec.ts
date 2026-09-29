@@ -257,9 +257,9 @@ test.describe('as an admin, baseline world', () => {
     await held.seen;
     await expect(page.getByRole('status').filter({ hasText: `Loading ${app}` })).toBeAttached();
     await expect(page.locator('[aria-busy="true"]').first()).toBeAttached();
-    await expect(page.getByRole('heading', { name: 'Manifest' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'How it deploys' })).toHaveCount(0);
     held.release();
-    await expect(page.getByRole('heading', { name: 'Manifest' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'How it deploys' })).toBeVisible();
   });
 
   test('S5 error: the drift banner says deploys are blocked', async ({ page }) => {
@@ -533,7 +533,7 @@ test.describe('as a viewer', () => {
     const fx = fixture();
     await page.goto('/');
     await expect(page.getByRole('link', { name: fx.apps.history, exact: true })).toBeVisible();
-    await expect(card(page, fx.apps.history)).toContainText('waiting');
+    await expect(card(page, fx.apps.history)).toContainText('Since live');
     await expect(page.getByRole('button', { name: /^Ship / })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^(Up to date|Nothing green)$/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Deploy group' })).toHaveCount(0);
@@ -557,7 +557,7 @@ test.describe('as a viewer', () => {
   test('S5 denied: app detail has no actions', async ({ page }) => {
     const fx = fixture();
     await page.goto(`/apps/${fx.apps.history}`);
-    await expect(page.getByRole('heading', { name: 'Manifest' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'How it deploys' })).toBeVisible();
     await expect(page.getByRole('list', { name: 'Rollback targets' }).getByRole('listitem').first()).toBeVisible();
     await expect(page.getByRole('button', { name: /^Roll back to / })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Freeze', exact: true })).toHaveCount(0);
@@ -592,7 +592,7 @@ test.describe('as a viewer', () => {
     await expect(alertBox(page, `${fx.apps.frozen} is frozen`)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Unfreeze', exact: true })).toHaveCount(0);
     await page.goto(`/apps/${fx.apps.history}`);
-    await expect(page.getByRole('heading', { name: 'Manifest' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'How it deploys' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Freeze', exact: true })).toHaveCount(0);
   });
 

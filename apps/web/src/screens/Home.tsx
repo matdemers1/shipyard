@@ -51,6 +51,11 @@ const GLOSSARY: { term: string; meaning: string }[] = [
   },
   { term: 'Building', meaning: 'CI is running on the newest push. When it passes, that commit becomes shippable.' },
   { term: 'CI failed', meaning: 'The newest push failed CI, so no images were published. Fix it and push again.' },
+  {
+    term: 'Built by Shipyard',
+    meaning:
+      'An app whose manifest says build: shipyard gets its images from Shipyard’s own builds instead of GitHub CI, so its statuses read “Shipyard is building” or “Build failed”, and each commit links to its build.',
+  },
   { term: 'Needs approval', meaning: 'Someone asked to deploy an app that requires a deployer to approve first.' },
   {
     term: 'Drift',

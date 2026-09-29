@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { refusal } from '@shipyard/schema';
+import { parseManifestYaml, refusal, type BuildState } from '@shipyard/schema';
 import { createGitHubAdapter, RefusalError as SequenceRefusalError, type GitHubPort } from '@shipyard/sequence/github';
 import { taskIdsIn } from '../changelog.js';
 import type { ServiceDeps } from '../deps.js';
@@ -24,7 +24,11 @@ export interface CommitEntry {
   message: string;
   ci: CiState;
   taskIds: string[];
+  /** For a `build: shipyard` app, the latest Shipyard build of this SHA, if any (SHP-T-3.11). */
+  buildId?: string;
 }
+
+export type BuildSource = 'github' | 'shipyard';
 
 export interface CommitsResponse {
   live: string | null;
@@ -35,6 +39,11 @@ export interface CommitsResponse {
   ahead: number;
   newestGreen: string | null;
   source: 'github' | 'unavailable';
+  /**
+   * Where this app's images come from: GitHub's image workflow, or Shipyard's own builds
+   * (`build.source: shipyard`, SHP-REQ-134). It decides what each commit's `ci` means.
+   */
+  buildSource: BuildSource;
 }
 
 export interface CommitsRouterOptions {
@@ -50,6 +59,43 @@ function parseWorkflow(manifestYaml: string): string | null {
   }
 }
 
+/** The manifest's image source; anything unreadable is GitHub, the default. */
+export function buildSourceOf(manifestYaml: string): BuildSource {
+  try {
+    return parseManifestYaml(manifestYaml).build?.source === 'shipyard' ? 'shipyard' : 'github';
+  } catch {
+    return 'github';
+  }
+}
+
+/**
+ * A Shipyard build's state as the commit's `ci` (SHP-T-3.11): only a succeeded build makes a SHA
+ * deployable (G5, SHP-REQ-134); a cancelled one left nothing behind, the same as no build.
+ */
+export function buildStateToCi(state: BuildState): CiState {
+  switch (state) {
+    case 'succeeded':
+      return 'success';
+    case 'queued':
+    case 'running':
+      return 'pending';
+    case 'failed':
+    case 'refused':
+      return 'failure';
+    case 'cancelled':
+      return 'none';
+  }
+}
+
+/** Newest-green over an oldest-first list: the last entry whose state is `success`. */
+function newestGreenOf(entries: CommitEntry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry !== undefined && entry.ci === 'success') return entry.sha;
+  }
+  return null;
+}
+
 function conclusionToCi(conclusion: string | null, status: string): CiState {
   if (conclusion === 'success') return 'success';
   if (conclusion !== null) return 'failure';
@@ -59,7 +105,7 @@ function conclusionToCi(conclusion: string | null, status: string): CiState {
 
 interface ResponseCacheEntry {
   expiresAt: number;
-  value: CommitsResponse;
+  value: Omit<CommitsResponse, 'buildSource'>;
 }
 
 interface CompareCacheEntry {
@@ -145,8 +191,9 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
       sendRefusal(res, notFound);
       return;
     }
+    const buildSource = buildSourceOf(row.manifestYaml);
     if (row.repo === null || row.defaultBranch === null) {
-      res.json({ live: null, head: null, commits: [], ahead: 0, newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
+      res.json({ live: null, head: null, commits: [], ahead: 0, newestGreen: null, source: 'unavailable', buildSource } satisfies CommitsResponse);
       return;
     }
 
@@ -157,17 +204,37 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
     }
     const to = typeof toParam === 'string' ? toParam.toLowerCase() : null;
 
-    const workflow = parseWorkflow(row.manifestYaml);
+    // A Shipyard-built app's GitHub workflow runs prove nothing about its images: skip asking.
+    const workflow = buildSource === 'shipyard' ? null : parseWorkflow(row.manifestYaml);
 
     const release = await recordedRelease(db, row.id);
     const live = release?.sha ?? null;
 
     try {
       const value = await computeCommits(github, compareCache, responseCache, row.repo, row.defaultBranch, workflow, live, to);
-      res.json(value);
+      if (buildSource === 'github') {
+        res.json({ ...value, buildSource } satisfies CommitsResponse);
+        return;
+      }
+      // Builds change by the second and cost one query, so they are read fresh, never cached.
+      const builds =
+        value.commits.length === 0
+          ? []
+          : await db.build.findMany({
+              where: { appId: row.id, sha: { in: value.commits.map((c) => c.sha) } },
+              orderBy: { createdAt: 'desc' },
+              select: { id: true, sha: true, state: true },
+            });
+      const latest = new Map<string, { id: string; state: BuildState }>();
+      for (const b of builds) if (!latest.has(b.sha)) latest.set(b.sha, { id: b.id, state: b.state });
+      const commits = value.commits.map((c): CommitEntry => {
+        const build = latest.get(c.sha);
+        return build === undefined ? { ...c, ci: 'none' } : { ...c, ci: buildStateToCi(build.state), buildId: build.id };
+      });
+      res.json({ ...value, commits, newestGreen: newestGreenOf(commits), buildSource } satisfies CommitsResponse);
     } catch (error) {
       if (error instanceof SequenceRefusalError) {
-        res.json({ live, head: null, commits: [], ahead: 0, newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
+        res.json({ live, head: null, commits: [], ahead: 0, newestGreen: null, source: 'unavailable', buildSource } satisfies CommitsResponse);
         return;
       }
       throw error;
@@ -186,7 +253,7 @@ async function computeCommits(
   workflow: string | null,
   live: string | null,
   to: string | null,
-): Promise<CommitsResponse> {
+): Promise<Omit<CommitsResponse, 'buildSource'>> {
   // `to` (SHP-REQ-087) is the candidate SHA the console already knows; the range narrows from the
   // default branch's HEAD to exactly that commit rather than the always-moving branch tip. The
   // comparison itself names the head, so `cachedCompare`'s key is repo/base/head — a changed head
@@ -232,16 +299,9 @@ async function computeCommits(
 
   // `entries` is oldest-first (the port's contract for `compare`); the newest green commit is
   // the last one in that order with a successful run.
-  let newestGreen: string | null = null;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (entry !== undefined && entry.ci === 'success') {
-      newestGreen = entry.sha;
-      break;
-    }
-  }
+  const newestGreen = newestGreenOf(entries);
 
-  const value: CommitsResponse = { live, head, commits: entries, ahead, newestGreen, source: 'github' };
+  const value: Omit<CommitsResponse, 'buildSource'> = { live, head, commits: entries, ahead, newestGreen, source: 'github' };
   setBounded(responseCache, responseKey, { expiresAt: now + CACHE_TTL_MS, value });
   return value;
 }

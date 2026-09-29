@@ -23,7 +23,7 @@ import { ApprovalsBanner } from '../components/ApprovalsBanner';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { GroupDeploySheet } from '../components/GroupDeploySheet';
 import { appStatus, statusRank, type AppStatus, type StatusKind } from '../lib/appstatus';
-import { useCan } from '../lib/auth';
+import { useCan, useIsAdmin } from '../lib/auth';
 import { fetchGroups } from '../lib/groups';
 import { useHomeData, type HomeApp, type PendingApproval } from '../lib/home';
 
@@ -78,6 +78,7 @@ interface Row {
 export function Home() {
   const { status, apps, approvals, noAgent, noApps, agentStale, error, refresh } = useHomeData();
   const canDeploy = useCan();
+  const isAdmin = useIsAdmin();
   const navigate = useNavigate();
   const [action, setAction] = useState<SheetAction | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -197,6 +198,26 @@ export function Home() {
         {status === 'ready' && agentStale ? (
           <Alert tone="warning" title="No agent has reported recently">
             The agent has not heartbeated in over 5 minutes. Live SHAs and drift here may be out of date.
+          </Alert>
+        ) : null}
+
+        {status === 'ready' && rows.some((r) => r.status.kind === 'github-unavailable') ? (
+          <Alert
+            tone="warning"
+            title="Shipyard can't see new commits on GitHub"
+            {...(isAdmin
+              ? {
+                  actions: (
+                    <Link asChild>
+                      <RouterLink to="/settings#github">Check GitHub access</RouterLink>
+                    </Link>
+                  ),
+                }
+              : {})}
+          >
+            GitHub isn't answering the server, so nothing new is offered to deploy. Most often the server is calling GitHub without a token
+            and has used its 60 requests for the hour.{' '}
+            {isAdmin ? 'Settings → GitHub shows how many are left and takes a token.' : 'An admin can add a GitHub token in Settings.'}
           </Alert>
         ) : null}
 

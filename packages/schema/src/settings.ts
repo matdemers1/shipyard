@@ -158,6 +158,73 @@ export const MailTestResult = z
 export type MailTestResult = z.infer<typeof MailTestResult>;
 
 /**
+ * Settings → GitHub (SHP-T-3.13). The server's read-only GitHub token: what it lists commits, CI
+ * state and changelogs with. Without one the server calls GitHub anonymously — 60 requests an hour
+ * per address, shared with the agent on the same host — and runs out on a busy Home screen. The
+ * token is write-only like every Settings secret; GITHUB_TOKEN_SERVER in server.env wins.
+ */
+
+export const GitHubToken = z
+  .string()
+  .trim()
+  .min(20)
+  .max(512)
+  .regex(/^[A-Za-z0-9_]+$/, 'must be a GitHub token: letters, digits and underscores only')
+  .meta({ id: 'GitHubToken', description: 'A GitHub personal access token (fine-grained, public repositories read-only)' });
+
+export const GitHubSettingsUpdate = z
+  .strictObject({ token: GitHubToken })
+  .meta({ id: 'GitHubSettingsUpdate', description: "Save the server's (write-only) GitHub token" });
+export type GitHubSettingsUpdate = z.infer<typeof GitHubSettingsUpdate>;
+
+export const GitHubTestRequest = z
+  .strictObject({
+    /** A token to try before saving it. Omit to test what the server uses now. */
+    token: GitHubToken.optional(),
+  })
+  .meta({ id: 'GitHubTestRequest', description: 'Which GitHub token to test' });
+export type GitHubTestRequest = z.infer<typeof GitHubTestRequest>;
+
+export const GitHubRateLimit = z
+  .strictObject({
+    /** False when GitHub counted the request as anonymous. */
+    authenticated: z.boolean(),
+    limit: z.int().min(0),
+    remaining: z.int().min(0),
+    resetAt: z.iso.datetime(),
+  })
+  .meta({ id: 'GitHubRateLimit', description: "GitHub's core API rate limit, as it reported it" });
+export type GitHubRateLimit = z.infer<typeof GitHubRateLimit>;
+
+export const GitHubSettings = z
+  .strictObject({
+    source: D3AuthSource,
+    /** Whether a token is set. The token itself is never returned. */
+    tokenSet: z.boolean(),
+    canStoreSecret: z.boolean(),
+    /** Why a stored token cannot be used, in a sentence; null otherwise. */
+    problem: z.string().nullable(),
+    updatedAt: z.iso.datetime().nullable(),
+    /** GitHub's rate limit for what the server uses now; null when GitHub could not be asked. */
+    rateLimit: GitHubRateLimit.nullable(),
+    /** Why the rate limit could not be read; null otherwise. */
+    rateLimitProblem: z.string().nullable(),
+  })
+  .meta({ id: 'GitHubSettings', description: "The server's GitHub access — never the token" });
+export type GitHubSettings = z.infer<typeof GitHubSettings>;
+
+export const GitHubTestResult = z
+  .strictObject({
+    /** True when GitHub accepted the token (or, with none, answered at all). */
+    ok: z.boolean(),
+    status: z.int().min(100).max(599).optional(),
+    detail: z.string().max(500).optional(),
+    rateLimit: GitHubRateLimit.optional(),
+  })
+  .meta({ id: 'GitHubTestResult', description: 'What GitHub answered to one rate-limit request' });
+export type GitHubTestResult = z.infer<typeof GitHubTestResult>;
+
+/**
  * Settings → Builds (SHP-REQ-131, SHP-REQ-132, SHP-T-7.11). The CPU and memory limits the agent
  * applies to the BuildKit container's HostConfig, and the size cap the agent's cache garbage
  * collection keeps the BuildKit cache under. Read by the agent on its next poll (`PollResponse`

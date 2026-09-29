@@ -64,12 +64,24 @@ const ON = settings({
   updatedAt: '2026-09-25T12:00:00.000Z',
 });
 
+const GITHUB_ANON = {
+  source: 'none',
+  tokenSet: false,
+  canStoreSecret: true,
+  problem: null,
+  updatedAt: null,
+  rateLimit: { authenticated: false, limit: 60, remaining: 40, resetAt: new Date(Date.now() + 1_800_000).toISOString() },
+  rateLimitProblem: null,
+};
+
 function routes(extra: Record<string, Reply | Reply[]> = {}, current: D3AuthSettings = settings()): Record<string, Reply | Reply[]> {
   return {
     'GET /api/auth/me': meReply('admin'),
     'GET /api/settings/d3auth': { status: 200, body: current },
     // The Alert email section on the same screen (SHP-T-6.9); its own tests are in alert-email.test.tsx.
     'GET /api/settings/mail': { status: 200, body: MAIL_OFF },
+    // The GitHub section (SHP-T-3.13); its own tests are in github-settings.test.tsx.
+    'GET /api/settings/github': { status: 200, body: GITHUB_ANON },
     ...extra,
   };
 }

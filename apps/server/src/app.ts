@@ -46,6 +46,8 @@ export interface AppDeps {
   bus?: Bus;
   /** Test-only: a shorter timeout for Settings → Alert email → Send test email. */
   mailTestTimeoutMs?: number;
+  /** Test-only: GitHub's `/rate_limit` for Settings → GitHub. */
+  githubFetch?: typeof fetch;
   /** First-run setup's throttle limits and clock; tests pass small ones. */
   setup?: Pick<SetupDeps, 'limits' | 'now'>;
   /**
@@ -131,7 +133,12 @@ export function createApp(deps: AppDeps): Express {
   // Admin-only: Sign in with D3 Auth (SHP-REQ-110) and alert email (SHP-T-6.9) configured from the console.
   app.use(
     '/api/settings',
-    settingsRouter({ ...serviceDeps, oidc, ...(deps.mailTestTimeoutMs !== undefined ? { mailTestTimeoutMs: deps.mailTestTimeoutMs } : {}) }),
+    settingsRouter({
+      ...serviceDeps,
+      oidc,
+      ...(deps.mailTestTimeoutMs !== undefined ? { mailTestTimeoutMs: deps.mailTestTimeoutMs } : {}),
+      ...(deps.githubFetch !== undefined ? { githubFetch: deps.githubFetch } : {}),
+    }),
   );
   app.use('/mcp', mcpRouter(serviceDeps));
 

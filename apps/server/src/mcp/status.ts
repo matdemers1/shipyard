@@ -1,9 +1,10 @@
 import { ACTIVE_STATES, type BuildState } from '@shipyard/schema';
-import { createGitHubAdapter, type GitHubPort } from '@shipyard/sequence/github';
+import type { GitHubPort } from '@shipyard/sequence/github';
 import { buildSourceOf, cachedCompare, makeCompareCache } from '../apps/commits.js';
 import { recordedRelease } from '../apps/index.js';
 import type { ServiceDeps } from '../deps.js';
 import { TERMINAL_STATES } from '../deploys/service.js';
+import { liveGitHub } from '../github/token.js';
 
 /**
  * Module-scoped so it lives for the process, across every `shipyard_status` call — a fresh
@@ -85,8 +86,7 @@ export async function appStatuses(
 ): Promise<McpAppStatus[]> {
   const { db } = deps;
   const github =
-    options.github ??
-    createGitHubAdapter(deps.config.GITHUB_TOKEN_SERVER === undefined ? {} : { token: deps.config.GITHUB_TOKEN_SERVER });
+    options.github ?? liveGitHub(deps);
   const apps = await db.app.findMany({
     where: { name: { in: [...names] } },
     orderBy: { name: 'asc' },

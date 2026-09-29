@@ -1,7 +1,8 @@
 import { parseManifestYaml } from '@shipyard/schema';
-import { createGitHubAdapter, type GitHubPort } from '@shipyard/sequence/github';
+import type { GitHubPort } from '@shipyard/sequence/github';
 import { enqueueBuild, isRefusal } from '../builds/service.js';
 import type { ServiceDeps } from '../deps.js';
+import { liveGitHub } from '../github/token.js';
 
 /**
  * The build reconcile loop (SHP-T-7.5, SHP-REQ-114): on a schedule, the default-branch head of
@@ -92,8 +93,7 @@ export interface StartBuildReconcileOptions {
  */
 export function startBuildReconcile(deps: ServiceDeps, options: StartBuildReconcileOptions = {}): { stop: () => Promise<void> } {
   const github =
-    options.github ??
-    createGitHubAdapter(deps.config.GITHUB_TOKEN_SERVER === undefined ? {} : { token: deps.config.GITHUB_TOKEN_SERVER });
+    options.github ?? liveGitHub(deps);
   const intervalMs = options.intervalMs ?? deps.config.BUILD_RECONCILE_INTERVAL_SECONDS * 1000;
   let stopped = false;
   let running = false;

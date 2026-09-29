@@ -1,10 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import { parseManifestYaml, refusal, type BuildState } from '@shipyard/schema';
-import { createGitHubAdapter, RefusalError as SequenceRefusalError, type GitHubPort } from '@shipyard/sequence/github';
+import { RefusalError as SequenceRefusalError, type GitHubPort } from '@shipyard/sequence/github';
 import { taskIdsIn } from '../changelog.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { recordedRelease } from './drift.js';
+import { liveGitHub } from '../github/token.js';
 
 /**
  * GET /api/apps/:app/commits — commits waiting on the default branch ahead of the recorded
@@ -170,8 +171,8 @@ function readerOrRefuse(req: Request, res: Response): boolean {
 }
 
 export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions = {}): Router {
-  const { db, config } = deps;
-  const github = options.github ?? createGitHubAdapter(config.GITHUB_TOKEN_SERVER === undefined ? {} : { token: config.GITHUB_TOKEN_SERVER });
+  const { db } = deps;
+  const github = options.github ?? liveGitHub(deps);
   const router = Router();
   const compareCache = makeCompareCache();
   // The whole response, per-commit CI state included: a hit makes no GitHub call at all.

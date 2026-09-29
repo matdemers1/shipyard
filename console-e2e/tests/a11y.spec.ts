@@ -183,7 +183,7 @@ const SCREENS: Screen[] = [
       path: (fx) => `/apps/${app(fx)}`,
       ready: async (p, fx) => {
         await h1(p, app(fx));
-        await expect(p.getByRole('heading', { name: 'Manifest' })).toBeVisible();
+        await expect(p.getByRole('heading', { name: 'How it deploys' })).toBeVisible();
       },
     }),
   ),
@@ -193,7 +193,7 @@ const SCREENS: Screen[] = [
     path: (fx) => `/apps/${fx.apps.history}`,
     ready: async (p, fx) => {
       await h1(p, fx.apps.history);
-      await expect(p.getByRole('heading', { name: 'Manifest' })).toBeVisible();
+      await expect(p.getByRole('heading', { name: 'How it deploys' })).toBeVisible();
     },
   },
   {
@@ -383,6 +383,33 @@ const SCREENS: Screen[] = [
       await expect(p.getByText(/created$/)).toBeVisible();
       await expect(p.getByRole('button', { name: 'Copy token' })).toBeVisible();
     },
+  },
+  // Connect Claude Code (SHP-T-3.12).
+  {
+    name: 'Connect Claude Code',
+    as: 'admin',
+    path: () => '/connect',
+    ready: async (p) => {
+      await h1(p, 'Connect Claude Code');
+      await expect(p.getByRole('button', { name: 'Make the token' })).toBeVisible();
+    },
+  },
+  {
+    name: 'Connect Claude Code, token made and waiting for the first call',
+    as: 'admin',
+    path: () => '/connect',
+    ready: (p) => h1(p, 'Connect Claude Code'),
+    act: async (p) => {
+      await p.getByRole('checkbox', { name: 'All apps' }).check();
+      await p.getByRole('button', { name: 'Make the token' }).click();
+      await expect(p.getByText('Waiting for Claude Code’s first call…')).toBeVisible();
+    },
+  },
+  {
+    name: 'Connect Claude Code as a viewer',
+    as: 'viewer',
+    path: () => '/connect',
+    ready: (p) => expect(p.getByText('A deployer makes the token')).toBeVisible(),
   },
   // S12 Agent.
   {

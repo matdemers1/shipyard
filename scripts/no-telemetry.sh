@@ -44,7 +44,10 @@ cd "$repo_root"
 # fetched: react.dev and reactrouter.com are doc links inside React/React Router's own error
 # messages (shown as text, never requested), and www.w3.org is the XML namespace URI React uses
 # to create SVG/MathML elements (`createElementNS`) — a namespace string, not a network address.
-bundle_only_hosts_regex='^(react\.dev|reactrouter\.com|www\.w3\.org)$'
+# shipyard.d3cloud.io is text in the CLAUDE.md deploy snippet the Connect Claude Code page shows for
+# copying (docs/claude/deploy-snippet.md, SHP-T-3.12). The page swaps in its own origin before
+# showing it, and nothing ever fetches that host.
+bundle_only_hosts_regex='^(react\.dev|reactrouter\.com|www\.w3\.org|shipyard\.d3cloud\.io)$'
 allowed_hosts_regex='^(api\.github\.com|github\.com|ghcr\.io|pkg-containers\.githubusercontent\.com|localhost|127\.0\.0\.1|[A-Za-z0-9-]+\.example\.com)$'
 
 # Runtime source only: excludes tests, node_modules, and the Prisma-generated client (which quotes

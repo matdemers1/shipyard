@@ -2,7 +2,7 @@ import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
-import { claudeAddCommand, DEPLOY_SNIPPET, envLine, mcpJsonWithEnv } from '../src/lib/connect';
+import { claudeAddCommand, DEPLOY_SNIPPET, deploySnippetFor, envLine, mcpJsonWithEnv } from '../src/lib/connect';
 import { CONNECT_POLL_MS } from '../src/screens/Connect';
 import { meReply, mockFetch } from './fetch';
 
@@ -33,6 +33,12 @@ describe('connect strings', () => {
   it('serves the CLAUDE.md snippet from docs/claude without its file comment', () => {
     expect(DEPLOY_SNIPPET.startsWith('## Deploying — through Shipyard, never by hand')).toBe(true);
     expect(DEPLOY_SNIPPET).toContain('shipyard_deploy');
+  });
+
+  it("names this Shipyard's own origin in the snippet", () => {
+    const snippet = deploySnippetFor('https://ship.example.com/');
+    expect(snippet).toContain('`https://ship.example.com/mcp`');
+    expect(snippet).not.toContain('shipyard.d3cloud.io');
   });
 });
 

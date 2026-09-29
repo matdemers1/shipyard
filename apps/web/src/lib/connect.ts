@@ -47,6 +47,15 @@ export function envLine(token: string): string {
 /** The snippet as a repo's CLAUDE.md takes it: without the file's own leading comment. */
 export const DEPLOY_SNIPPET = deploySnippetFile.replace(/^<!--[\s\S]*?-->\s*/, '').trimEnd() + '\n';
 
+/**
+ * The snippet names the Shipyard it was written for (its "Connect once" line gives `<origin>/mcp`);
+ * a self-hosted one shows its own origin in every place that one appears.
+ */
+export function deploySnippetFor(origin: string): string {
+  const written = /`(https?:\/\/[^/`\s]+)\/mcp`/.exec(DEPLOY_SNIPPET)?.[1];
+  return written === undefined ? DEPLOY_SNIPPET : DEPLOY_SNIPPET.replaceAll(written, origin.replace(/\/+$/, ''));
+}
+
 /** What each MCP tool does, in the words the page shows. The server's tool list is the source. */
 export const TOOLS: readonly { name: string; does: string }[] = [
   { name: 'shipyard_status', does: 'What is live for each app, what is waiting to ship, and its build state.' },

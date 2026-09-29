@@ -26,7 +26,7 @@ import { CopyButton, Mono } from '../components/Copyable';
 import { relativeTime, tokens as tokenApi, type TokenCreated, type TokenSummary } from '../lib/admin';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { useCan } from '../lib/auth';
-import { claudeAddCommand, DEPLOY_SNIPPET, envLine, mcpJsonWithEnv, mcpUrl, TOKEN_ENV, TOOLS } from '../lib/connect';
+import { claudeAddCommand, deploySnippetFor, envLine, mcpJsonWithEnv, mcpUrl, TOKEN_ENV, TOOLS } from '../lib/connect';
 
 /**
  * Connect Claude Code (SHP-T-3.12), `/connect`: everything needed to point Claude Code at this
@@ -206,6 +206,7 @@ export function Connect() {
   const token = created?.token ?? PLACEHOLDER;
   const command = claudeAddCommand(origin, token);
   const mcpJson = mcpJsonWithEnv(origin);
+  const snippet = deploySnippetFor(origin);
   const exportLine = envLine(token);
   const others = (list ?? []).filter((t) => t.revokedAt === null && t.id !== created?.id);
 
@@ -312,9 +313,9 @@ export function Connect() {
           description="Optional, and worth it: paste this into the repo’s CLAUDE.md so Claude Code deploys through Shipyard, names itself, and reports what shipped."
         >
           <Stack gap="8">
-            <Textarea mono readOnly aria-label="CLAUDE.md snippet" rows={10} value={DEPLOY_SNIPPET} />
+            <Textarea mono readOnly aria-label="CLAUDE.md snippet" rows={10} value={snippet} />
             <div>
-              <CopyButton text={DEPLOY_SNIPPET} label="Copy snippet" />
+              <CopyButton text={snippet} label="Copy snippet" />
             </div>
           </Stack>
         </Section>

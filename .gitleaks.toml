@@ -28,4 +28,10 @@ regexes = [
   # allowlist entry cannot shadow a real secret that happens to also be base32.
   '''KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU''',
   '''GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ''',
+
+  # The made-up API token apps/web/test/connect.test.tsx (SHP-T-3.12) feeds its mocked POST
+  # /api/tokens to check the copied `claude mcp add` command. It never reached a server: the test
+  # replaces fetch. Real tokens are random and shown only once. Pinned to the exact literal, which
+  # stays in history at b878595, so it cannot shadow a real token.
+  '''shp_live_abc123''',
 ]

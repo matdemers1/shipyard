@@ -365,6 +365,6 @@ describe('GET /api/apps/:app/commits for a build: shipyard app (SHP-T-3.11)', ()
       newestGreen: null,
       commits: [{ sha: SHA_MID, ci: 'none' }, { sha: SHA_HEAD, ci: 'none' }],
     });
-    expect(res.body.commits[0]).not.toHaveProperty('buildId');
+    expect((res.body as { commits: Record<string, unknown>[] }).commits[0]).not.toHaveProperty('buildId');
   });
 });

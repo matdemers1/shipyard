@@ -66,6 +66,18 @@ function routes(current: MailSettings, extra: Record<string, Reply | Reply[]> = 
     'GET /api/auth/me': meReply('admin'),
     'GET /api/settings/d3auth': { status: 200, body: D3AUTH_OFF },
     'GET /api/settings/mail': { status: 200, body: current },
+    'GET /api/settings/github': {
+      status: 200,
+      body: {
+        source: 'none',
+        tokenSet: false,
+        canStoreSecret: true,
+        problem: null,
+        updatedAt: null,
+        rateLimit: null,
+        rateLimitProblem: 'GitHub could not be reached.',
+      },
+    },
     ...extra,
   };
 }
@@ -170,7 +182,14 @@ describe('Settings → Alert email', () => {
       routes(ON, {
         'PUT /api/settings/mail': {
           status: 400,
-          body: { error: { code: 'invalid_request', gate: 'none', message: 'The relay URL changed, and the stored token was saved for the old one.', fix: 'Paste the token.' } },
+          body: {
+            error: {
+              code: 'invalid_request',
+              gate: 'none',
+              message: 'The relay URL changed, and the stored token was saved for the old one.',
+              fix: 'Paste the token.',
+            },
+          },
         },
       }),
     );

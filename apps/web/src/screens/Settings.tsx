@@ -24,6 +24,7 @@ import { RefusalError, unreachableRefusal } from '../lib/api';
 import { downloadManifest, settings as settingsApi } from '../lib/settings';
 import { AlertEmailSettings } from './AlertEmailSettings';
 import { BuildSettingsSection } from './BuildSettings';
+import { GitHubSettingsSection } from './GitHubSettings';
 
 /**
  * Settings (SHP-T-6.8, SHP-REQ-110): configure Sign in with D3 Auth without editing server files.
@@ -390,6 +391,7 @@ export function Settings() {
             <Section title="Register Shipyard in D3 Auth" description="What D3 Auth needs to know about this server.">
               <Registration s={s} />
             </Section>
+            <GitHubSettingsSection />
             <AlertEmailSettings />
             <BuildSettingsSection />
           </>

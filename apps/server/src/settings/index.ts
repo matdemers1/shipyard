@@ -14,6 +14,7 @@ import { requireRole } from '../auth/scope.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { addBuildRoutes } from './build.js';
+import { addGitHubRoutes } from './github.js';
 import { deriveSettingsKey, encryptSecret } from './crypto.js';
 import { testDiscovery } from './discovery.js';
 import { addMailRoutes } from './mail.js';
@@ -38,6 +39,8 @@ export interface SettingsDeps extends ServiceDeps {
   discoveryTimeoutMs?: number;
   /** Test-only: a shorter timeout for Settings → Alert email → Send test email. */
   mailTestTimeoutMs?: number;
+  /** Test-only: GitHub's `/rate_limit` for Settings → GitHub. */
+  githubFetch?: typeof fetch;
 }
 
 const TOKEN_ACTOR = refusal('forbidden', 'An API token cannot read or change settings.', 'Sign in to the console as an admin to do this.');
@@ -223,6 +226,9 @@ export function settingsRouter(deps: SettingsDeps): Router {
 
   // Settings → Alert email (SHP-T-6.9): the same guards, the same secret handling.
   addMailRoutes(router, deps, admin, bad);
+
+  // Settings → GitHub (SHP-T-3.13): the server's read-only token, the same secret handling.
+  addGitHubRoutes(router, deps, admin, bad);
 
   // Settings → Builds (SHP-T-7.11): CPU/memory limits and the cache cap, no secret and no env override.
   addBuildRoutes(router, deps, admin, bad);

@@ -576,6 +576,53 @@ function buildPaths(): Record<string, unknown> {
         },
       },
     },
+    '/settings/github': {
+      get: {
+        summary: "The server's GitHub access and GitHub's current rate limit — never the token",
+        operationId: 'getSettingsGitHub',
+        responses: {
+          '200': { description: 'GitHub access.', content: { 'application/json': { schema: { $ref: '#/components/schemas/GitHubSettings' } } } },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+      put: {
+        summary: "Save the server's (write-only) GitHub token; used on the next call, no restart",
+        operationId: 'putSettingsGitHub',
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/GitHubSettingsUpdate' } } },
+        },
+        responses: {
+          '200': { description: 'Saved.', content: { 'application/json': { schema: { $ref: '#/components/schemas/GitHubSettings' } } } },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+      delete: {
+        summary: 'Clear the stored GitHub token; GitHub is then called anonymously',
+        operationId: 'deleteSettingsGitHub',
+        responses: {
+          '200': { description: 'Cleared.', content: { 'application/json': { schema: { $ref: '#/components/schemas/GitHubSettings' } } } },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+    '/settings/github/test': {
+      post: {
+        summary: 'Ask GitHub for its rate limit with a token (or the one in use) and report its answer',
+        operationId: 'postSettingsGitHubTest',
+        requestBody: {
+          required: false,
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/GitHubTestRequest' } } },
+        },
+        responses: {
+          '200': {
+            description: "GitHub's answer, accepted or not.",
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/GitHubTestResult' } } },
+          },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
     '/auth/oidc/start': {
       get: {
         summary: 'Begin Sign in with D3 Auth',

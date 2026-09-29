@@ -4,6 +4,8 @@ import type {
   D3AuthSettings,
   D3AuthSettingsUpdate,
   D3AuthTestResult,
+  GitHubSettings,
+  GitHubTestResult,
   MailSettings,
   MailSettingsUpdate,
   MailTestResult,
@@ -29,6 +31,13 @@ export const settings = {
   saveMail: (body: MailSettingsUpdate): Promise<MailSettings> => request<MailSettings>('/api/settings/mail', { method: 'PUT', body }),
   clearMail: (): Promise<MailSettings> => request<MailSettings>('/api/settings/mail', { method: 'DELETE' }),
   testMail: (): Promise<MailTestResult> => request<MailTestResult>('/api/settings/mail/test', { method: 'POST', body: {} }),
+  // GitHub (SHP-T-3.13): the server's read-only token — only `tokenSet` ever comes back.
+  github: (): Promise<GitHubSettings> => request<GitHubSettings>('/api/settings/github'),
+  saveGitHub: (token: string): Promise<GitHubSettings> =>
+    request<GitHubSettings>('/api/settings/github', { method: 'PUT', body: { token } }),
+  clearGitHub: (): Promise<GitHubSettings> => request<GitHubSettings>('/api/settings/github', { method: 'DELETE' }),
+  testGitHub: (token?: string): Promise<GitHubTestResult> =>
+    request<GitHubTestResult>('/api/settings/github/test', { method: 'POST', body: token === undefined ? {} : { token } }),
   // Settings → Builds (SHP-T-7.11): CPU, memory and the cache cap. No secret, no server.env override.
   builds: (): Promise<BuildSettings> => request<BuildSettings>('/api/settings/builds'),
   saveBuilds: (body: BuildSettingsUpdate): Promise<BuildSettings> =>

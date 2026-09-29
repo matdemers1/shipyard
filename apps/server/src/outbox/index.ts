@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createGitHubAdapter, type GitHubPort } from '@shipyard/sequence/github';
+import type { GitHubPort } from '@shipyard/sequence/github';
 import type { ServiceDeps } from '../deps.js';
 import type { Db } from '../db.js';
 import { tasksFor, type ChangelogRef } from './tasks.js';
@@ -8,6 +8,7 @@ import { tasksFor, type ChangelogRef } from './tasks.js';
 // `github_status` row. Both sides only reach into the other from inside a function body, never at
 // module-evaluation time, so the cycle resolves fine under Node's ESM loader.
 import { processGithubStatusRow } from './builds.js';
+import { liveGitHub } from '../github/token.js';
 
 /**
  * The Foreman outbox (SHP-T-2.9). A deploy target that succeeds and whose app names a Foreman
@@ -371,7 +372,7 @@ export async function drainOnce(deps: ServiceDeps, opts: DrainOptions = {}): Pro
   const fetchImpl = opts.fetch ?? fetch;
   const now = opts.now ?? new Date();
   const github =
-    opts.github ?? createGitHubAdapter(deps.config.GITHUB_TOKEN_SERVER === undefined ? {} : { token: deps.config.GITHUB_TOKEN_SERVER });
+    opts.github ?? liveGitHub(deps);
   // Shared across every row this call claims, so two images on the same target (same base..head)
   // make one GitHub call instead of one per image.
   const taskCache = new Map<string, Promise<string[]>>();

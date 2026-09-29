@@ -204,6 +204,7 @@ describe('GET /api/apps/:app/commits', () => {
       ahead: 2,
       newestGreen: SHA_MID,
       source: 'github',
+      buildSource: 'github',
       commits: [
         { sha: SHA_MID, ci: 'success', taskIds: ['SHP-T-3.2'] },
         { sha: SHA_HEAD, ci: 'pending', taskIds: [] },
@@ -305,5 +306,65 @@ describe('GET /api/apps/:app/commits', () => {
 
     const inScope = await request(app).get('/api/apps/web/commits').set('Authorization', `Bearer ${token}`);
     expect(inScope.status).toBe(200);
+  });
+});
+
+describe('GET /api/apps/:app/commits for a build: shipyard app (SHP-T-3.11)', () => {
+  beforeEach(async () => {
+    await reportApps([
+      { manifest: manifest('web'), manifestSha256: 'a'.repeat(64), running: { web: `sha256:${'d'.repeat(64)}` } },
+      {
+        manifest: { ...manifest('built'), build: { source: 'shipyard', releaseTargets: { web: 'release' } } },
+        manifestSha256: 'b'.repeat(64),
+        running: { web: `sha256:${'d'.repeat(64)}` },
+      },
+    ]);
+    await recordRelease('built', SHA_LIVE);
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 2,
+      behindBy: 0,
+      commits: [
+        { sha: SHA_MID, message: 'mid' },
+        { sha: SHA_HEAD, message: 'head' },
+      ],
+    };
+    // A green GitHub run must not make a Shipyard-built SHA deployable.
+    github.runsByHeadSha.set(SHA_HEAD, [run(9, SHA_HEAD, 'success')]);
+  });
+
+  async function build(sha: string, state: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'refused') {
+    const row = await db.app.findUniqueOrThrow({ where: { name: 'built' } });
+    return db.build.create({ data: { appId: row.id, sha, state, trigger: 'webhook', requesterLabel: 'shipyard: webhook' } });
+  }
+
+  it("takes each commit's state from its latest Shipyard build, never from GitHub runs", async () => {
+    await build(SHA_MID, 'failed');
+    const rebuilt = await build(SHA_MID, 'succeeded');
+    const running = await build(SHA_HEAD, 'running');
+    const { cookie } = await signIn();
+    const res = await request(app).get('/api/apps/built/commits').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      buildSource: 'shipyard',
+      newestGreen: SHA_MID,
+      commits: [
+        { sha: SHA_MID, ci: 'success', buildId: rebuilt.id },
+        { sha: SHA_HEAD, ci: 'pending', buildId: running.id },
+      ],
+    });
+    expect(github.calls.workflowRuns).toBe(0);
+  });
+
+  it('a commit with no build, or only a cancelled one, has nothing to deploy', async () => {
+    await build(SHA_HEAD, 'cancelled');
+    const { cookie } = await signIn();
+    const res = await request(app).get('/api/apps/built/commits').set('Cookie', cookie);
+    expect(res.body).toMatchObject({
+      buildSource: 'shipyard',
+      newestGreen: null,
+      commits: [{ sha: SHA_MID, ci: 'none' }, { sha: SHA_HEAD, ci: 'none' }],
+    });
+    expect(res.body.commits[0]).not.toHaveProperty('buildId');
   });
 });

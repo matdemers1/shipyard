@@ -298,9 +298,7 @@ export function AppDetail() {
               </div>
               <div>
                 <dt>Agent checked</dt>
-                <dd>
-                  {age(detail.reportedAt)}
-                </dd>
+                <dd>{age(detail.reportedAt)}</dd>
               </div>
             </dl>
           </Stack>
@@ -320,7 +318,17 @@ export function AppDetail() {
                   <DataListRow
                     key={c.sha}
                     truncate={false}
-                    title={<span className="shp-commit-msg">{firstLine}</span>}
+                    title={
+                      c.buildId === undefined ? (
+                        <span className="shp-commit-msg">{firstLine}</span>
+                      ) : (
+                        <Link asChild>
+                          <RouterLink to={`/builds/${c.buildId}`} className="shp-commit-msg">
+                            {firstLine}
+                          </RouterLink>
+                        </Link>
+                      )
+                    }
                     description={
                       <>
                         <code>{sha7(c.sha)}</code>
@@ -328,7 +336,7 @@ export function AppDetail() {
                         {c.sha === status.shipSha ? ' · newest shippable' : ''}
                       </>
                     }
-                    meta={<Badge tone={ciTone(c.ci)}>{ciWords(c.ci)}</Badge>}
+                    meta={<Badge tone={ciTone(c.ci)}>{ciWords(c.ci, load.commits?.buildSource)}</Badge>}
                     {...(can && c.ci === 'success' && status.shipSha !== null
                       ? {
                           actions: (
@@ -351,8 +359,9 @@ export function AppDetail() {
             </DataList>
             {summary.noRun > 0 ? (
               <p className="shp-status__detail">
-                “No images” is normal: GitHub builds images once per push, for the newest commit in it. Those commits ship inside the next
-                built commit above them.
+                {load.commits.buildSource === 'shipyard'
+                  ? '“Not built” means Shipyard has no succeeded build of that commit. It ships inside the next built commit above it, or you can build it from Builds.'
+                  : '“No images” is normal: GitHub builds images once per push, for the newest commit in it. Those commits ship inside the next built commit above them.'}
               </p>
             ) : null}
           </Section>
@@ -363,6 +372,9 @@ export function AppDetail() {
             <DescriptionItem term="Repository">
               {detail.repo ?? 'None'}
               {detail.defaultBranch !== null ? ` · ${detail.defaultBranch}` : ''}
+            </DescriptionItem>
+            <DescriptionItem term="Images built by">
+              {builtByShipyard(detail.manifest) ? 'Shipyard — each push is built here' : 'GitHub CI — the image workflow on each push'}
             </DescriptionItem>
             <DescriptionItem term="Needs approval">
               {detail.approvalPolicy === 'required' ? 'Yes — a deployer approves every deploy' : 'No — a deployer can ship directly'}

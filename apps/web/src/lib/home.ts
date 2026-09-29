@@ -16,6 +16,8 @@ export interface CommitEntry {
   message: string;
   ci: CiState;
   taskIds: string[];
+  /** For a `build: shipyard` app, the latest Shipyard build of this SHA (SHP-T-3.11). */
+  buildId?: string;
 }
 
 /** `GET /api/apps/:app/commits`. */
@@ -28,6 +30,8 @@ export interface CommitsInfo {
   ahead?: number;
   newestGreen: string | null;
   source: 'github' | 'unavailable';
+  /** Where the images come from, which decides what `ci` means; absent from older servers. */
+  buildSource?: 'github' | 'shipyard';
 }
 
 /** `GET /api/apps` — the fields the home cards use. */

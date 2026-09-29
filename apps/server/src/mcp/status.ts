@@ -1,6 +1,6 @@
-import { ACTIVE_STATES, parseManifestYaml, type BuildState } from '@shipyard/schema';
+import { ACTIVE_STATES, type BuildState } from '@shipyard/schema';
 import { createGitHubAdapter, type GitHubPort } from '@shipyard/sequence/github';
-import { cachedCompare, makeCompareCache } from '../apps/commits.js';
+import { buildSourceOf, cachedCompare, makeCompareCache } from '../apps/commits.js';
 import { recordedRelease } from '../apps/index.js';
 import type { ServiceDeps } from '../deps.js';
 import { TERMINAL_STATES } from '../deploys/service.js';
@@ -61,14 +61,6 @@ export interface McpAppStatus {
     endedAt: string | null;
     refusal: unknown;
   } | null;
-}
-
-function buildSourceOf(manifestYaml: string): 'github' | 'shipyard' {
-  try {
-    return parseManifestYaml(manifestYaml).build?.source === 'shipyard' ? 'shipyard' : 'github';
-  } catch {
-    return 'github';
-  }
 }
 
 /** Commits ahead of `live` on `defaultBranch`, oldest first; `[]` when GitHub cannot answer. */

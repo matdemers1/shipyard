@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appStatus, summarizeCommits, type StatusInput } from '../src/lib/appstatus';
+import { appStatus, ciWords, summarizeCommits, type StatusInput } from '../src/lib/appstatus';
 import type { CommitEntry, CommitsInfo } from '../src/lib/home';
 
 /** SHP-T-3.10: one status per app, in words, from what the server already answers. */
@@ -73,6 +73,36 @@ describe('appStatus', () => {
     expect(appStatus(input({ commits: { ...commits([]), source: 'unavailable', head: null } })).kind).toBe('github-unavailable');
     expect(appStatus(input({ commits: null })).kind).toBe('github-unavailable');
     expect(appStatus(input({ liveSha: null })).kind).toBe('never-deployed');
+  });
+});
+
+describe('appStatus for a build: shipyard app (SHP-T-3.11)', () => {
+  const shipyard = (entries: CommitEntry[]) => commits(entries, { buildSource: 'shipyard' });
+
+  it('offers a commit Shipyard built, and says Shipyard built it', () => {
+    const s = appStatus(input({ commits: shipyard([commit('a', 'success')]) }));
+    expect(s).toMatchObject({ kind: 'ready', shipSha: sha('a') });
+    expect(s.detail).toMatch(/^Shipyard built its images\./);
+  });
+
+  it("words a running, failed or missing build as Shipyard's, not CI's", () => {
+    expect(appStatus(input({ commits: shipyard([commit('a', 'pending')]) })).headline).toBe(`Shipyard is building ${sha('a').slice(0, 7)}`);
+    expect(appStatus(input({ commits: shipyard([commit('a', 'failure')]) }))).toMatchObject({
+      label: 'Build failed',
+      headline: `Shipyard's build of ${sha('a').slice(0, 7)} failed`,
+    });
+    const none = appStatus(input({ commits: shipyard([commit('a', 'none')]) }));
+    expect(none.headline).toBe('1 commit since live, none built');
+    expect(none.detail).toMatch(/shipyard_build/);
+    expect(none.detail).not.toMatch(/GitHub/);
+  });
+});
+
+describe('ciWords', () => {
+  it('names the builder', () => {
+    expect(ciWords('none')).toBe('No images');
+    expect(ciWords('none', 'shipyard')).toBe('Not built');
+    expect(ciWords('failure', 'shipyard')).toBe('Build failed');
   });
 });
 

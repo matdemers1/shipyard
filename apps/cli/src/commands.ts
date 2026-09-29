@@ -1,17 +1,22 @@
 import {
+  BuildSecretsError,
   Journal,
   Ledger,
   ManifestLoadError,
   loadManifests,
   isAppLockLive,
   recoverInterrupted,
+  deleteBuildSecret,
+  listBuildSecretNames,
+  loadAgentPrivateKey,
   runDeploy,
+  setBuildSecret,
   type DeployRequest,
   type LoadedManifests,
   type SequencePorts,
 } from '@shipyard/sequence';
 
-import type { DeployCommand, StatusCommand } from './args.js';
+import type { BuildSecretCommand, DeployCommand, StatusCommand } from './args.js';
 import { formatDeployResult, formatProgress, formatRecovery, formatStatus, deployExitCode } from './format.js';
 import { dataPaths } from './paths.js';
 import type { Sink } from './config.js';
@@ -137,6 +142,58 @@ export async function runCheckManifestsCommand(ports: SequencePorts, dataRoot: s
     return 0;
   } catch (err) {
     if (err instanceof ManifestLoadError) {
+      deps.stderr.write(`${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+/** The longest build-secret value accepted on stdin. */
+export const MAX_SECRET_BYTES = 64 * 1024;
+
+export interface BuildSecretDeps {
+  /** The whole of stdin, as text. Only `set` reads it. */
+  readStdin: () => Promise<string>;
+  stdout: Sink;
+  stderr: Sink;
+}
+
+/**
+ * `build-secret set|delete|list` (SHP-T-7.9, SHP-REQ-125). The values are sealed with a key derived
+ * from the agent's own key (`<dataRoot>/agent/agent.key`), so this runs on the agent's host with
+ * read access to that key. No value is ever printed; `list` shows names only.
+ */
+export async function runBuildSecretCommand(dataRoot: string, command: BuildSecretCommand, deps: BuildSecretDeps): Promise<number> {
+  try {
+    if (command.action === 'list') {
+      const names = await listBuildSecretNames(dataRoot, command.app);
+      for (const name of names) deps.stdout.write(`${name}\n`);
+      if (names.length === 0) deps.stderr.write(`no build secrets set for ${command.app}\n`);
+      return 0;
+    }
+    const key = await loadAgentPrivateKey(dataRoot);
+    if (command.action === 'delete') {
+      const removed = await deleteBuildSecret(dataRoot, key, command.app, command.name);
+      deps.stdout.write(removed ? `deleted build secret ${command.name} for ${command.app}\n` : `no build secret ${command.name} for ${command.app}\n`);
+      return removed ? 0 : 1;
+    }
+    const raw = await deps.readStdin();
+    if (Buffer.byteLength(raw, 'utf8') > MAX_SECRET_BYTES) {
+      deps.stderr.write(`the value on stdin is larger than ${String(MAX_SECRET_BYTES)} bytes\n`);
+      return 2;
+    }
+    // One trailing newline is what `echo` and an interactive line add; it is not part of the value.
+    const value = raw.replace(/\r?\n$/, '');
+    if (value.length === 0) {
+      deps.stderr.write('no value on stdin: pipe the secret in, e.g. printf %s "$TOKEN" | shipyard-run build-secret set <app> <name>\n');
+      return 2;
+    }
+    await setBuildSecret(dataRoot, key, command.app, command.name, value);
+    deps.stdout.write(`set build secret ${command.name} for ${command.app}\n`);
+    return 0;
+  } catch (err) {
+    if (err instanceof BuildSecretsError) {
       deps.stderr.write(`${err.message}\n`);
       return 1;
     }

@@ -29,7 +29,10 @@ export interface CommitEntry {
 export interface CommitsResponse {
   live: string | null;
   head: string | null;
+  /** The newest ten commits ahead of live, oldest first, each with its CI state. */
   commits: CommitEntry[];
+  /** Every commit ahead of live, not just the ten listed — the count a person reads. */
+  ahead: number;
   newestGreen: string | null;
   source: 'github' | 'unavailable';
 }
@@ -54,10 +57,56 @@ function conclusionToCi(conclusion: string | null, status: string): CiState {
   return status === 'completed' ? 'failure' : 'pending';
 }
 
-interface CacheEntry {
-  key: string;
+interface ResponseCacheEntry {
   expiresAt: number;
   value: CommitsResponse;
+}
+
+interface CompareCacheEntry {
+  expiresAt: number;
+  value: Awaited<ReturnType<GitHubPort['compare']>>;
+}
+
+/**
+ * A shared 60 s TTL cache in front of `GitHubPort#compare`, keyed on `repo`/`base`/`head`
+ * (SHP-T-7.20, SHP-REQ-145). One `Map` per caller — the console's `/commits` route and
+ * `shipyard_status` each hold their own, so a failure in one never poisons the other, but two
+ * calls through the same map within the TTL make one `compare` call. A rejected `compare` is
+ * never cached, so the next call retries it.
+ */
+export function makeCompareCache(): Map<string, CompareCacheEntry> {
+  return new Map();
+}
+
+/** Entries kept per cache; the oldest goes first. A long-lived process never grows without bound. */
+const CACHE_MAX_ENTRIES = 500;
+
+function setBounded<V>(cache: Map<string, V>, key: string, value: V): void {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+export async function cachedCompare(
+  cache: Map<string, CompareCacheEntry>,
+  github: Pick<GitHubPort, 'compare'>,
+  repo: string,
+  base: string,
+  head: string,
+  now: number = Date.now(),
+): Promise<Awaited<ReturnType<GitHubPort['compare']>>> {
+  const key = `${repo}@${head}:${base}`;
+  const cached = cache.get(key);
+  if (cached !== undefined && cached.expiresAt > now) {
+    return cached.value;
+  }
+  const value = await github.compare(repo, base, head);
+  setBounded(cache, key, { expiresAt: now + CACHE_TTL_MS, value });
+  return value;
 }
 
 /** For a token, the apps it is scoped to; for a user, undefined (every app). */
@@ -78,7 +127,9 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
   const { db, config } = deps;
   const github = options.github ?? createGitHubAdapter(config.GITHUB_TOKEN_SERVER === undefined ? {} : { token: config.GITHUB_TOKEN_SERVER });
   const router = Router();
-  const cache = new Map<string, CacheEntry>();
+  const compareCache = makeCompareCache();
+  // The whole response, per-commit CI state included: a hit makes no GitHub call at all.
+  const responseCache = new Map<string, ResponseCacheEntry>();
 
   router.get('/:app/commits', async (req, res) => {
     if (!readerOrRefuse(req, res)) return;
@@ -95,7 +146,7 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
       return;
     }
     if (row.repo === null || row.defaultBranch === null) {
-      res.json({ live: null, head: null, commits: [], newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
+      res.json({ live: null, head: null, commits: [], ahead: 0, newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
       return;
     }
 
@@ -112,11 +163,11 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
     const live = release?.sha ?? null;
 
     try {
-      const value = await computeCommits(github, cache, row.repo, row.defaultBranch, workflow, live, to);
+      const value = await computeCommits(github, compareCache, responseCache, row.repo, row.defaultBranch, workflow, live, to);
       res.json(value);
     } catch (error) {
       if (error instanceof SequenceRefusalError) {
-        res.json({ live, head: null, commits: [], newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
+        res.json({ live, head: null, commits: [], ahead: 0, newestGreen: null, source: 'unavailable' } satisfies CommitsResponse);
         return;
       }
       throw error;
@@ -128,7 +179,8 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
 
 async function computeCommits(
   github: GitHubPort,
-  cache: Map<string, CacheEntry>,
+  compareCache: Map<string, CompareCacheEntry>,
+  responseCache: Map<string, ResponseCacheEntry>,
   repo: string,
   defaultBranch: string,
   workflow: string | null,
@@ -137,22 +189,25 @@ async function computeCommits(
 ): Promise<CommitsResponse> {
   // `to` (SHP-REQ-087) is the candidate SHA the console already knows; the range narrows from the
   // default branch's HEAD to exactly that commit rather than the always-moving branch tip. The
-  // comparison itself names the head, so the cache key is keyed on live + repo/branch/to; a
-  // changed head naturally falls out of a fresh `compare` call each time the cache expires.
+  // comparison itself names the head, so `cachedCompare`'s key is repo/base/head — a changed head
+  // naturally falls out of a fresh `compare` call each time the cache expires.
   const target = to ?? defaultBranch;
   const now = Date.now();
-  const cacheKey = `${repo}@${target}:${live ?? 'none'}`;
-  const cached = cache.get(cacheKey);
-  if (cached !== undefined && cached.expiresAt > now && cached.value.source === 'github') {
-    return cached.value;
+  const responseKey = `${repo}@${target}:${live ?? 'none'}`;
+  const cachedResponse = responseCache.get(responseKey);
+  if (cachedResponse !== undefined && cachedResponse.expiresAt > now) {
+    return cachedResponse.value;
   }
 
-  const comparison = live === null ? null : await github.compare(repo, live, target);
+  const comparison = live === null ? null : await cachedCompare(compareCache, github, repo, live, target);
   let commits: { sha: string; message: string }[];
   let head: string | null;
+  let ahead = 0;
 
   if (live !== null && comparison !== null) {
     commits = comparison.commits;
+    // GitHub lists at most 250 commits in a comparison; `aheadBy` is the exact count.
+    ahead = Math.max(comparison.aheadBy, commits.length);
     head = commits.length > 0 ? (commits[commits.length - 1]?.sha ?? live) : live;
   } else if (to !== null) {
     // No recorded release, or GitHub does not know the recorded SHA any more, but the caller
@@ -162,7 +217,7 @@ async function computeCommits(
   } else {
     // No recorded release, or GitHub does not know the recorded SHA any more: fall back to the
     // last 10 commits on the default branch against itself (self-compare), i.e. just the head.
-    const selfCompare = await github.compare(repo, defaultBranch, defaultBranch);
+    const selfCompare = await cachedCompare(compareCache, github, repo, defaultBranch, defaultBranch);
     head = selfCompare?.commits[selfCompare.commits.length - 1]?.sha ?? null;
     commits = [];
   }
@@ -186,8 +241,8 @@ async function computeCommits(
     }
   }
 
-  const value: CommitsResponse = { live, head, commits: entries, newestGreen, source: 'github' };
-  cache.set(cacheKey, { key: cacheKey, expiresAt: now + CACHE_TTL_MS, value });
+  const value: CommitsResponse = { live, head, commits: entries, ahead, newestGreen, source: 'github' };
+  setBounded(responseCache, responseKey, { expiresAt: now + CACHE_TTL_MS, value });
   return value;
 }
 

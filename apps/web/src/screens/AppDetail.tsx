@@ -2,6 +2,7 @@ import {
   Alert,
   Badge,
   Button,
+  Cluster,
   DataList,
   DataListRow,
   DescriptionItem,
@@ -21,8 +22,12 @@ import { AdoptLiveButton, DriftBanner } from '../components/DriftBanner';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { FreezeSheet, UnfreezeButton } from '../components/FreezeSheet';
 import { RefusalError, request, unreachableRefusal } from '../lib/api';
-import type { PendingApproval } from '../lib/home';
+import type { CommitsInfo, PendingApproval } from '../lib/home';
+import { appStatus, ciTone, ciWords, stateTone, stateWords, summarizeCommits } from '../lib/appstatus';
+import { StatusLine } from '../components/StatusLine';
 import { useCan } from '../lib/auth';
+import { builds as buildsApi, type BuildSummary } from '../lib/builds';
+import { BuildRow } from './Builds';
 import {
   age,
   appDetail,
@@ -45,13 +50,26 @@ import {
 type Load =
   | { status: 'loading' }
   | { status: 'error'; error: RefusalError }
-  | { status: 'ready'; detail: Detail; drift: DriftState; freeze: FreezeInfo | null; approval: PendingApproval | undefined };
+  | {
+      status: 'ready';
+      detail: Detail;
+      drift: DriftState;
+      freeze: FreezeInfo | null;
+      approval: PendingApproval | undefined;
+      /** The latest few builds; null when they could not be read. */
+      builds: BuildSummary[] | null;
+      /** Commits ahead of live with their CI state; null when they could not be read. */
+      commits: CommitsInfo | null;
+    };
 
-function stateTone(state: string): 'neutral' | 'attention' | 'danger' {
-  if (state === 'failed' || state === 'rolled_back' || state === 'refused') return 'danger';
-  if (state === 'awaiting_approval') return 'attention';
-  return 'neutral';
+/** Whether the manifest has Shipyard build this app's images (`build.source: shipyard`). */
+function builtByShipyard(manifest: unknown): boolean {
+  if (typeof manifest !== 'object' || manifest === null) return false;
+  const build = (manifest as { build?: unknown }).build;
+  return typeof build === 'object' && build !== null && (build as { source?: unknown }).source === 'shipyard';
 }
+
+const RECENT_BUILDS = 5;
 
 function DetailSkeleton({ app }: { app: string }) {
   return (
@@ -89,9 +107,24 @@ export function AppDetail() {
       freeze.get(app, controller.signal),
       // A deploy of this app waiting on a deployer (SHP-REQ-060). Reading it must not break the page.
       request<PendingApproval[]>('/api/approvals', { signal: controller.signal }).catch(() => [] as PendingApproval[]),
+      // The app's latest builds (SHP-REQ-142). Reading them must not break the page either.
+      buildsApi
+        .list({ app, limit: RECENT_BUILDS, signal: controller.signal })
+        .then((page) => page.items)
+        .catch(() => null),
+      // What is waiting to ship (SHP-T-3.10). Reading it must not break the page either.
+      request<CommitsInfo>(`/api/apps/${encodeURIComponent(app)}/commits`, { signal: controller.signal }).catch(() => null),
     ])
-      .then(([detail, drift, freezeStatus, approvals]) => {
-        setLoad({ status: 'ready', detail, drift, freeze: freezeStatus.freeze, approval: approvals.find((a) => a.app === app) });
+      .then(([detail, drift, freezeStatus, approvals, recentBuilds, commits]) => {
+        setLoad({
+          status: 'ready',
+          detail,
+          drift,
+          freeze: freezeStatus.freeze,
+          approval: approvals.find((a) => a.app === app),
+          builds: recentBuilds,
+          commits,
+        });
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -137,6 +170,16 @@ export function AppDetail() {
   const neverDeployed = detail.liveSha === null;
   const running = Object.entries(detail.running ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const history = detail.targets;
+  const recentBuilds = load.builds ?? [];
+  const showBuilds = builtByShipyard(detail.manifest) || recentBuilds.length > 0;
+  const status = appStatus({ ...detail, commits: load.commits, approval: load.approval });
+  const summary = summarizeCommits(load.commits);
+  // Newest first: the one at the top is the one you would ship.
+  const waiting = [...(load.commits?.commits ?? [])].reverse();
+  const branch = detail.defaultBranch ?? 'the default branch';
+  const ship = (sha: string) => {
+    setSheet({ kind: 'deploy', app: detail.name, sha });
+  };
 
   return (
     <Page>
@@ -147,7 +190,7 @@ export function AppDetail() {
           description={
             neverDeployed
               ? 'Never deployed through Shipyard.'
-              : `Live ${sha7(detail.liveSha)}, deployed ${age(detail.liveEndedAt)}.`
+              : `Live ${sha7(detail.liveSha)}, deployed ${age(detail.liveEndedAt)}${detail.repo !== null ? ` from ${detail.repo}` : ''}.`
           }
           {...(can
             ? {
@@ -164,8 +207,8 @@ export function AppDetail() {
         {activeFreeze !== null ? (
           <Alert tone="danger" title={`${detail.name} is frozen`}>
             {activeFreeze.reason} — since {when(activeFreeze.from)}, by {activeFreeze.by}
-            {activeFreeze.until !== null ? `, until ${when(activeFreeze.until)}` : ''}. New deploys are refused;
-            rollbacks and restores are still allowed.
+            {activeFreeze.until !== null ? `, until ${when(activeFreeze.until)}` : ''}. New deploys are refused; rollbacks and restores are
+            still allowed.
           </Alert>
         ) : null}
 
@@ -186,8 +229,8 @@ export function AppDetail() {
 
         {load.approval !== undefined ? (
           <Alert tone="warning" title="A deploy is waiting on approval">
-            {load.approval.requester.label} asked to deploy <code>{sha7(load.approval.sha)}</code>. It holds no lock and
-            expires {when(load.approval.expiresAt)}.{' '}
+            {load.approval.requester.label} asked to deploy <code>{sha7(load.approval.sha)}</code>. It holds no lock and expires{' '}
+            {when(load.approval.expiresAt)}.{' '}
             {can ? (
               <Button
                 type="button"
@@ -217,25 +260,125 @@ export function AppDetail() {
           </Alert>
         ) : null}
 
-        <Section title="Release">
+        <Section title="Status" actions={<Badge tone={status.tone}>{status.label}</Badge>}>
+          <Stack gap="16">
+            <StatusLine status={status} />
+            {can && status.shipSha !== null ? (
+              <Cluster gap="8" align="center">
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={() => {
+                    if (status.shipSha !== null) ship(status.shipSha);
+                  }}
+                >
+                  Ship {sha7(status.shipSha)}
+                </Button>
+                <span className="shp-facts__sub">You review a dry run before anything changes.</span>
+              </Cluster>
+            ) : null}
+            <dl className="shp-facts">
+              <div>
+                <dt>Live</dt>
+                <dd>
+                  {neverDeployed ? 'Nothing recorded' : <code>{sha7(detail.liveSha)}</code>}
+                  {neverDeployed ? null : <span className="shp-facts__sub">{age(detail.liveEndedAt)}</span>}
+                </dd>
+              </div>
+              <div>
+                <dt>Since live</dt>
+                <dd>
+                  {load.commits === null || load.commits.source === 'unavailable'
+                    ? 'Unknown'
+                    : summary.ahead === 0
+                      ? 'None'
+                      : `${String(summary.ahead)} commit${summary.ahead === 1 ? '' : 's'}`}
+                  <span className="shp-facts__sub">on {branch}</span>
+                </dd>
+              </div>
+              <div>
+                <dt>Agent checked</dt>
+                <dd>
+                  {age(detail.reportedAt)}
+                </dd>
+              </div>
+            </dl>
+          </Stack>
+        </Section>
+
+        {load.commits !== null && load.commits.source === 'github' && summary.ahead > 0 ? (
+          <Section
+            title="Waiting to ship"
+            description={`Commits on ${branch} since live, newest first. Only a commit with built images can ship, and shipping it brings everything below it along.${
+              summary.ahead > summary.checked ? ` Showing the newest ${String(summary.checked)} of ${String(summary.ahead)}.` : ''
+            }`}
+          >
+            <DataList aria-label="Commits waiting to ship">
+              {waiting.map((c) => {
+                const firstLine = c.message.split('\n')[0] ?? c.message;
+                return (
+                  <DataListRow
+                    key={c.sha}
+                    truncate={false}
+                    title={<span className="shp-commit-msg">{firstLine}</span>}
+                    description={
+                      <>
+                        <code>{sha7(c.sha)}</code>
+                        {c.taskIds.length > 0 ? ` · ${c.taskIds.join(', ')}` : ''}
+                        {c.sha === status.shipSha ? ' · newest shippable' : ''}
+                      </>
+                    }
+                    meta={<Badge tone={ciTone(c.ci)}>{ciWords(c.ci)}</Badge>}
+                    {...(can && c.ci === 'success' && status.shipSha !== null
+                      ? {
+                          actions: (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={c.sha === status.shipSha ? 'primary' : 'secondary'}
+                              onClick={() => {
+                                ship(c.sha);
+                              }}
+                            >
+                              Ship {sha7(c.sha)}
+                            </Button>
+                          ),
+                        }
+                      : {})}
+                  />
+                );
+              })}
+            </DataList>
+            {summary.noRun > 0 ? (
+              <p className="shp-status__detail">
+                “No images” is normal: GitHub builds images once per push, for the newest commit in it. Those commits ship inside the next
+                built commit above them.
+              </p>
+            ) : null}
+          </Section>
+        ) : null}
+
+        <Section title="How it deploys" description="The settings that shape a deploy of this app, from its manifest on the host.">
           <DescriptionList>
-            <DescriptionItem term="Repository">{detail.repo ?? '—'}</DescriptionItem>
-            <DescriptionItem term="Live SHA">
-              {neverDeployed ? 'None recorded' : <code>{sha7(detail.liveSha)}</code>}
+            <DescriptionItem term="Repository">
+              {detail.repo ?? 'None'}
+              {detail.defaultBranch !== null ? ` · ${detail.defaultBranch}` : ''}
             </DescriptionItem>
-            <DescriptionItem term="Age" numeric>
-              {neverDeployed ? '—' : age(detail.liveEndedAt)}
+            <DescriptionItem term="Needs approval">
+              {detail.approvalPolicy === 'required' ? 'Yes — a deployer approves every deploy' : 'No — a deployer can ship directly'}
+            </DescriptionItem>
+            <DescriptionItem term="Soak time" numeric>
+              {detail.soakSeconds !== null ? `${String(detail.soakSeconds)} s watched healthy before a deploy counts as done` : '—'}
             </DescriptionItem>
             <DescriptionItem term="Schema revision">
-              {detail.schemaRevision !== null ? <code>{detail.schemaRevision}</code> : 'Not known'}
+              {detail.schemaRevision !== null ? <code>{detail.schemaRevision}</code> : 'Not reported by /health'}
             </DescriptionItem>
-            <DescriptionItem term="Soak" numeric>
-              {detail.soakSeconds !== null ? `${String(detail.soakSeconds)} s` : '—'}
-            </DescriptionItem>
-            <DescriptionItem term="Approval">{detail.approvalPolicy ?? '—'}</DescriptionItem>
             <DescriptionItem term="Group">
-              {detail.group ?? 'None'}
-              {detail.canary ? ' (canary)' : ''}
+              {detail.group === null
+                ? 'None — deploys on its own'
+                : detail.canary
+                  ? `${detail.group} (canary — deploys first)`
+                  : detail.group}
             </DescriptionItem>
           </DescriptionList>
         </Section>
@@ -257,12 +400,15 @@ export function AppDetail() {
                 }
               : {})}
           >
-            Shipyard has no recorded release for this app yet. Its first deploy records one; until then, a deployer
-            can adopt what is running, with a reason, to make it the recorded release.
+            Shipyard has no recorded release for this app yet. Its first deploy records one; until then, a deployer can adopt what is
+            running, with a reason, to make it the recorded release.
           </EmptyState>
         ) : null}
 
-        <Section title="Running digests" description={`As the agent last reported, ${when(detail.reportedAt)}.`}>
+        <Section
+          title="Running containers"
+          description={`What the agent saw on the host, ${when(detail.reportedAt)}. A digest names the exact image, so a mismatch here is how drift is found.`}
+        >
           {running.length === 0 ? (
             <EmptyState kind="empty" heading="No containers reported" size="inline">
               The agent has not seen a running container for this app.
@@ -280,7 +426,7 @@ export function AppDetail() {
 
         <Section
           title="Roll back"
-          description="Only releases in the agent's ledger: the last five, not the live one. The agent checks again before it acts."
+          description="Put an earlier release back. Only images change — data stays as it is. These are the last five successful releases in the agent's own ledger; it checks again before it acts."
         >
           <DataList
             aria-label="Rollback targets"
@@ -339,22 +485,46 @@ export function AppDetail() {
           </Section>
         ) : null}
 
-        <Section
-          title="Backups"
-          description="Backups the agent took before a deploy. Restoring one discards every write made since it was taken."
-        >
-          <Link asChild>
-            <RouterLink to={`/apps/${encodeURIComponent(detail.name)}/restore`}>See backups and restore</RouterLink>
-          </Link>
+        <Section title="More" headingLevel={2}>
+          <DataList aria-label="More for this app">
+            <DataListRow
+              href={`/apps/${encodeURIComponent(detail.name)}/restore`}
+              title="Backups and restore"
+              description="Backups the agent took before each deploy. Restoring one discards every write made since."
+            />
+            <DataListRow
+              href="/schedules"
+              title="Scheduled deploys"
+              description="Deploy a named commit at a set time; every check runs again when it fires."
+            />
+          </DataList>
         </Section>
 
-        <Section title="Schedules" description="Deploy a named SHA at a set time; every gate re-runs when it fires.">
-          <Link asChild>
-            <RouterLink to="/schedules">See and schedule deploys</RouterLink>
-          </Link>
-        </Section>
+        {showBuilds ? (
+          <Section title="Builds" description="Images Shipyard built for this app, newest first.">
+            <Stack gap="12">
+              <DataList
+                aria-label="Recent builds"
+                empty={
+                  <EmptyState kind="empty" size="inline" heading={load.builds === null ? 'Builds could not be read' : 'No builds yet'}>
+                    {load.builds === null
+                      ? 'Open the builds list to try again.'
+                      : `${detail.name} is built here when it is pushed to ${detail.defaultBranch ?? 'its default branch'}.`}
+                  </EmptyState>
+                }
+              >
+                {recentBuilds.map((build) => (
+                  <BuildRow key={build.buildId} build={build} />
+                ))}
+              </DataList>
+              <Link asChild>
+                <RouterLink to={`/builds?app=${encodeURIComponent(detail.name)}`}>All builds of {detail.name}</RouterLink>
+              </Link>
+            </Stack>
+          </Section>
+        ) : null}
 
-        <Section title="History" description="The last twenty deploys, rollbacks and dry runs.">
+        <Section title="History" description="The last twenty deploys, rollbacks and dry runs. Open one for its steps and output.">
           <DataList
             aria-label="History"
             empty={
@@ -374,7 +544,7 @@ export function AppDetail() {
                   </Link>
                 }
                 description={`${t.requester}, ${when(t.createdAt)}`}
-                meta={<Badge tone={stateTone(t.state)}>{t.state.replace('_', ' ')}</Badge>}
+                meta={<Badge tone={stateTone(t.state)}>{stateWords(t.state)}</Badge>}
               />
             ))}
           </DataList>
@@ -401,15 +571,19 @@ export function AppDetail() {
           </Section>
         ) : null}
 
-        <Section title="Manifest" description="As the agent reported it. Read-only: it changes on the host.">
-          <Textarea
-            mono
-            readOnly
-            aria-label="Manifest"
-            rows={12}
-            value={typeof detail.manifest === 'string' ? detail.manifest : JSON.stringify(detail.manifest, null, 2)}
-          />
-        </Section>
+        <details className="shp-disclosure">
+          <summary>Show the manifest</summary>
+          <Stack gap="8">
+            <p className="shp-status__detail">As the agent reported it. Read-only: it changes on the host.</p>
+            <Textarea
+              mono
+              readOnly
+              aria-label="Manifest"
+              rows={12}
+              value={typeof detail.manifest === 'string' ? detail.manifest : JSON.stringify(detail.manifest, null, 2)}
+            />
+          </Stack>
+        </details>
       </Stack>
 
       <DryRunSheet

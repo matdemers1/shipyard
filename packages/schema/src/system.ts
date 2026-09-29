@@ -1,9 +1,14 @@
 import { z } from 'zod';
+import { AgentBuildCache } from './agent.js';
 
 /**
  * System screen contracts (SHP-T-6.5, SHP-REQ-094/095/106). `GET /api/system` — versions, the
  * agent's heartbeat and PAT expiry, the Foreman outbox backlog, and Shipyard's own backups.
  * Deployer-only: a viewer or a token is refused before this is ever built.
+ *
+ * `buildCache` (SHP-REQ-133, SHP-T-7.11): the BuildKit cache's size, its cap and the time of its
+ * last garbage collection, mirroring the agent's own report. Null when no agent has ever reported
+ * a build cache (builds disabled, or no agent enrolled).
  */
 
 export const PatWarning = z
@@ -70,6 +75,7 @@ export const SystemStatus = z
     agent: SystemAgent.nullable(),
     outbox: SystemOutbox,
     backups: SystemBackups,
+    buildCache: AgentBuildCache.nullable(),
   })
   .meta({ id: 'SystemStatus', description: 'GET /api/system response' });
 export type SystemStatus = z.infer<typeof SystemStatus>;

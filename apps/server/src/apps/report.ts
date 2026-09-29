@@ -1,10 +1,23 @@
 import type { Router } from 'express';
-import { AgentRelease, AgentReport, REPORTED_RELEASES_PER_APP, refusal } from '@shipyard/schema';
+import { AgentRelease, AgentReport, REPORTED_RELEASES_PER_APP, refusal, type AgentBuildCache } from '@shipyard/schema';
 import { verifyAgentRequest } from '../agent/verify.js';
 import type { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { detectDrift } from './drift.js';
+
+/**
+ * The BuildKit cache the agent last reported (SHP-REQ-133, SHP-T-7.11), by agent ID — in memory,
+ * not a column: it is a live gauge like a heartbeat, not a fact worth a migration, and it is
+ * mirrored by the System screen's `GET /api/system` (`system/index.ts`) within the same process.
+ * Lost on a restart, same as it would read "not yet reported" until the next agent report anyway.
+ */
+const lastBuildCache = new Map<string, AgentBuildCache>();
+
+/** The most recent build cache an agent reported, or null when it never has (or builds are off). */
+export function lastReportedBuildCache(agentId: string): AgentBuildCache | null {
+  return lastBuildCache.get(agentId) ?? null;
+}
 
 /**
  * POST /api/agent/report (SHP-REQ-036, SHP-REQ-104; SHP-D-060). The agent reports its parsed
@@ -218,6 +231,10 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
         },
       });
     });
+
+    // Outside the transaction, same as the heartbeat it travels with: a live gauge, not a fact to
+    // roll back if something later in this request fails.
+    if (report.buildCache !== undefined) lastBuildCache.set(agentId, report.buildCache);
 
     for (const d of drifted) {
       logger.warn({ app: d.app, services: d.services }, 'drift detected: running digests differ from the recorded release');

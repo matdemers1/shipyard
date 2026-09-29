@@ -2,11 +2,14 @@ import type { Request, Response, Router } from 'express';
 import type { z } from 'zod';
 import {
   ACTIVE_STATES,
+  BuildProgress,
+  BuildResult,
   PollRequest,
   StepJournal,
   TargetProgress,
   TargetResult,
   refusal,
+  type BuildJob,
   type DeployTargetState,
   type PollResponse,
 } from '@shipyard/schema';
@@ -16,7 +19,19 @@ import { TERMINAL_STATES } from '../deploys/service.js';
 import { sendRefusal } from '../errors.js';
 import { enqueueDeployment } from '../outbox/index.js';
 import { readGroupMeta, stopGroupAfter } from '../groups/service.js';
-import { PROGRESS_RANK, claimTarget, describeTarget, lastLines, releaseTarget } from './dispatch.js';
+import { recordBuildProgress, recordBuildResult } from '../builds/service.js';
+import { loadBuildSettings } from '../settings/build.js';
+import {
+  PROGRESS_RANK,
+  agentHasTargetInFlight,
+  claimBuildFor,
+  claimTarget,
+  describeTarget,
+  lastLines,
+  releaseBuild,
+  releaseTarget,
+  sweepStaleBuilds,
+} from './dispatch.js';
 import { verifyAgentRequest } from './verify.js';
 
 /**
@@ -27,6 +42,12 @@ import { verifyAgentRequest } from './verify.js';
  * - `POST /progress` — the running target's state and step, forward only.
  * - `POST /steps` — the agent's local journal lines, synced when the server is reachable.
  * - `POST /result` — the terminal result, exactly once.
+ * - Builds (SHP-T-7.9): a poll that advertises `capabilities: ['build']` is handed the next queued
+ *   build — only when no deploy target was claimed, none of this agent's targets is in flight, no
+ *   build is running anywhere, and the queue's head is one of this agent's apps
+ *   (SHP-REQ-129, SHP-REQ-130). `POST /build-progress` records a stage (or a heartbeat) and answers
+ *   `{ cancel }`; `POST /build-result` records the end once. Every poll first fails any running
+ *   build silent for `BUILD_STALE_MINUTES` with `interrupted`.
  *
  * The server only records what the agent reports: the agent re-verifies every target itself and
  * alone decides a health-failure rollback (SHP-D-002, SHP-D-081).
@@ -34,6 +55,7 @@ import { verifyAgentRequest } from './verify.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NO_SUCH_TARGET = refusal('not_found', 'No such target dispatched to this agent.', 'Poll for work and report only targets you were given.');
+const NO_SUCH_BUILD = refusal('not_found', 'No such build dispatched to this agent.', 'Poll for work and report only builds you were given.');
 const ACTIVE: readonly DeployTargetState[] = ACTIVE_STATES;
 
 function parse<T extends z.ZodType>(schema: T, req: Request, res: Response): z.infer<T> | null {
@@ -72,6 +94,24 @@ async function ownTarget(deps: ServiceDeps, req: Request, targetId: string) {
   return row;
 }
 
+/** The build, if it exists, was dispatched, and belongs to an app this agent owns. */
+async function ownBuild(deps: ServiceDeps, req: Request, buildId: string, stage?: BuildProgress['stage']) {
+  if (!UUID_RE.test(buildId) || req.agent?.id === undefined || req.agent.id === null) return null;
+  const row = await deps.db.build.findUnique({
+    where: { id: buildId },
+    select: {
+      id: true,
+      state: true,
+      dispatchedAt: true,
+      cancelRequestedAt: true,
+      app: { select: { name: true, agentId: true } },
+      stages: { where: { stage: stage ?? 'fetch' }, select: { state: true } },
+    },
+  });
+  if (row === null || row.dispatchedAt === null || row.app.agentId !== req.agent.id) return null;
+  return row;
+}
+
 /** service → image repository, from the manifest mirror the agent reported. */
 function repoOf(services: Prisma.JsonValue | null, service: string): string {
   if (typeof services !== 'object' || services === null || Array.isArray(services)) return '';
@@ -91,6 +131,16 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
     if (body === null || agentId === undefined || agentId === null) return;
 
     await db.agent.update({ where: { id: agentId }, data: { lastHeartbeatAt: new Date() } });
+    // A build whose agent went silent must not hold the one build slot forever (SHP-REQ-129).
+    try {
+      await sweepStaleBuilds(deps);
+    } catch (err) {
+      logger.error({ err }, 'stale build sweep failed');
+    }
+    const wantsBuild = body.capabilities?.includes('build') === true;
+    // Settings → Builds (SHP-T-7.11): on every poll answer, whatever else it carries, so the agent
+    // learns a saved limit or cache cap change the moment it next polls.
+    const buildSettings = await loadBuildSettings(db);
 
     const gone = new AbortController();
     const onClose = (): void => {
@@ -127,7 +177,35 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
             after: { targetId: target.targetId, app: target.app, kind: target.kind, dryRun: target.dryRun },
           });
           logger.info({ deployId: target.deployId, targetId: target.targetId, app: target.app }, 'target dispatched to agent');
-          const response: PollResponse = { target };
+          const response: PollResponse = { target, buildSettings };
+          res.json(response);
+          return;
+        }
+        // Deploys first. A build only when this agent can take one and nothing of its is deploying:
+        // no build stage may start while a deploy is in flight on the host (SHP-REQ-130).
+        let job: BuildJob | null = null;
+        if (wantsBuild) {
+          try {
+            job = (await agentHasTargetInFlight(db, agentId)) ? null : await claimBuildFor(deps, agentId);
+          } catch (err) {
+            stop.abort();
+            throw err;
+          }
+        }
+        if (job !== null) {
+          stop.abort();
+          if (gone.signal.aborted) {
+            await releaseBuild(deps, job.buildId);
+            return;
+          }
+          await req.audit({
+            action: 'build.dispatched',
+            entityType: 'build',
+            entityId: job.buildId,
+            after: { app: job.app, sha: job.sha },
+          });
+          logger.info({ buildId: job.buildId, app: job.app, sha: job.sha }, 'build dispatched to agent');
+          const response: PollResponse = { target: null, build: job, buildSettings };
           res.json(response);
           return;
         }
@@ -139,11 +217,77 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
       // An empty poll only bumps last_heartbeat_at, every 25 s, forever: bookkeeping, not an event
       // worth an audit row. Work handed out, progress and results are audited.
       req.noAuditNeeded('heartbeat');
-      const response: PollResponse = { target: null };
+      const response: PollResponse = { target: null, buildSettings };
       res.json(response);
     } finally {
       res.off('close', onClose);
     }
+  });
+
+  router.post('/build-progress', verified, async (req, res) => {
+    const body = parse(BuildProgress, req, res);
+    if (body === null) return;
+    const build = await ownBuild(deps, req, body.buildId, body.stage);
+    if (build === null) {
+      sendRefusal(res, NO_SUCH_BUILD);
+      return;
+    }
+    const touch = async (): Promise<void> => {
+      // The stale sweep reads this: an accepted report is a sign of life.
+      await db.build.updateMany({ where: { id: build.id, state: 'running' }, data: { updatedAt: new Date() } });
+    };
+    // A heartbeat: `running` for a stage the server already has, with no log. It only says "still
+    // here" — the stage is not reopened, nothing is recorded but the time.
+    const heartbeat = body.state === 'running' && (body.log === undefined || body.log === '') && build.stages.length > 0;
+    if (heartbeat) {
+      if (build.state === 'running') await touch();
+      req.noAuditNeeded('build heartbeat');
+      res.json({ cancel: build.state !== 'running' || build.cancelRequestedAt !== null });
+      return;
+    }
+    const outcome = await recordBuildProgress(deps, body);
+    if (outcome.accepted) {
+      await touch();
+      await req.audit({
+        action: 'build.progress',
+        entityType: 'build',
+        entityId: build.id,
+        after: { app: build.app.name, stage: body.stage, state: body.state },
+      });
+    } else {
+      req.noAuditNeeded('progress for a build that has ended');
+    }
+    res.json({ cancel: outcome.cancel });
+  });
+
+  router.post('/build-result', verified, async (req, res) => {
+    const body = parse(BuildResult, req, res);
+    if (body === null) return;
+    const build = await ownBuild(deps, req, body.buildId);
+    if (build === null) {
+      sendRefusal(res, NO_SUCH_BUILD);
+      return;
+    }
+    const outcome = await recordBuildResult(deps, body);
+    if (outcome.accepted) {
+      await req.audit({
+        action: 'build.result',
+        entityType: 'build',
+        entityId: build.id,
+        before: { state: build.state },
+        after: {
+          app: build.app.name,
+          state: body.state,
+          digests: body.digests,
+          ...(body.refusal === undefined ? {} : { refusal: body.refusal.code }),
+          ...(body.failedStage === undefined ? {} : { failedStage: body.failedStage }),
+        },
+      });
+      logger.info({ buildId: build.id, app: build.app.name, state: body.state }, 'build result recorded');
+    } else {
+      req.noAuditNeeded('a result for a build that has already ended');
+    }
+    res.json({ accepted: outcome.accepted, state: outcome.state });
   });
 
   router.post('/progress', verified, async (req, res) => {

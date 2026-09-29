@@ -1,0 +1,5 @@
+{
+  "source": "shipyard",
+  "releaseTargets": { "server": "release-server" },
+  "script": "echo hi"
+}

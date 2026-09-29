@@ -9,6 +9,15 @@ adopt-live, before any real deploy.** Do not skip to a deploy because the dry ru
 there is no recorded release yet, so a deploy would refuse nothing it should and record a release
 nobody reviewed.
 
+## 0. Where the images come from
+
+By default an app's images come from its own GitHub Actions workflow (`build: { source: github }`,
+or `build` omitted) — steps 1–8 below are the whole story. An app whose manifest sets
+`build: { source: shipyard }` has Shipyard itself fetch, test, build and push its images instead;
+see `build.md` for the extra install steps, the manifest's `build` block, GHCR push credentials,
+build secrets, the GitHub webhook, and what a build refusal means, before starting step 1 on such
+an app.
+
 ## 1. App-side prerequisites
 
 Before touching Shipyard, the app's own CI must already produce what Shipyard will verify:

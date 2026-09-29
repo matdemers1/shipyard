@@ -49,6 +49,17 @@ export interface GitHubPort {
   workflowRuns(repo: string, workflow: string, headSha: string): Promise<WorkflowRun[]>;
   /** `GET /repos/{repo}/compare/{base}...{head}`. A 404 (unknown SHA) returns null. */
   compare(repo: string, base: string, head: string): Promise<Comparison | null>;
+  /**
+   * `GET /repos/{repo}/tarball/{sha}` (SHP-T-7.6, SHP-REQ-116): the exact 40-hex SHA's source as
+   * GitHub's gzip tarball, streamed. Throws `RefusalError(invalid_request)` if `sha` is not
+   * 40 lowercase hex, and `RefusalError(github_unreachable)` if GitHub has no tarball for it (an
+   * unknown SHA/repo — a 404) or is otherwise unreachable.
+   *
+   * Optional so existing fakes of this port (constructed as object literals elsewhere) do not
+   * have to implement it; a caller that needs it — `withBuildSource` — refuses with
+   * `github_unreachable` when the configured port lacks it.
+   */
+  tarball?(repo: string, sha: string): Promise<ReadableStream<Uint8Array>>;
 }
 
 // ─── Registry (SHP-T-1.3) ────────────────────────────────────────────────────
@@ -80,6 +91,17 @@ export interface ExecResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+/** What the agent can observe about a Docker network (SHP-T-7.18). */
+export interface BuildNetworkInfo {
+  name: string;
+  /** IPv4/IPv6 subnets from the network's IPAM config. */
+  subnets: string[];
+  internal: boolean;
+  enableIPv6: boolean;
+  /** The network's driver options (`com.docker.network.bridge.name`, …). */
+  options: Record<string, string>;
 }
 
 export interface RunningContainer {
@@ -122,6 +144,69 @@ export interface DockerPort {
   /** Local image references (`repo@digest` / `repo:tag`) for a repository, with sizes and creation. */
   images(imageRepo: string): Promise<{ id: string; repoTags: string[]; repoDigests: string[]; created: number; size: number }[]>;
   removeImage(id: string): Promise<void>;
+  /**
+   * `docker load -i <tar>` semantics (SHP-T-7.18): loads an image tar BuildKit exported as
+   * `type=docker`. Never throws on a non-zero exit; returns it.
+   *
+   * Optional so existing `DockerPort` fakes (object literals constructed elsewhere) do not have to
+   * implement it; a caller that needs it — the integration stage — refuses clearly when the
+   * configured port lacks it.
+   */
+  loadImage?(tarPath: string): Promise<ExecResult>;
+  /**
+   * A network inspect for the build-network preflight (SHP-T-7.18): the network's subnets, internal
+   * and IPv6 flags, and driver options, or null on a 404 (the network does not exist).
+   *
+   * Optional for the same reason as `loadImage`; `verifyBuildNetwork` refuses clearly when absent.
+   */
+  inspectNetwork?(name: string): Promise<BuildNetworkInfo | null>;
+}
+
+// ─── BuildKit (SHP-T-7.7) ────────────────────────────────────────────────────
+
+/** One build secret handed to BuildKit as a secret mount: an ID and a host file path, never a value. */
+export interface BuildSecretMount {
+  id: string;
+  /** Absolute path of a 0600 file on the agent's host holding the value (SHP-REQ-125). */
+  src: string;
+}
+
+export interface SolveRequest {
+  /** The extracted source directory — BuildKit's `context` local. */
+  contextDir: string;
+  /** Absolute path of the Dockerfile. */
+  dockerfile: string;
+  /** The Dockerfile target to build. */
+  target: string;
+  secrets: BuildSecretMount[];
+  /** Image labels (`--opt label:<k>=<v>`). */
+  labels: Record<string, string>;
+  /** When present, export the image and push it to `ref` (`<repo>:sha-<40hex>`); otherwise build only. */
+  push?: { ref: string };
+  /**
+   * When present, export the image as a docker-loadable tar instead of pushing (SHP-T-7.18):
+   * `--output type=docker,name=<name>,dest=<dest>`. Mutually exclusive with `push`.
+   */
+  dockerTar?: { name: string; dest: string };
+}
+
+export interface SolveResult {
+  exitCode: number;
+  /** The pushed image's manifest digest, parsed from BuildKit's metadata file. Only with `push`. */
+  digest?: Digest;
+}
+
+/**
+ * Rootless BuildKit (SHP-REQ-122): the only seam that runs `buildctl`. The daemon is reached at an
+ * address (`unix://…` or `tcp://…`) and never through a Docker socket.
+ */
+export interface BuildKitPort {
+  /** Runs one `buildctl build`. Never throws on a non-zero exit; returns it. */
+  solve(req: SolveRequest, onLog?: (chunk: string) => void, signal?: AbortSignal): Promise<SolveResult>;
+  /** Prunes the build cache down to `keepStorageBytes`. */
+  prune(keepStorageBytes: number): Promise<void>;
+  /** Total bytes of the build cache. */
+  du(): Promise<{ bytes: number }>;
 }
 
 // ─── Filesystem & clock ──────────────────────────────────────────────────────

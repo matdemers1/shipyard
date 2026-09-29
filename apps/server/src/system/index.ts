@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { refusal, type SystemBackupRun, type SystemStatus } from '@shipyard/schema';
+import { lastReportedBuildCache } from '../apps/report.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 
@@ -69,6 +70,7 @@ export function systemRouter(deps: ServiceDeps): Router {
       where: { confirmedAt: { not: null } },
       orderBy: { enrolledAt: 'asc' },
       select: {
+        id: true,
         fingerprint: true,
         lastHeartbeatAt: true,
         agentVersion: true,
@@ -137,6 +139,7 @@ export function systemRouter(deps: ServiceDeps): Router {
         lastError: latestErrored?.lastError ?? null,
       },
       backups: { lastBackup, lastDrill },
+      buildCache: agentRow === null ? null : lastReportedBuildCache(agentRow.id),
     };
 
     res.json(status);

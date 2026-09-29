@@ -34,6 +34,7 @@ function status(overrides: Partial<SystemStatus> = {}): SystemStatus {
     },
     outbox: { unsent: 0, unsentOverHour: 0, oldestUnsentAt: null, lastError: null },
     backups: { lastBackup: null, lastDrill: null },
+    buildCache: null,
     ...overrides,
   };
 }
@@ -106,5 +107,30 @@ describe('System screen', () => {
     );
     wrap(<System />);
     expect(await screen.findByText("The agent's GitHub token has expired")).toBeInTheDocument();
+  });
+
+  it('shows "not yet reported" for the build cache when the agent has never reported one', async () => {
+    mockFetch(routes(status()));
+    wrap(<System />);
+    expect(await screen.findByText('Not yet reported')).toBeInTheDocument();
+  });
+
+  it('shows the build cache size, cap, last GC and applied limits when reported (SHP-REQ-133)', async () => {
+    mockFetch(
+      routes(
+        status({
+          buildCache: {
+            bytes: 1_500_000_000,
+            capBytes: 21_474_836_480,
+            lastGcAt: '2026-09-27T03:00:00.000Z',
+            limitsApplied: { cpus: 4, memoryMb: 8192 },
+          },
+        }),
+      ),
+    );
+    wrap(<System />);
+    expect(await screen.findByText('1.50 GB')).toBeInTheDocument();
+    expect(screen.getByText('21.5 GB')).toBeInTheDocument();
+    expect(screen.getByText(/4 CPUs, 8192 MiB/)).toBeInTheDocument();
   });
 });

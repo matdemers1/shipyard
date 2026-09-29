@@ -26,6 +26,9 @@ import {
   D3AuthSettingsUpdate,
   D3AuthTestRequest,
   MailSettingsUpdate,
+  BuildProgress,
+  BuildResult,
+  BuildSettingsUpdate,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -33,6 +36,8 @@ import {
   ShipyardDeployInput,
   ShipyardDeployStatusInput,
   ShipyardRollbackInput,
+  ShipyardBuildInput,
+  ShipyardBuildStatusInput,
   MCP_TOOLS,
 } from '../src/mcp.js';
 import { Manifest } from '../src/manifest.js';
@@ -68,6 +73,8 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   ShipyardDeployInput,
   ShipyardDeployStatusInput,
   ShipyardRollbackInput,
+  ShipyardBuildInput,
+  ShipyardBuildStatusInput,
   AgentReport,
   PollRequest,
   StepJournal,
@@ -81,6 +88,9 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   D3AuthSettingsUpdate,
   D3AuthTestRequest,
   MailSettingsUpdate,
+  BuildProgress,
+  BuildResult,
+  BuildSettingsUpdate,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -95,6 +105,8 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   ShipyardDeployInput: 'mcpDeploy',
   ShipyardDeployStatusInput: 'mcpDeployStatus',
   ShipyardRollbackInput: 'mcpRollback',
+  ShipyardBuildInput: 'mcpBuild',
+  ShipyardBuildStatusInput: 'mcpBuildStatus',
   AgentReport: 'agentReport',
   PollRequest: 'pollRequest',
   StepJournal: 'stepJournal',
@@ -108,6 +120,9 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   D3AuthSettingsUpdate: 'd3AuthSettingsUpdate',
   D3AuthTestRequest: 'd3AuthTestRequest',
   MailSettingsUpdate: 'mailSettingsUpdate',
+  BuildProgress: 'buildProgress',
+  BuildResult: 'buildResult',
+  BuildSettingsUpdate: 'buildSettingsUpdate',
 };
 
 describe('request schema coverage', () => {
@@ -172,6 +187,9 @@ const ALLOWED_COMMAND_LIKE_PATHS = new Set([
   'StepJournal.argv',
   // The manifest's step primitive itself (host-local; see Manifest.steps above).
   'Step.argv',
+  // The manifest's build.integration argv (host-local, run in a named compose service; SHP-T-7.2).
+  'Manifest.build.integration.argv',
+  'BuildConfig.integration.argv',
 ]);
 
 /**
@@ -302,7 +320,14 @@ function findNonStrictObjects(schema: JsonSchemaNode, rootName: string): Violati
     }
     const isObject = node.type === 'object' || node.properties !== undefined;
     if (isObject) {
-      if (node.additionalProperties !== false) {
+      const ap = node.additionalProperties;
+      // A `z.record` renders as an object whose additionalProperties is a *typed* schema (a $ref
+      // or a constrained inline schema, e.g. { $ref: '#/$defs/Digest' }) — every value is still
+      // validated, so an arbitrary key like `command` still needs a value matching that type. Only
+      // an unconstrained additionalProperties (`{}`, from z.looseObject, or literal `true`) is the
+      // violation this check exists for.
+      const isTypedRecord = typeof ap === 'object' && Object.keys(ap).length > 0;
+      if (ap !== false && !isTypedRecord) {
         violations.push({ path, reason: 'object allows additional properties (not a strictObject)' });
       }
     }

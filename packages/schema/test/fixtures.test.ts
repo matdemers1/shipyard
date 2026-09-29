@@ -70,6 +70,17 @@ import {
   MailSettingsUpdate,
   MailSettings,
   MailTestResult,
+  BuildName,
+  BuildStage,
+  BuildState,
+  BuildTrigger,
+  BuildJob,
+  BuildProgress,
+  BuildResult,
+  BuildConfig,
+  BuildSettings,
+  BuildSettingsUpdate,
+  AgentBuildCache,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -77,6 +88,8 @@ import {
   ShipyardDeployInput,
   ShipyardDeployStatusInput,
   ShipyardRollbackInput,
+  ShipyardBuildInput,
+  ShipyardBuildStatusInput,
 } from '../src/mcp.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -100,6 +113,8 @@ const SCHEMAS: Record<string, ZodType> = {
   mcpDeploy: ShipyardDeployInput,
   mcpDeployStatus: ShipyardDeployStatusInput,
   mcpRollback: ShipyardRollbackInput,
+  mcpBuild: ShipyardBuildInput,
+  mcpBuildStatus: ShipyardBuildStatusInput,
   appName: AppName,
   sha40: Sha40,
   imageTag: ImageTag,
@@ -152,6 +167,17 @@ const SCHEMAS: Record<string, ZodType> = {
   mailSettingsUpdate: MailSettingsUpdate,
   mailSettings: MailSettings,
   mailTestResult: MailTestResult,
+  buildName: BuildName,
+  buildStage: BuildStage,
+  buildState: BuildState,
+  buildTrigger: BuildTrigger,
+  buildJob: BuildJob,
+  buildProgress: BuildProgress,
+  buildResult: BuildResult,
+  buildConfig: BuildConfig,
+  buildSettings: BuildSettings,
+  buildSettingsUpdate: BuildSettingsUpdate,
+  agentBuildCache: AgentBuildCache,
 };
 
 // Every exported value of ../src/index.js that is itself a Zod schema (as

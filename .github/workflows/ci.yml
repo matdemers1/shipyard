@@ -77,6 +77,8 @@ jobs:
   e2e:
     needs: integration
     runs-on: ubuntu-latest
+    # The build tests (SHP-T-7.16) add a rootless buildkitd in dind and real BuildKit solves.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -85,6 +87,16 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Pulled once here rather than once per harness: the harness images, and the buildkitd image
+      # docs/install/buildkit.compose.yml pins, which e2e/harness/build.ts loads into dind from here.
+      - name: Pull the e2e images
+        run: |
+          set -euo pipefail
+          buildkit="$(awk '$1 == "image:" && $2 ~ /^moby\/buildkit:/ { print $2; exit }' docs/install/buildkit.compose.yml)"
+          test -n "$buildkit"
+          for image in docker:29-dind registry:2 node:22-alpine busybox:1.37 "$buildkit"; do
+            docker pull --quiet "$image" || { sleep 10; docker pull --quiet "$image"; }
+          done
       - run: pnpm e2e
 
   # The console in a real browser against the real built server (SHP-T-6.2): axe on every screen in

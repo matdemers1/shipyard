@@ -1,0 +1,29 @@
+# The toy app as a Shipyard-built app (SHP-T-7.16): the agent builds `test`, then `release`, and
+# pushes it as registry.shipyard.test/toy/app:sha-<40hex>. Gate G5 then reads the agent's own build
+# record instead of a GitHub workflow run. `harness/engine.ts` merges this `build` block into the
+# data root's manifest when `prepareToyDataRoot({ shipyardBuild: true })`.
+name: toy
+repo: example/toy
+defaultBranch: main
+workflow: ci.yml
+compose:
+  files:
+    - compose.yml
+  project: toy
+services:
+  app:
+    image: registry.shipyard.test/toy/app
+health:
+  service: app
+  port: 3000
+  path: /health
+soakSeconds: 3
+build:
+  source: shipyard
+  testTarget: test
+  releaseTargets:
+    app: release
+steps:
+  migrate:
+    service: app
+    argv: ["node", "migrate.mjs"]

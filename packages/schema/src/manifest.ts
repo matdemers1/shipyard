@@ -2,6 +2,7 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
 import { AppName, GhRepo, ProjectCode, Step } from './primitives.js';
+import { BuildConfig } from './build.js';
 
 /**
  * The host-local app manifest (SHP-REQ-004). Written as YAML on the host and
@@ -16,12 +17,23 @@ const ComposeConfig = z
   })
   .meta({ id: 'ComposeConfig', description: 'Compose files and project name for this app' });
 
+/**
+ * An untagged OCI repository reference: `[host[:port]/]path`, path components lowercase per the
+ * distribution grammar. Strict because the string is embedded in argv tokens that other tools parse
+ * further — BuildKit's comma-separated `--output type=image,name=<ref>,push=true` among them — so a
+ * `,` or `=` here would smuggle options past the manifest (SHP-REQ-117, SHP-REQ-127).
+ */
+const IMAGE_REPOSITORY_RE =
+  /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?(?::[0-9]{1,5})?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$/;
+
 const ServiceConfig = z
   .strictObject({
     image: z
       .string()
       .min(1)
-      .refine((v) => !v.includes('@') && !(v.split('/').pop() ?? '').includes(':'), 'image must not include a tag or digest; both are chosen at deploy time'),
+      .max(255)
+      .refine((v) => !v.includes('@') && !(v.split('/').pop() ?? '').includes(':'), 'image must not include a tag or digest; both are chosen at deploy time')
+      .refine((v) => IMAGE_REPOSITORY_RE.test(v), 'image must be a plain repository reference: [host[:port]/]lowercase/path, no commas, spaces or `=`'),
   })
   .meta({ id: 'ServiceConfig', description: 'The untagged image for one compose service' });
 
@@ -115,7 +127,36 @@ export const Manifest = z
     diskFloorGb: z.number().min(0).max(1000).default(5),
     /** Old Shipyard-deployed images kept per service after a success. */
     retainImages: z.int().min(1).max(20).default(3),
+    /**
+     * How the app's images are built (SHP-REQ-117). Undefined means today's behaviour: G5 reads
+     * the GitHub workflow run for the SHA, same as `{ source: 'github' }`.
+     */
+    build: BuildConfig.optional(),
+    /**
+     * Request one deploy of each successful Shipyard build through the normal sequence, every gate,
+     * freeze, lock and approval applying (SHP-REQ-138). Requires `build.source: shipyard`. Undefined
+     * means false; optional rather than defaulted so hand-built Manifest values need not name it.
+     */
+    autoDeploy: z.boolean().optional(),
   })
+  .refine((m) => !m.autoDeploy || m.build?.source === 'shipyard', {
+    message: 'autoDeploy requires build.source to be shipyard',
+    path: ['autoDeploy'],
+  })
+  .refine(
+    (m) => {
+      if (m.build?.source !== 'shipyard') return true;
+      const releaseTargets = m.build.releaseTargets;
+      if (releaseTargets === undefined) return false;
+      const serviceKeys = Object.keys(m.services).sort();
+      const targetKeys = Object.keys(releaseTargets).sort();
+      return serviceKeys.length === targetKeys.length && serviceKeys.every((k, i) => k === targetKeys[i]);
+    },
+    {
+      message: 'build.releaseTargets must map every compose service to a build target, with no extras, when build.source is shipyard',
+      path: ['build', 'releaseTargets'],
+    },
+  )
   .meta({ id: 'Manifest', description: 'The host-local app manifest (SHP-REQ-004)' });
 
 export type Manifest = z.infer<typeof Manifest>;

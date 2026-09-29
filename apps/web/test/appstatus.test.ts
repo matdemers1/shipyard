@@ -1,0 +1,84 @@
+import { describe, expect, it } from 'vitest';
+import { appStatus, summarizeCommits, type StatusInput } from '../src/lib/appstatus';
+import type { CommitEntry, CommitsInfo } from '../src/lib/home';
+
+/** SHP-T-3.10: one status per app, in words, from what the server already answers. */
+
+const sha = (c: string): string => c.repeat(40);
+const LIVE = sha('0');
+
+function commit(c: string, ci: CommitEntry['ci']): CommitEntry {
+  return { sha: sha(c), message: c, ci, taskIds: [] };
+}
+
+function commits(entries: CommitEntry[], extra: Partial<CommitsInfo> = {}): CommitsInfo {
+  let newestGreen: string | null = null;
+  for (const e of entries) if (e.ci === 'success') newestGreen = e.sha;
+  return { live: LIVE, head: entries.at(-1)?.sha ?? LIVE, commits: entries, newestGreen, source: 'github', ...extra };
+}
+
+function input(overrides: Partial<StatusInput> = {}): StatusInput {
+  return {
+    repo: 'matdemers1/web',
+    liveSha: LIVE,
+    defaultBranch: 'main',
+    commits: commits([]),
+    drift: null,
+    active: null,
+    approval: undefined,
+    ...overrides,
+  };
+}
+
+describe('appStatus', () => {
+  it('is up to date with nothing ahead', () => {
+    expect(appStatus(input())).toMatchObject({ kind: 'up-to-date', shipSha: null });
+  });
+
+  it('explains commits ahead with no image-workflow run instead of offering nothing silently', () => {
+    const s = appStatus(input({ commits: commits([commit('a', 'none'), commit('b', 'none')], { ahead: 12 }) }));
+    expect(s.kind).toBe('no-images');
+    expect(s.headline).toBe('12 commits since live, none with images');
+    expect(s.detail).toMatch(/once per push/);
+    expect(s.shipSha).toBeNull();
+  });
+
+  it('reads the newest push by its newest run: running, then failed', () => {
+    expect(appStatus(input({ commits: commits([commit('a', 'none'), commit('b', 'pending'), commit('c', 'none')]) })).kind).toBe(
+      'ci-running',
+    );
+    expect(appStatus(input({ commits: commits([commit('a', 'failure'), commit('b', 'none')]) }))).toMatchObject({
+      kind: 'ci-failed',
+      tone: 'danger',
+      headline: `CI failed on ${sha('a').slice(0, 7)}`,
+    });
+  });
+
+  it('offers the newest green commit and says what comes after it', () => {
+    const s = appStatus(input({ commits: commits([commit('a', 'none'), commit('b', 'success'), commit('c', 'pending')], { ahead: 3 }) }));
+    expect(s).toMatchObject({ kind: 'ready', shipSha: sha('b') });
+    expect(s.detail).toMatch(/by 2 commits/);
+    expect(s.detail).toMatch(/1 newer commit is still being built/);
+  });
+
+  it('puts a deploy in progress, an approval and drift ahead of anything to ship', () => {
+    const ready = commits([commit('a', 'success')]);
+    expect(appStatus(input({ commits: ready, active: { holder: 'matt', state: 'soaking', currentStep: null } })).kind).toBe('deploying');
+    expect(appStatus(input({ commits: ready, approval: { sha: sha('a'), requester: { label: 'claude' } } })).kind).toBe('approval');
+    expect(appStatus(input({ commits: ready, drift: { id: 'e1' } })).kind).toBe('drift');
+  });
+
+  it('tells no repository, GitHub unreachable and never deployed apart', () => {
+    expect(appStatus(input({ repo: null })).kind).toBe('no-repo');
+    expect(appStatus(input({ commits: { ...commits([]), source: 'unavailable', head: null } })).kind).toBe('github-unavailable');
+    expect(appStatus(input({ commits: null })).kind).toBe('github-unavailable');
+    expect(appStatus(input({ liveSha: null })).kind).toBe('never-deployed');
+  });
+});
+
+describe('summarizeCommits', () => {
+  it('counts by CI state and never reports fewer ahead than it listed', () => {
+    const s = summarizeCommits(commits([commit('a', 'none'), commit('b', 'success'), commit('c', 'failure')]));
+    expect(s).toMatchObject({ ahead: 3, checked: 3, green: 1, failed: 1, noRun: 1, running: 0, afterShip: 1 });
+  });
+});

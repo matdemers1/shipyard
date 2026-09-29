@@ -53,4 +53,171 @@
     justify-content: center;
     padding: var(--space-48) var(--page-pad);
   }
+
+  /* An app's status (SHP-T-3.10): a dot, a headline and why. The dot repeats what the words say;
+     it is never the only signal. */
+  .shp-status {
+    display: flex;
+    gap: var(--space-8);
+    align-items: flex-start;
+    min-width: 0;
+  }
+  .shp-status__dot {
+    flex: none;
+    width: var(--space-8);
+    height: var(--space-8);
+    margin-top: var(--space-6);
+    border-radius: var(--radius-full);
+    background: var(--color-fg-faint);
+  }
+  .shp-status__dot[data-tone='attention'] {
+    background: var(--color-accent);
+  }
+  .shp-status__dot[data-tone='danger'] {
+    background: var(--color-danger);
+  }
+  .shp-status__dot[data-kind='up-to-date'] {
+    background: var(--color-success);
+  }
+  .shp-status__dot[data-kind='deploying'],
+  .shp-status__dot[data-kind='ci-running'] {
+    background: var(--color-warning);
+  }
+  .shp-status__text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+  .shp-status__headline {
+    margin: 0;
+    color: var(--color-fg);
+    font-size: var(--text-16);
+    line-height: var(--leading-24);
+    font-weight: var(--weight-semibold);
+    overflow-wrap: anywhere;
+  }
+  .shp-status__detail {
+    margin: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+
+  /* Small labelled facts under a status: "Live 1a2b3c4 · 3 hours ago". Label over value, wrapping
+     into as many columns as fit a 375 px card. */
+  .shp-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+    gap: var(--space-12) var(--space-16);
+    margin: 0;
+    padding-top: var(--space-12);
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-facts > div {
+    min-width: 0;
+  }
+  .shp-facts dt {
+    color: var(--color-fg-muted);
+    font-size: var(--text-12);
+    line-height: var(--leading-16);
+  }
+  .shp-facts dd {
+    margin: 0;
+    color: var(--color-fg);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .shp-facts__sub {
+    display: block;
+    color: var(--color-fg-muted);
+    font-size: var(--text-12);
+    line-height: var(--leading-16);
+  }
+
+  /* Home's one-line overview: how many apps are in each state. */
+  .shp-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8) var(--space-24);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-summary li {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-6);
+    color: var(--color-fg-muted);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-summary strong {
+    color: var(--color-fg);
+    font-size: var(--text-20);
+    line-height: var(--leading-24);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* An app card fills its grid cell and keeps its action at the bottom, so a row of cards lines
+     their buttons up. */
+  .shp-card-fill {
+    height: 100%;
+  }
+  .shp-card-fill > * {
+    height: 100%;
+  }
+  .shp-card-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    height: 100%;
+  }
+  .shp-card-stack__foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-8);
+    margin-top: auto;
+  }
+
+  /* A commit waiting to ship: its first line, then SHA and task IDs. */
+  .shp-commit-msg {
+    overflow-wrap: anywhere;
+  }
+
+  /* A disclosure — "What do these statuses mean?", "Show manifest". */
+  .shp-disclosure > summary {
+    cursor: pointer;
+    color: var(--color-fg-muted);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-disclosure > summary:focus-visible {
+    outline: var(--focus-width) solid var(--color-focus);
+    outline-offset: var(--focus-offset);
+    border-radius: var(--radius-xs);
+  }
+  .shp-disclosure[open] > summary {
+    margin-bottom: var(--space-12);
+  }
+  .shp-glossary {
+    display: grid;
+    gap: var(--space-12);
+    margin: 0;
+  }
+  .shp-glossary dt {
+    font-weight: var(--weight-semibold);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-glossary dd {
+    margin: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
 }

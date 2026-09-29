@@ -15,7 +15,7 @@ import {
   type Log,
   type SequencePorts,
 } from '@shipyard/sequence';
-import { stringify } from 'yaml';
+import { parse, stringify } from 'yaml';
 
 // `machine.js` is not re-exported from the package index until the lead merges SHP-T-1.8.
 import type { MachineContext } from '../../packages/sequence/src/machine.js';
@@ -135,6 +135,19 @@ export interface ToyDataRootOptions {
   app?: string;
   /** The compose service the toy app runs as, named in the manifest's services/health/migrate. Default `app`. */
   service?: string;
+  /**
+   * Make it a Shipyard-built app (SHP-T-7.16): the `build` block of `toy-app/manifest.build.yml`
+   * (`source: shipyard`, `testTarget: test`, `releaseTargets: { app: release }`) is added, so G5
+   * reads the agent-local build record rather than a workflow run.
+   */
+  shipyardBuild?: boolean;
+}
+
+/** The `build` block of `toy-app/manifest.build.yml`, its release target keyed by `service`. */
+async function toyBuildBlock(service: string): Promise<Record<string, unknown>> {
+  const doc = parse(await readFile(join(TOY_APP_DIR, 'manifest.build.yml'), 'utf8')) as { build: { releaseTargets: Record<string, string> } & Record<string, unknown> };
+  const target = doc.build.releaseTargets.app ?? 'release';
+  return { ...doc.build, releaseTargets: { [service]: target } };
 }
 
 export async function prepareToyDataRoot(options: ToyDataRootOptions = {}): Promise<ToyDataRoot> {
@@ -170,6 +183,7 @@ export async function prepareToyDataRoot(options: ToyDataRootOptions = {}): Prom
     soakSeconds: options.soakSeconds ?? 3,
     diskFloorGb: 0.1,
     steps: { migrate: { service, argv: ['node', 'migrate.mjs'] } },
+    ...(options.shipyardBuild === true ? { build: await toyBuildBlock(service) } : {}),
   };
   await writeFile(join(dataRoot, 'apps', `${app}.yml`), stringify(manifest), 'utf8');
 

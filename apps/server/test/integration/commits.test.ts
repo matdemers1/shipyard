@@ -68,13 +68,16 @@ class FakeGitHub implements GitHubPort {
   compareResult: Awaited<ReturnType<GitHubPort['compare']>> = null;
   runsByHeadSha = new Map<string, Parameters<GitHubPort['workflowRuns']> extends never ? never : Awaited<ReturnType<GitHubPort['workflowRuns']>>>();
   compareError: Error | null = null;
+  calls = { compare: 0, workflowRuns: 0 };
 
   compare(_repo: string, _base: string, _head: string): ReturnType<GitHubPort['compare']> {
+    this.calls.compare += 1;
     if (this.compareError !== null) return Promise.reject(this.compareError);
     return Promise.resolve(this.compareResult);
   }
 
   workflowRuns(_repo: string, _workflow: string, headSha: string): ReturnType<GitHubPort['workflowRuns']> {
+    this.calls.workflowRuns += 1;
     if (this.compareError !== null) return Promise.reject(this.compareError);
     return Promise.resolve(this.runsByHeadSha.get(headSha) ?? []);
   }
@@ -198,6 +201,7 @@ describe('GET /api/apps/:app/commits', () => {
     expect(res.body).toMatchObject({
       live: SHA_LIVE,
       head: SHA_HEAD,
+      ahead: 2,
       newestGreen: SHA_MID,
       source: 'github',
       commits: [
@@ -205,6 +209,27 @@ describe('GET /api/apps/:app/commits', () => {
         { sha: SHA_HEAD, ci: 'pending', taskIds: [] },
       ],
     });
+  });
+
+  it('a second request within the TTL is served whole from the cache: no GitHub call at all', async () => {
+    await recordRelease('web', SHA_LIVE);
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 2,
+      behindBy: 0,
+      commits: [
+        { sha: SHA_MID, message: 'one' },
+        { sha: SHA_HEAD, message: 'two' },
+      ],
+    };
+    const { cookie } = await signIn();
+    const first = await request(app).get('/api/apps/web/commits').set('Cookie', cookie);
+    expect(first.status).toBe(200);
+    const afterFirst = { ...github.calls };
+    expect(afterFirst.workflowRuns).toBeGreaterThan(0);
+    const second = await request(app).get('/api/apps/web/commits').set('Cookie', cookie);
+    expect(second.body).toEqual(first.body);
+    expect(github.calls).toEqual(afterFirst);
   });
 
   it('reports failure CI state', async () => {

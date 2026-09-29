@@ -17,6 +17,15 @@ export interface AgentConfig {
   selfContainerId: string | undefined;
   /** Passed to compose as DOCKER_HOST when set. */
   dockerHost: string | undefined;
+  /**
+   * Where rootless buildkitd listens (`BUILDKIT_ADDR`), e.g. `unix:///run/buildkit/buildkitd.sock`.
+   * Unset: builds are disabled and the agent never advertises the build capability (SHP-T-7.9).
+   */
+  buildkitAddr: string | undefined;
+  /** A directory whose `config.json` holds the GHCR push credential buildctl uses (`BUILD_DOCKER_CONFIG`). */
+  buildDockerConfig: string | undefined;
+  /** Scratch space for build source and secret files (`BUILD_TMP_DIR`); default `<dataRoot>/agent/build-tmp`. */
+  buildTmpDir: string;
 }
 
 export class AgentConfigError extends Error {
@@ -56,12 +65,21 @@ export function loadAgentConfig(env: NodeJS.ProcessEnv, inContainer: () => boole
   const hostname = nonEmpty(env['HOSTNAME']);
   const selfContainerId = explicitSelf ?? (hostname !== undefined && inContainer() ? hostname : undefined);
 
+  const buildkitAddr = nonEmpty(env['BUILDKIT_ADDR']);
+  if (buildkitAddr !== undefined && !/^(unix:\/\/\/|tcp:\/\/)\S+$/.test(buildkitAddr)) {
+    throw new AgentConfigError(`BUILDKIT_ADDR must be unix:///path or tcp://host:port, got ${buildkitAddr}`);
+  }
+  const root = dataRoot.replace(/\/+$/, '') || '/';
+
   return {
     serverUrl: parsed.toString(),
-    dataRoot: dataRoot.replace(/\/+$/, '') || '/',
+    dataRoot: root,
     githubToken: nonEmpty(env['GITHUB_TOKEN_AGENT']),
     agentVersion: nonEmpty(env['SHIPYARD_AGENT_VERSION']) ?? nonEmpty(env['SHIPYARD_VERSION']) ?? 'unknown',
     selfContainerId,
     dockerHost: nonEmpty(env['DOCKER_HOST']),
+    buildkitAddr,
+    buildDockerConfig: nonEmpty(env['BUILD_DOCKER_CONFIG']),
+    buildTmpDir: nonEmpty(env['BUILD_TMP_DIR']) ?? `${root === '/' ? '' : root}/agent/build-tmp`,
   };
 }

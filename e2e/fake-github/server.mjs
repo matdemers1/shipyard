@@ -1,6 +1,7 @@
 // A fake of the slice of the GitHub REST API Shipyard's agent uses, with in-memory state.
 //   GET  /repos/:owner/:repo/actions/runs?head_sha=…
 //   GET  /repos/:owner/:repo/compare/:base...:head
+//   GET  /repos/:owner/:repo/tarball/:sha        (200 with the posted tar.gz)
 // Test control:
 //   POST   /_control/state      replace the state (see logic.d.mts StateInput)
 //   GET    /_control/requests   the API requests received so far
@@ -63,6 +64,11 @@ const server = createServer((req, res) => {
     at: new Date().toISOString(),
   });
   const reply = route(state, method, url);
+  if (Buffer.isBuffer(reply.body)) {
+    res.writeHead(reply.status, { 'content-type': reply.contentType ?? 'application/octet-stream', 'content-length': reply.body.length });
+    res.end(reply.body);
+    return;
+  }
   send(res, reply.status, reply.body);
 });
 

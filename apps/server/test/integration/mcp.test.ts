@@ -26,7 +26,15 @@ const logger = pino({ enabled: false });
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b1c2d3e4f5'.repeat(4);
-const TOOLS = ['shipyard_deploy', 'shipyard_deploy_status', 'shipyard_dry_run', 'shipyard_rollback', 'shipyard_status'];
+const TOOLS = [
+  'shipyard_build',
+  'shipyard_build_status',
+  'shipyard_deploy',
+  'shipyard_deploy_status',
+  'shipyard_dry_run',
+  'shipyard_rollback',
+  'shipyard_status',
+];
 
 let bus: Bus;
 let server: Server;
@@ -206,7 +214,7 @@ describe('two sessions race (the doneWhen)', () => {
 });
 
 describe('the endpoint', () => {
-  it('lists exactly the five tools', async () => {
+  it('lists exactly the seven tools', async () => {
     const client = await connect(await tokenFor('a', ['web']));
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(TOOLS);

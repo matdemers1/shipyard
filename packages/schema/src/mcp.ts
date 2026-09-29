@@ -53,10 +53,28 @@ export const ShipyardRollbackInput = z
   .meta({ id: 'ShipyardRollbackInput', description: 'Input for the shipyard_rollback tool' });
 export type ShipyardRollbackInput = z.infer<typeof ShipyardRollbackInput>;
 
+export const ShipyardBuildInput = z
+  .strictObject({
+    app: AppName,
+    sha: Sha40,
+    requester: Requester,
+  })
+  .meta({ id: 'ShipyardBuildInput', description: 'Input for the shipyard_build tool' });
+export type ShipyardBuildInput = z.infer<typeof ShipyardBuildInput>;
+
+export const ShipyardBuildStatusInput = z
+  .strictObject({
+    buildId: z.uuid(),
+  })
+  .meta({ id: 'ShipyardBuildStatusInput', description: 'Input for the shipyard_build_status tool' });
+export type ShipyardBuildStatusInput = z.infer<typeof ShipyardBuildStatusInput>;
+
 export const MCP_TOOLS = {
   shipyard_status: ShipyardStatusInput,
   shipyard_dry_run: ShipyardDryRunInput,
   shipyard_deploy: ShipyardDeployInput,
   shipyard_deploy_status: ShipyardDeployStatusInput,
   shipyard_rollback: ShipyardRollbackInput,
+  shipyard_build: ShipyardBuildInput,
+  shipyard_build_status: ShipyardBuildStatusInput,
 } as const;

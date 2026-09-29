@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -8,6 +8,7 @@ import { ZodError } from 'zod';
 import { Manifest, parseManifestYaml } from '../src/manifest.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const manifestsDir = join(here, '../../../docs/manifests');
 
 describe('parseManifestYaml', () => {
   it('parses a valid manifest from YAML text', () => {
@@ -33,6 +34,23 @@ describe('parseManifestYaml', () => {
   });
 });
 
+describe('docs/manifests (SHP-T-7.2)', () => {
+  it("shipyard.yml parses with build.source 'github' (SHP-REQ-136)", () => {
+    const text = readFileSync(join(manifestsDir, 'shipyard.yml'), 'utf-8');
+    const manifest = parseManifestYaml(text);
+    expect(manifest.build?.source).toBe('github');
+  });
+
+  it('every docs/manifests/*.yml parses', () => {
+    const files = readdirSync(manifestsDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'));
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const text = readFileSync(join(manifestsDir, file), 'utf-8');
+      expect(() => parseManifestYaml(text), file).not.toThrow();
+    }
+  });
+});
+
 describe('service image', () => {
   const base = {
     name: 'toy', repo: 'example/toy', workflow: 'ci.yml',
@@ -41,6 +59,16 @@ describe('service image', () => {
   };
   it('accepts a registry with a port', () => {
     expect(Manifest.safeParse({ ...base, services: { app: { image: 'registry:5000/toy/app' } } }).success).toBe(true);
+  });
+  it('accepts every repository form the manifests and harness use', () => {
+    for (const image of ['ghcr.io/matdemers1/shipyard/server', 'registry.shipyard.test/toy/app', 'registry:5000/toy/app', 'toy/app', 'ghcr.io/o/r/web-ui_2']) {
+      expect(Manifest.safeParse({ ...base, services: { app: { image } } }).success, image).toBe(true);
+    }
+  });
+  it('rejects an image that could smuggle options into an argv token (commas, =, spaces, uppercase path)', () => {
+    for (const image of ['ghcr.io/x,push=false', 'ghcr.io/x,registry.insecure=true', 'ghcr.io/a=b', 'ghcr.io/a b', 'ghcr.io/Owner/app', '-ghcr.io/x', 'ghcr.io//x']) {
+      expect(Manifest.safeParse({ ...base, services: { app: { image } } }).success, image).toBe(false);
+    }
   });
   it('rejects a tag or a digest', () => {
     expect(Manifest.safeParse({ ...base, services: { app: { image: 'registry:5000/toy/app:latest' } } }).success).toBe(false);
@@ -76,5 +104,61 @@ describe('steps.restore (SHP-T-5.6)', () => {
   it('refuses a command string and unknown keys on the restore step', () => {
     expect(Manifest.safeParse({ ...base, steps: { backup, restore: { service: 'db', argv: 'pg_restore /backups/{artifact}' } } }).success).toBe(false);
     expect(Manifest.safeParse({ ...base, steps: { backup, restore: { service: 'db', argv: ['x', '{artifact}'], shell: true } } }).success).toBe(false);
+  });
+});
+
+describe('build and autoDeploy (SHP-T-7.2, SHP-REQ-117)', () => {
+  const base = {
+    name: 'toy', repo: 'example/toy', workflow: 'ci.yml',
+    compose: { files: ['/srv/toy/compose.yml'], project: 'toy' },
+    services: { server: { image: 'ghcr.io/example/toy/server' }, web: { image: 'ghcr.io/example/toy/web' } },
+    health: { service: 'server', port: 3000, path: '/health' },
+  };
+
+  it('parses without a build block exactly as today, with autoDeploy left unset', () => {
+    const parsed = Manifest.parse(base);
+    expect(parsed.build).toBeUndefined();
+    expect(parsed.autoDeploy).toBeUndefined();
+  });
+
+  it('accepts build.source shipyard with releaseTargets naming exactly every service', () => {
+    const result = Manifest.safeParse({
+      ...base,
+      build: { source: 'shipyard', releaseTargets: { server: 'release-server', web: 'release-web' } },
+    });
+    expect(result.success, result.success ? '' : JSON.stringify(result.error.issues)).toBe(true);
+  });
+
+  it('refuses build.source shipyard when releaseTargets is missing a service', () => {
+    const result = Manifest.safeParse({
+      ...base,
+      build: { source: 'shipyard', releaseTargets: { server: 'release-server' } },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('refuses build.source shipyard when releaseTargets names an extra service', () => {
+    const result = Manifest.safeParse({
+      ...base,
+      build: {
+        source: 'shipyard',
+        releaseTargets: { server: 'release-server', web: 'release-web', extra: 'release-extra' },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('refuses autoDeploy true with build.source github', () => {
+    expect(Manifest.safeParse({ ...base, autoDeploy: true, build: { source: 'github' } }).success).toBe(false);
+    expect(Manifest.safeParse({ ...base, autoDeploy: true }).success).toBe(false);
+  });
+
+  it('accepts autoDeploy true with build.source shipyard', () => {
+    const result = Manifest.safeParse({
+      ...base,
+      autoDeploy: true,
+      build: { source: 'shipyard', releaseTargets: { server: 'release-server', web: 'release-web' } },
+    });
+    expect(result.success, result.success ? '' : JSON.stringify(result.error.issues)).toBe(true);
   });
 });

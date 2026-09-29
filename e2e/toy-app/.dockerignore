@@ -3,3 +3,8 @@
 !migrate.mjs
 !backup.mjs
 !restore.mjs
+# The test target (SHP-T-7.16) reads these; a Shipyard build's source adds the last three.
+!test.mjs
+!SOURCE_SHA
+!TOY_TEST_FAIL
+!probes.json

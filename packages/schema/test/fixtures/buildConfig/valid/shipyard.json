@@ -1,0 +1,12 @@
+{
+  "source": "shipyard",
+  "dockerfile": "Dockerfile",
+  "testTarget": "test",
+  "releaseTargets": { "server": "release-server", "web": "release-web" },
+  "integration": {
+    "compose": "docker-compose.integration.yml",
+    "service": "integration",
+    "argv": ["pnpm", "test:integration"]
+  },
+  "secrets": ["npm_token"]
+}

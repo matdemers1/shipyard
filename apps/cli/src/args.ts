@@ -1,4 +1,4 @@
-import { AppName, Sha40 } from '@shipyard/schema';
+import { AppName, BuildName, Sha40 } from '@shipyard/schema';
 
 /**
  * `shipyard-run` argument parsing (SHP-T-1.12). Pure and port-free: a bad app name or SHA is
@@ -32,7 +32,17 @@ export interface HelpCommand {
   kind: 'help';
 }
 
-export type Command = DeployCommand | StatusCommand | RecoverCommand | CheckManifestsCommand | HelpCommand;
+/**
+ * `build-secret set|delete|list` (SHP-T-7.9, SHP-REQ-125): manages the agent's encrypted build
+ * secrets. `set` reads the value from stdin only — never argv, which lands in shell history and in
+ * every process listing on the host.
+ */
+export type BuildSecretCommand =
+  | { kind: 'build-secret'; action: 'set'; app: string; name: string }
+  | { kind: 'build-secret'; action: 'delete'; app: string; name: string }
+  | { kind: 'build-secret'; action: 'list'; app: string };
+
+export type Command = DeployCommand | StatusCommand | RecoverCommand | CheckManifestsCommand | BuildSecretCommand | HelpCommand;
 
 export type ParseResult = { ok: true; command: Command } | { ok: false; message: string };
 
@@ -41,7 +51,14 @@ export const USAGE = `Usage:
   shipyard-run status <app>
   shipyard-run recover
   shipyard-run check-manifests
+  shipyard-run build-secret set <app> <name>      (the value is read from stdin)
+  shipyard-run build-secret delete <app> <name>
+  shipyard-run build-secret list <app>
   shipyard-run --help`;
+
+/** Why `build-secret set` refuses anything after the name. */
+export const SECRET_ON_ARGV =
+  'build-secret set takes the value on stdin only, never as an argument: an argument is kept in shell history and is visible to every process on the host. Pipe it or type it: printf %s "$TOKEN" | shipyard-run build-secret set <app> <name>';
 
 function parseApp(app: string): { ok: true; value: string } | { ok: false; message: string } {
   const result = AppName.safeParse(app);
@@ -99,6 +116,39 @@ function parseStatus(rest: string[]): ParseResult {
   return { ok: true, command: { kind: 'status', app: appResult.value } };
 }
 
+function parseSecretName(name: string): { ok: true; value: string } | { ok: false; message: string } {
+  const result = BuildName.safeParse(name);
+  // The name is not echoed: when someone passes a value where the name goes, it must not be printed.
+  if (!result.success) return { ok: false, message: `invalid secret name: ${result.error.issues[0]?.message ?? 'invalid'}` };
+  return { ok: true, value: result.data };
+}
+
+function parseBuildSecret(rest: string[]): ParseResult {
+  const [action, ...args] = rest;
+  if (action === 'set' && args.length > 2) {
+    // Refused before anything is parsed further: the extra argument is almost certainly the value.
+    return { ok: false, message: SECRET_ON_ARGV };
+  }
+  if (args.some((a) => a.startsWith('-'))) {
+    return action === 'set' ? { ok: false, message: SECRET_ON_ARGV } : { ok: false, message: `build-secret takes no options\n\n${USAGE}` };
+  }
+  if (action === 'list') {
+    if (args.length !== 1) return { ok: false, message: `build-secret list requires <app>\n\n${USAGE}` };
+    const app = parseApp(args[0] as string);
+    if (!app.ok) return app;
+    return { ok: true, command: { kind: 'build-secret', action: 'list', app: app.value } };
+  }
+  if (action === 'set' || action === 'delete') {
+    if (args.length !== 2) return { ok: false, message: `build-secret ${action} requires <app> <name>\n\n${USAGE}` };
+    const app = parseApp(args[0] as string);
+    if (!app.ok) return app;
+    const name = parseSecretName(args[1] as string);
+    if (!name.ok) return name;
+    return { ok: true, command: { kind: 'build-secret', action, app: app.value, name: name.value } };
+  }
+  return { ok: false, message: `build-secret requires set, delete or list\n\n${USAGE}` };
+}
+
 /** Parses argv (already stripped of `node`/script). Never touches env or ports. */
 export function parseArgs(argv: string[]): ParseResult {
   const [cmd, ...rest] = argv;
@@ -114,6 +164,8 @@ export function parseArgs(argv: string[]): ParseResult {
       return parseStatus(rest);
     case 'recover':
       return rest.length === 0 ? { ok: true, command: { kind: 'recover' } } : { ok: false, message: 'recover takes no arguments' };
+    case 'build-secret':
+      return parseBuildSecret(rest);
     case 'check-manifests':
       return rest.length === 0 ? { ok: true, command: { kind: 'check-manifests' } } : { ok: false, message: 'check-manifests takes no arguments' };
     default:

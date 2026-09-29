@@ -33,7 +33,31 @@ function evaluateDisk(facts: GateFacts): GateResult {
   };
 }
 
+/**
+ * G5 for a `build: shipyard` app (SHP-REQ-134): passes only on a succeeded local build record of
+ * this SHA whose reported digests all match what G8 resolved from GHCR — never a server claim, the
+ * same principle as rollback/restore reading only the agent's own ledger (SHP-D-080).
+ */
+function evaluateG5Shipyard(facts: GateFacts): GateResult {
+  const sha7 = short(facts.sha);
+  const record = facts.shipyardBuild?.record ?? null;
+  if (record === null) {
+    const message = `no succeeded Shipyard build of ${sha7}`;
+    return { gate: 'G5', pass: false, reason: message, refusal: refusal('build_not_green', message) };
+  }
+  for (const service of Object.keys(facts.manifest.services)) {
+    const recorded = record.digests[service];
+    const resolved = facts.digests[service];
+    if (recorded === undefined || resolved === undefined || resolved === null || recorded !== resolved) {
+      const message = `the build record's digest for "${service}" does not match what GHCR reports for ${sha7}`;
+      return { gate: 'G5', pass: false, reason: message, refusal: refusal('build_digest_mismatch', message) };
+    }
+  }
+  return { gate: 'G5', pass: true, reason: `Shipyard built ${sha7} (build ${record.buildId})` };
+}
+
 function evaluateG5(facts: GateFacts): GateResult {
+  if (facts.manifest.build?.source === 'shipyard') return evaluateG5Shipyard(facts);
   let runs = facts.workflowRuns;
   if (runs === undefined) {
     throw new Error('G5 requires workflowRuns on deploy facts');

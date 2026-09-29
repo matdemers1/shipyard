@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { AppName, Digest, Sha40 } from './primitives.js';
 import { Manifest } from './manifest.js';
 import { Refusal } from './errors.js';
+import { BuildJob } from './build.js';
+import { BuildSettings } from './settings.js';
 
 /**
  * The agent protocol (SHP-REQ-004): what the portless agent reports and what it
@@ -88,6 +90,18 @@ export const AgentRelease = z
   })
   .meta({ id: 'AgentRelease', description: 'A verified release (deploy or rollback) from the agent ledger' });
 
+/** The BuildKit cache as the agent reports it (SHP-REQ-131, SHP-REQ-132, SHP-REQ-133, SHP-T-7.11). */
+export const AgentBuildCache = z
+  .strictObject({
+    bytes: z.int().min(0),
+    capBytes: z.int().min(0),
+    lastGcAt: z.iso.datetime().nullable(),
+    /** The CPU/memory limits the agent last applied to the BuildKit container; null before it ever has. */
+    limitsApplied: z.strictObject({ cpus: z.number().min(0), memoryMb: z.int().min(0) }).nullable(),
+  })
+  .meta({ id: 'AgentBuildCache', description: 'The BuildKit cache size, its cap, last GC time and applied limits' });
+export type AgentBuildCache = z.infer<typeof AgentBuildCache>;
+
 export const AgentReport = z
   .strictObject({
     agentVersion: z.string().min(1),
@@ -101,6 +115,9 @@ export const AgentReport = z
      * host CLI) appear as the live release and as rollback targets. Absent from older agents.
      */
     releases: z.array(AgentRelease).max(5000).optional(),
+    /** Absent when builds are disabled on this agent (no BUILDKIT_ADDR); the System screen then
+     * shows "not reported" rather than a zeroed cache. */
+    buildCache: AgentBuildCache.optional(),
   })
   .meta({ id: 'AgentReport', description: 'What the agent reports about itself and the apps it manages' });
 export type AgentReport = z.infer<typeof AgentReport>;
@@ -108,6 +125,8 @@ export type AgentReport = z.infer<typeof AgentReport>;
 export const PollRequest = z
   .strictObject({
     waitSeconds: z.int().min(0).max(25),
+    /** An agent that sends `['build']` can receive a build job; older agents omit it and never are sent one. */
+    capabilities: z.array(z.enum(['build'])).max(10).optional(),
   })
   .meta({ id: 'PollRequest', description: 'The agent long-poll request body' });
 export type PollRequest = z.infer<typeof PollRequest>;
@@ -136,12 +155,21 @@ const PollTarget = z
   })
   .meta({ id: 'PollTarget', description: 'A target for the agent to execute' });
 
+/**
+ * On every variant (SHP-T-7.11): the build CPU/memory/cache-cap limits from Settings, present on
+ * every poll answer so the agent learns a change on its next poll regardless of whether it was
+ * also handed a target or a build. Optional so an older server (or a fixture predating this field)
+ * still parses — an agent that gets none simply does not apply or report anything about it.
+ */
+const buildSettingsField = { buildSettings: BuildSettings.optional() };
+
 export const PollResponse = z
   .union([
-    z.strictObject({ target: z.null() }),
-    z.strictObject({ target: PollTarget }),
+    z.strictObject({ target: z.null(), ...buildSettingsField }),
+    z.strictObject({ target: PollTarget, ...buildSettingsField }),
+    z.strictObject({ target: z.null(), build: BuildJob, ...buildSettingsField }),
   ])
-  .meta({ id: 'PollResponse', description: 'Either no work, or one target to execute' });
+  .meta({ id: 'PollResponse', description: 'Either no work, one target to execute, or one build to run' });
 export type PollResponse = z.infer<typeof PollResponse>;
 
 export const StepJournal = z

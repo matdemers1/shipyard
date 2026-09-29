@@ -22,6 +22,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 
 import { nodeFs } from '../src/adapters/node.js';
+import { appendBuildRecord } from '../src/build/record.js';
 import type { LocalImage } from '../src/disk.js';
 import { Journal } from '../src/journal.js';
 import { Ledger } from '../src/ledger.js';
@@ -176,6 +177,8 @@ async function makeWorld(
     retainImages?: number;
     /** Local Docker images `docker.images(repo)` should return, keyed by repo. */
     localImages?: Record<string, LocalImage[]>;
+    /** SHP-T-7.10: when set, the manifest's build block. */
+    build?: { source: 'shipyard'; releaseTargets: Record<string, string> } | { source: 'github' };
   } = {},
 ): Promise<World> {
   const root = await mkdtemp(join(tmpdir(), 'shp-machine-'));
@@ -351,6 +354,7 @@ async function makeWorld(
     ...(options.envFiles === undefined ? {} : { envFiles: options.envFiles }),
     ...(options.requiredEnv === undefined ? {} : { requiredEnv: options.requiredEnv }),
     ...(options.retainImages === undefined ? {} : { retainImages: options.retainImages }),
+    ...(options.build === undefined ? {} : { build: options.build }),
   });
   const manifests: LoadedManifests = new Map([['toy', { manifest, file: join(dataRoot, 'apps', 'toy.yml'), sha256: '0' }]]);
 
@@ -1111,5 +1115,59 @@ describe('runDeploy — rollback confirmation and the verified-release record', 
     await runDeploy(world.ports, world.ctx, request());
     const plain = (await journalEntries(world)).find((e) => e.step === 'verify' && e.phase === 'end');
     expect(plain?.detail).toMatchObject({ contract: false });
+  });
+});
+
+describe('runDeploy — G5 reads the agent-local build record for build: shipyard apps (SHP-T-7.10)', () => {
+  it('a shipyard-built app passes G5 and deploys when a matching succeeded build record is on disk', async () => {
+    world = await makeWorld({ build: { source: 'shipyard', releaseTargets: { app: 'release' } } });
+    await appendBuildRecord(world.ports.fs, world.dataRoot, {
+      buildId: 'build-1',
+      app: 'toy',
+      sha: NEW_SHA,
+      state: 'succeeded',
+      digests: { app: NEW_DIGEST },
+      at: new Date().toISOString(),
+    });
+
+    const result = await runDeploy(world.ports, world.ctx, request());
+
+    expect(result.state).toBe('succeeded');
+    expect(result.gates.find((g) => g.gate === 'G5')).toMatchObject({ pass: true });
+  });
+
+  it('a shipyard-built app refuses build_not_green with no build record on disk', async () => {
+    world = await makeWorld({ build: { source: 'shipyard', releaseTargets: { app: 'release' } } });
+
+    const result = await runDeploy(world.ports, world.ctx, request());
+
+    expect(result.state).toBe('refused');
+    expect(refusalOf(result).code).toBe('build_not_green');
+  });
+
+  it('a shipyard-built app refuses build_digest_mismatch when the record disagrees with GHCR', async () => {
+    world = await makeWorld({ build: { source: 'shipyard', releaseTargets: { app: 'release' } } });
+    await appendBuildRecord(world.ports.fs, world.dataRoot, {
+      buildId: 'build-1',
+      app: 'toy',
+      sha: NEW_SHA,
+      state: 'succeeded',
+      digests: { app: OLD_DIGEST },
+      at: new Date().toISOString(),
+    });
+
+    const result = await runDeploy(world.ports, world.ctx, request());
+
+    expect(result.state).toBe('refused');
+    expect(refusalOf(result).code).toBe('build_digest_mismatch');
+  });
+
+  it('a dry run for a shipyard-built app also consults the build record', async () => {
+    world = await makeWorld({ build: { source: 'shipyard', releaseTargets: { app: 'release' } } });
+
+    const result = await runDeploy(world.ports, world.ctx, request({ dryRun: true }));
+
+    expect(result.state).toBe('refused');
+    expect(refusalOf(result).code).toBe('build_not_green');
   });
 });

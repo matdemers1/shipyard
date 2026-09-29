@@ -9,6 +9,7 @@ import { Agent } from './screens/Agent';
 import { AppDetail } from './screens/AppDetail';
 import { BuildDetail } from './screens/BuildDetail';
 import { Builds } from './screens/Builds';
+import { Connect } from './screens/Connect';
 import { DeployProgress } from './screens/DeployProgress';
 import { DeployRecord } from './screens/DeployRecord';
 import { Home } from './screens/Home';
@@ -166,6 +167,7 @@ export function AppRoutes() {
         <Route path="builds/:id" element={<BuildDetail />} />
         <Route path="timeline" element={<Timeline />} />
         <Route path="schedules" element={<Schedules />} />
+        <Route path="connect" element={<Connect />} />
         <Route
           path="system"
           element={

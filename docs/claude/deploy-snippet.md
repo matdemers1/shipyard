@@ -6,8 +6,9 @@ never over SSH: no `sed` on a compose file, no `docker compose pull/up` on the h
 hand is drift, and Shipyard refuses the next one until someone resolves it.
 
 - **Connect once:** remote MCP server `https://shipyard.d3cloud.io/mcp`, header
-  `Authorization: Bearer <token>`. A token is scoped to the apps it names; ask the operator for one
-  (`host-admin issue-token --apps <app>` on the host). Never paste it into a file in this repo.
+  `Authorization: Bearer <token>`. A token is scoped to the apps it names; make one on the console's
+  **Connect Claude** page (`https://shipyard.d3cloud.io/connect`), which also gives the exact
+  `claude mcp add` command and confirms the connection. Never paste a token into a file in this repo.
 - **What exists:** `shipyard_status` (live release, `buildSource`, commits waiting with their build
   state, CI) · `shipyard_dry_run` · `shipyard_deploy` (an `app`, or a `group`, and a 40-hex `sha`) ·
   `shipyard_deploy_status` · `shipyard_rollback` (to an earlier successful deploy, from the agent's

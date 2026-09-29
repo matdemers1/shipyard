@@ -1,4 +1,4 @@
-import { Bot, CalendarClock, Hammer, History, House, KeyRound, Server, SlidersHorizontal, Users, type LucideIcon } from 'lucide-react';
+import { Bot, CalendarClock, Hammer, History, House, KeyRound, Plug, Server, SlidersHorizontal, Users, type LucideIcon } from 'lucide-react';
 
 export interface NavItem {
   to: string;
@@ -16,6 +16,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { to: '/timeline', label: 'Timeline', Icon: History, needsStateChange: false },
   { to: '/builds', label: 'Builds', Icon: Hammer, needsStateChange: false },
   { to: '/schedules', label: 'Schedules', Icon: CalendarClock, needsStateChange: false },
+  { to: '/connect', label: 'Connect Claude', Icon: Plug, needsStateChange: false },
   { to: '/system', label: 'System', Icon: Server, needsStateChange: true },
   { to: '/agent', label: 'Agent', Icon: Bot, needsStateChange: true },
   { to: '/tokens', label: 'API tokens', Icon: KeyRound, needsStateChange: true },

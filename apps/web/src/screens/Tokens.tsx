@@ -17,17 +17,10 @@ import {
   Spinner,
   Stack,
 } from '@d3cloud/ui';
-import { Copy, KeyRound, Trash2 } from 'lucide-react';
+import { KeyRound, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState, type SyntheticEvent } from 'react';
-import {
-  copyText,
-  mcpSnippet,
-  relativeTime,
-  shortDate,
-  tokens as tokenApi,
-  type TokenCreated,
-  type TokenSummary,
-} from '../lib/admin';
+import { CopyButton, Mono } from '../components/Copyable';
+import { mcpSnippet, relativeTime, shortDate, tokens as tokenApi, type TokenCreated, type TokenSummary } from '../lib/admin';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { useCan } from '../lib/auth';
 
@@ -39,35 +32,6 @@ import { useCan } from '../lib/auth';
 
 function asRefusal(error: unknown): RefusalError {
   return error instanceof RefusalError ? error : unreachableRefusal();
-}
-
-/** A secret or snippet: monospace, wrapping, preformatted where it has lines. */
-function Mono({ value, block = false }: { value: string; block?: boolean }) {
-  const style = { overflowWrap: 'anywhere', wordBreak: 'break-all', whiteSpace: block ? 'pre-wrap' : 'normal' } as const;
-  return block ? (
-    <pre style={{ ...style, margin: 0 }}>
-      <code>{value}</code>
-    </pre>
-  ) : (
-    <code style={style}>{value}</code>
-  );
-}
-
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState<boolean | null>(null);
-  return (
-    <Button
-      type="button"
-      variant="secondary"
-      size="sm"
-      icon={<Copy />}
-      onClick={() => {
-        void copyText(text).then(setCopied);
-      }}
-    >
-      {copied === true ? 'Copied' : copied === false ? 'Copy failed — select it' : label}
-    </Button>
-  );
 }
 
 function ShownOnce({ created, onDismiss }: { created: TokenCreated; onDismiss: () => void }) {
@@ -164,9 +128,7 @@ function CreateForm({ apps, onCreated }: { apps: string[]; onCreated: (t: TokenC
                   value={name}
                   checked={chosen.includes(name)}
                   onCheckedChange={(checked) => {
-                    setChosen((prev) =>
-                      checked === true ? [...prev.filter((n) => n !== name), name] : prev.filter((n) => n !== name),
-                    );
+                    setChosen((prev) => (checked === true ? [...prev.filter((n) => n !== name), name] : prev.filter((n) => n !== name)));
                   }}
                 />
               ))}
@@ -174,13 +136,7 @@ function CreateForm({ apps, onCreated }: { apps: string[]; onCreated: (t: TokenC
           </fieldset>
         )}
         <FormActions align="start">
-          <Button
-            type="submit"
-            variant="primary"
-            icon={<KeyRound />}
-            loading={busy}
-            disabled={label.trim() === '' || chosen.length === 0}
-          >
+          <Button type="submit" variant="primary" icon={<KeyRound />} loading={busy} disabled={label.trim() === '' || chosen.length === 0}>
             Create token
           </Button>
         </FormActions>
@@ -191,9 +147,7 @@ function CreateForm({ apps, onCreated }: { apps: string[]; onCreated: (t: TokenC
 
 function tokenDescription(t: TokenSummary): string {
   const used =
-    t.lastUsedAt === null
-      ? 'never used'
-      : `last used ${relativeTime(t.lastUsedAt)}${t.lastUsedIp === null ? '' : ` from ${t.lastUsedIp}`}`;
+    t.lastUsedAt === null ? 'never used' : `last used ${relativeTime(t.lastUsedAt)}${t.lastUsedIp === null ? '' : ` from ${t.lastUsedIp}`}`;
   return `${t.apps.join(', ')} · created ${shortDate(t.createdAt)} · ${used}`;
 }
 
@@ -244,7 +198,7 @@ export function Tokens() {
       <Stack gap="24">
         <PageHeader
           title="API tokens"
-          description="Bearer tokens for Claude Code sessions and CI, each limited to named apps."
+          description="Bearer tokens for Claude Code sessions and CI, each limited to named apps. Connecting Claude Code? The Connect Claude page walks you through it."
           // countNoun, not countLabel: countLabel replaces the heading's whole accessible name.
           {...(list !== null ? { count: list.filter((t) => t.revokedAt === null).length, countNoun: { one: 'live', other: 'live' } } : {})}
         />
@@ -283,13 +237,7 @@ export function Tokens() {
                 key={t.id}
                 title={t.label}
                 description={tokenDescription(t)}
-                meta={
-                  t.revokedAt === null ? (
-                    <code>{t.prefix}…</code>
-                  ) : (
-                    <Badge tone="danger">Revoked</Badge>
-                  )
-                }
+                meta={t.revokedAt === null ? <code>{t.prefix}…</code> : <Badge tone="danger">Revoked</Badge>}
                 actions={
                   can && t.revokedAt === null ? (
                     <Button
@@ -318,9 +266,7 @@ export function Tokens() {
             }}
             title="Revoke this token?"
             description={
-              revoking === null
-                ? undefined
-                : `“${revoking.label}” stops working at once. Anything using it must be given a new token.`
+              revoking === null ? undefined : `“${revoking.label}” stops working at once. Anything using it must be given a new token.`
             }
             destructive
             footer={

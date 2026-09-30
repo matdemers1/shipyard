@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { refusal, type SystemBackupRun, type SystemStatus } from '@shipyard/schema';
 import { lastReportedBuildCache } from '../apps/report.js';
+import { TERMINAL_STATES } from '../deploys/service.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 
@@ -15,6 +16,8 @@ import { sendRefusal } from '../errors.js';
 const PAT_WARNING_DAYS = 30;
 const PAT_WARNING_MS = PAT_WARNING_DAYS * 24 * 60 * 60 * 1000;
 const OUTBOX_STALE_MS = 60 * 60 * 1000;
+/** A target handed to the agent this long ago and never started counts as work it is not taking. */
+const UNSTARTED_AFTER_MS = 2 * 60 * 1000;
 
 const DEPLOYER_ROLES = new Set(['admin', 'operator', 'deployer']);
 
@@ -86,6 +89,22 @@ export function systemRouter(deps: ServiceDeps): Router {
         ? false
         : agentRow.lastHeartbeatAt === null || now.getTime() - agentRow.lastHeartbeatAt.getTime() > thresholdMs;
 
+    // Handed out and never started: the agent polls (so it heartbeats) but is not taking the work.
+    // A healthy agent reports its first state within seconds; claimTarget re-hands a target every
+    // two minutes, so `dispatched_at` alone keeps moving — `created_at` is what shows it waiting.
+    const unstartedTargets =
+      agentRow === null
+        ? 0
+        : await db.deployTarget.count({
+            where: {
+              app: { agentId: agentRow.id },
+              dispatchedAt: { not: null },
+              startedAt: null,
+              state: { notIn: [...TERMINAL_STATES] },
+              createdAt: { lt: new Date(now.getTime() - UNSTARTED_AFTER_MS) },
+            },
+          });
+
     const patWarning: 'none' | 'expiring' | 'expired' =
       agentRow?.patExpiresAt === undefined || agentRow.patExpiresAt === null
         ? 'none'
@@ -131,6 +150,7 @@ export function systemRouter(deps: ServiceDeps): Router {
               stale,
               patExpiresAt: agentRow.patExpiresAt?.toISOString() ?? null,
               patWarning,
+              unstartedTargets,
             },
       outbox: {
         unsent,

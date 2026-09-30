@@ -286,6 +286,36 @@ describe('runLoop', () => {
     expect(delays).toEqual([1_000]);
   });
 
+  it('takes a target from a newer server whose answer carries fields this agent does not know', async () => {
+    // The 2026-09-30 outage: a server that added `buildSettings` to every answer left an agent
+    // that parsed strictly rejecting every poll — heartbeating, never taking work.
+    const stop = new AbortController();
+    const ran: string[] = [];
+    const warnings: object[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: target(), fromTheFuture: { anything: 1 } };
+      if (i === 1) return { target: null, fromTheFuture: { anything: 2 } };
+      stop.abort();
+      return { target: null };
+    });
+    const log = { ...quiet, warn: (obj: object) => void warnings.push(obj) };
+    await runLoop({ client, runTarget: (t) => (ran.push(t.targetId), Promise.resolve()), log, signal: stop.signal, sleep: noSleep });
+    expect(ran).toEqual([target().targetId]);
+    // Named once, not on every poll.
+    expect(warnings).toEqual([{ keys: ['fromTheFuture'] }]);
+  });
+
+  it('still refuses a malformed target inside an answer with unknown fields', async () => {
+    const stop = new AbortController();
+    const delays: number[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 1) stop.abort();
+      return { target: { ...target(), nope: true }, fromTheFuture: true };
+    });
+    await runLoop({ client, runTarget: () => Promise.resolve(), log: quiet, signal: stop.signal, sleep: (ms) => (delays.push(ms), Promise.resolve()) });
+    expect(delays).toEqual([1_000]);
+  });
+
   it('SIGTERM finishes the current target, then exits without polling again', async () => {
     const stop = new AbortController();
     let finished = false;

@@ -232,7 +232,7 @@ describe('agent heartbeat', () => {
       status: 200,
       body: {
         versions: { server: 'dev', agent: null, compose: null, engineApi: null },
-        agent: { fingerprint: soloAgent.fingerprint, lastHeartbeatAt: soloAgent.lastHeartbeatAt, stale: false, patExpiresAt: minutesAgo(-10 * 24 * 60), patWarning: 'expiring' },
+        agent: { fingerprint: soloAgent.fingerprint, lastHeartbeatAt: soloAgent.lastHeartbeatAt, stale: false, patExpiresAt: minutesAgo(-10 * 24 * 60), patWarning: 'expiring', unstartedTargets: 0 },
         outbox: { unsent: 0, unsentOverHour: 0, oldestUnsentAt: null, lastError: null },
         backups: { lastBackup: null, lastDrill: null },
       },

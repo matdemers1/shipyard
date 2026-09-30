@@ -131,6 +131,39 @@ describe('GET /api/system', () => {
     expect((res.body as SystemStatus).agent?.stale).toBe(false);
   });
 
+  it('counts work handed to a heartbeating agent that it never started', async () => {
+    // The 2026-09-30 outage: an agent older than the server rejected every poll answer, so it kept
+    // heartbeating (never stale) while every dry run sat dispatched and unstarted for hours.
+    const { cookie } = await signIn('deployer');
+    const agent = await db.agent.create({
+      data: { publicKey: 'key', fingerprint: `fp-${randomUUID()}`, confirmedAt: new Date(), lastHeartbeatAt: new Date() },
+    });
+    const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    let n = 0;
+    // One app per target: a real deploy holds its app's one active slot.
+    const target = async (data: { state: 'queued' | 'locked' | 'verifying' | 'succeeded'; createdAt: Date; dispatchedAt: Date | null; startedAt: Date | null }) => {
+      n += 1;
+      const appRow = await db.app.create({
+        data: { name: `web${String(n)}`, agentId: agent.id, manifestYaml: `name: web${String(n)}\n`, manifestSha256: '0'.repeat(64) },
+      });
+      const deploy = await db.deploy.create({ data: { requestedSha: 'a'.repeat(40), requesterLabel: 'test', dryRun: data.state === 'queued' } });
+      await db.deployTarget.create({ data: { deployId: deploy.id, appId: appRow.id, ...data } });
+    };
+    // Stuck: handed out (and re-handed a moment ago), never started.
+    await target({ state: 'queued', createdAt: hourAgo, dispatchedAt: new Date(), startedAt: null });
+    await target({ state: 'locked', createdAt: hourAgo, dispatchedAt: new Date(Date.now() - 90_000), startedAt: null });
+    // Not stuck: just requested, never handed out, started, or finished.
+    await target({ state: 'locked', createdAt: new Date(), dispatchedAt: new Date(), startedAt: null });
+    await target({ state: 'locked', createdAt: hourAgo, dispatchedAt: null, startedAt: null });
+    await target({ state: 'verifying', createdAt: hourAgo, dispatchedAt: hourAgo, startedAt: hourAgo });
+    await target({ state: 'succeeded', createdAt: hourAgo, dispatchedAt: hourAgo, startedAt: null });
+
+    const res = await request(app).get('/api/system').set('Cookie', cookie);
+    const body = res.body as SystemStatus;
+    expect(body.agent?.stale).toBe(false);
+    expect(body.agent?.unstartedTargets).toBe(2);
+  });
+
   it('counts unsent deploys, not rows, and flags those unsent for over an hour (SHP-REQ-095)', async () => {
     const { cookie } = await signIn('deployer');
     const agent = await db.agent.create({ data: { publicKey: 'key', fingerprint: `fp-${randomUUID()}` } });

@@ -87,6 +87,13 @@ export function System() {
                 over an hour.
               </Alert>
             ) : null}
+            {status.agent !== null && status.agent.unstartedTargets > 0 ? (
+              <Alert tone="danger" title="The agent is not taking work">
+                It is heartbeating, but {status.agent.unstartedTargets} deploy{status.agent.unstartedTargets === 1 ? ' or dry run has' : 's or dry runs have'} been
+                handed to it without starting. This usually means the agent is older than the server; upgrade it on the host
+                (docs/runbooks/upgrade-agent.md) and check its log for &ldquo;poll failed&rdquo;.
+              </Alert>
+            ) : null}
             {status.agent?.patWarning === 'expired' ? (
               <Alert tone="danger" title="The agent's GitHub token has expired">
                 Deploys will refuse to read commit history and check runs until it is replaced.

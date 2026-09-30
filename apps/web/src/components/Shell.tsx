@@ -46,7 +46,7 @@ export function ThemeToggle() {
 /**
  * What the System screen would warn about, counted for the nav, so a deployer sees it without
  * going there: deploys unsent to Foreman for over an hour (SHP-REQ-095), a GitHub token expiring
- * within 30 days or expired (SHP-REQ-106), and a stale agent. Read once per sign-in and every
+ * within 30 days or expired (SHP-REQ-106), a stale agent, and one that heartbeats without taking work. Read once per sign-in and every
  * five minutes; a failed read counts nothing rather than inventing a warning.
  */
 function useSystemWarnings(enabled: boolean): number {
@@ -59,7 +59,7 @@ function useSystemWarnings(enabled: boolean): number {
         .status()
         .then((s) => {
           if (!live) return;
-          setCount((s.outbox.unsentOverHour > 0 ? 1 : 0) + (s.agent !== null && s.agent.patWarning !== 'none' ? 1 : 0) + (s.agent?.stale === true ? 1 : 0));
+          setCount((s.outbox.unsentOverHour > 0 ? 1 : 0) + (s.agent !== null && s.agent.patWarning !== 'none' ? 1 : 0) + (s.agent?.stale === true ? 1 : 0) + ((s.agent?.unstartedTargets ?? 0) > 0 ? 1 : 0));
         })
         .catch(() => undefined);
     };

@@ -31,6 +31,7 @@ function status(overrides: Partial<SystemStatus> = {}): SystemStatus {
       stale: false,
       patExpiresAt: null,
       patWarning: 'none',
+      unstartedTargets: 0,
     },
     outbox: { unsent: 0, unsentOverHour: 0, oldestUnsentAt: null, lastError: null },
     backups: { lastBackup: null, lastDrill: null },
@@ -90,7 +91,7 @@ describe('System screen', () => {
     mockFetch(
       routes(
         status({
-          agent: { fingerprint: 'SHA256:abc', lastHeartbeatAt: null, stale: true, patExpiresAt: '2026-10-01T00:00:00.000Z', patWarning: 'expiring' },
+          agent: { fingerprint: 'SHA256:abc', lastHeartbeatAt: null, stale: true, patExpiresAt: '2026-10-01T00:00:00.000Z', patWarning: 'expiring', unstartedTargets: 0 },
         }),
       ),
     );
@@ -101,12 +102,28 @@ describe('System screen', () => {
     mockFetch(
       routes(
         status({
-          agent: { fingerprint: 'SHA256:abc', lastHeartbeatAt: null, stale: true, patExpiresAt: '2026-09-01T00:00:00.000Z', patWarning: 'expired' },
+          agent: { fingerprint: 'SHA256:abc', lastHeartbeatAt: null, stale: true, patExpiresAt: '2026-09-01T00:00:00.000Z', patWarning: 'expired', unstartedTargets: 0 },
         }),
       ),
     );
     wrap(<System />);
     expect(await screen.findByText("The agent's GitHub token has expired")).toBeInTheDocument();
+  });
+
+  it('warns when a heartbeating agent is not taking the work it is handed', async () => {
+    const reporting = status().agent;
+    if (reporting === null) throw new Error('the default status has an agent');
+    mockFetch(routes(status({ agent: { ...reporting, unstartedTargets: 3 } })));
+    wrap(<System />);
+    expect(await screen.findByText('The agent is not taking work')).toBeInTheDocument();
+    expect(screen.getByText(/3 deploys or dry runs have been/)).toBeInTheDocument();
+  });
+
+  it('says nothing about work when the agent has started everything it was handed', async () => {
+    mockFetch(routes(status()));
+    wrap(<System />);
+    await screen.findByText('Not yet reported');
+    expect(screen.queryByText('The agent is not taking work')).not.toBeInTheDocument();
   });
 
   it('shows "not yet reported" for the build cache when the agent has never reported one', async () => {

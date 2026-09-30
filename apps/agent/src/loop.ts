@@ -43,6 +43,26 @@ export const POLL_TIMEOUT_MS = 35_000;
 
 export type PollTarget = NonNullable<PollResponse['target']>;
 
+/** Every top-level poll-answer field this agent understands. */
+const POLL_RESPONSE_KEYS: ReadonlySet<string> = new Set(['target', 'build', 'buildSettings']);
+
+/**
+ * Parses a poll answer, dropping top-level fields this agent does not know first. The server is
+ * deployed through Shipyard and the agent is upgraded by hand (SHP-D-011), so a newer server
+ * answering an older agent is normal. The protocol grows by adding top-level fields (`build`,
+ * `buildSettings`), and a strict parse of those left an older agent rejecting every answer while
+ * its polls still counted as heartbeats — alive on the console, never taking work. Everything the
+ * agent does act on (`target`, `build`) is still parsed strictly.
+ */
+export function parsePollResponse(body: unknown, onUnknown?: (keys: string[]) => void): PollResponse {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return PollResponse.parse(body);
+  const entries = Object.entries(body);
+  const unknown = entries.filter(([key]) => !POLL_RESPONSE_KEYS.has(key)).map(([key]) => key);
+  if (unknown.length === 0) return PollResponse.parse(body);
+  onUnknown?.(unknown);
+  return PollResponse.parse(Object.fromEntries(entries.filter(([key]) => POLL_RESPONSE_KEYS.has(key))));
+}
+
 export interface LoopLog {
   info(obj: object, msg?: string): void;
   warn(obj: object, msg?: string): void;
@@ -159,13 +179,20 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
   let delay = backoff.initialMs;
   // A function, not the property: the signal flips while a poll is in flight.
   const stopped = (): boolean => opts.signal.aborted;
+  // Logged once per field, not on every 25 s poll.
+  const ignoredKeys = new Set<string>();
 
   while (!stopped()) {
     let target: PollTarget | null;
     let build: BuildJob | undefined;
     try {
       const body = await opts.client.request('POST', POLL_PATH, pollBody(opts.builds));
-      const parsed = PollResponse.parse(body);
+      const parsed = parsePollResponse(body, (keys) => {
+        const fresh = keys.filter((key) => !ignoredKeys.has(key));
+        if (fresh.length === 0) return;
+        for (const key of fresh) ignoredKeys.add(key);
+        opts.log.warn({ keys: fresh }, 'poll answer carries fields this agent does not know; ignoring them — the agent may need an upgrade');
+      });
       target = parsed.target;
       build = 'build' in parsed ? parsed.build : undefined;
       if (parsed.buildSettings !== undefined && opts.onBuildSettings !== undefined) {

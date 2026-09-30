@@ -33,6 +33,13 @@ export const SystemAgent = z
     stale: z.boolean(),
     patExpiresAt: z.iso.datetime().nullable(),
     patWarning: PatWarning,
+    /**
+     * Targets handed to this agent more than two minutes ago that it never started. A heartbeat
+     * only proves the agent can reach the server; this proves it is taking work. Non-zero on a
+     * live agent means it is rejecting what it is given — most often an agent older than the
+     * server's protocol, which is upgraded by hand (docs/runbooks/upgrade-agent.md).
+     */
+    unstartedTargets: z.int().min(0),
   })
   .meta({ id: 'SystemAgent', description: "The confirmed agent's status, or null when none is enrolled" });
 export type SystemAgent = z.infer<typeof SystemAgent>;

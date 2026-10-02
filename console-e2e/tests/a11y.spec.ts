@@ -53,12 +53,12 @@ const card = (page: Page, app: string) => page.getByRole('listitem').filter({ ha
 
 const SCREENS: Screen[] = [
   // S1 Sign in — both steps.
-  { name: 'S1 sign in', as: null, path: () => '/signin', ready: (p) => h1(p, 'Sign in to Shipyard') },
+  { name: 'S1 sign in', as: null, path: () => '/signin', ready: (p) => h1(p, 'Sign in') },
   {
     name: 'S1 sign in, authenticator step',
     as: null,
     path: () => '/signin',
-    ready: (p) => h1(p, 'Sign in to Shipyard'),
+    ready: (p) => h1(p, 'Sign in'),
     act: async (p) => {
       await p.getByRole('textbox', { name: 'Email' }).fill(USERS.viewer.email);
       await p.getByLabel('Password', { exact: true }).fill(USERS.viewer.password);

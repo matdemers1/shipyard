@@ -71,7 +71,7 @@ describe('session', () => {
       'GET /api/auth/methods': { status: 200, body: { password: true, d3auth: false } },
     });
     renderAt('/timeline');
-    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in to Shipyard' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/signin');
   });
 
@@ -86,7 +86,7 @@ describe('session', () => {
     await act(async () => {
       await request('/api/apps').catch(() => undefined);
     });
-    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in to Shipyard' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in' })).toBeInTheDocument();
   });
 
   it('shows who is signed in and signs out from Account', async () => {
@@ -101,7 +101,7 @@ describe('session', () => {
     expect(screen.getByText('deployer')).toBeInTheDocument();
     expect(screen.getByText('https://auth.d3cloud.io')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Sign out' }));
-    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in to Shipyard' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in' })).toBeInTheDocument();
     expect(calls.some((c) => c.method === 'POST' && c.path === '/api/auth/logout')).toBe(true);
   });
 

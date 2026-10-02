@@ -29,8 +29,8 @@ export function mockFetch(routes: Record<string, Reply | Handler | Reply[]>): Ca
     const key = `${method} ${path}`;
     calls.push({ method, path, body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });
     // A signed-out console asks whether first-run setup is open; unless a test says otherwise, the
-    // server already has accounts.
-    const route = routes[key] ?? (key === 'GET /api/setup' ? SETUP_CLOSED : undefined);
+    // server already has accounts. The entry screens' footer asks /api/health for the build.
+    const route = routes[key] ?? (key === 'GET /api/setup' ? SETUP_CLOSED : key === 'GET /api/health' ? HEALTH_DEV : undefined);
     if (route === undefined) throw new Error(`unexpected request: ${key}`);
     let reply: Reply;
     if (typeof route === 'function') reply = route(init);
@@ -54,6 +54,8 @@ export function mockFetch(routes: Record<string, Reply | Handler | Reply[]>): Ca
 
 export const SETUP_CLOSED: Reply = { status: 200, body: { available: false } };
 export const SETUP_OPEN: Reply = { status: 200, body: { available: true } };
+/** A development server: no revision to show in the entry footer. */
+export const HEALTH_DEV: Reply = { status: 200, body: { status: 'ok', schemaRevision: null, version: 'dev' } };
 
 export const NOT_SIGNED_IN: Reply = {
   status: 401,

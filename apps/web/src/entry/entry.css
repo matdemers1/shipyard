@@ -1,0 +1,438 @@
+/* SHP-T-9.2: the entry screens — Sign in, first-run Setup, an invite, and the console's loading and
+ * not-answering states. The D3 Cloud front door, after Bindery's and Postroom's: the story on the
+ * sunken ground at the left, the form on the page ground at the right, a hairline between. Below
+ * 1024px the story is dropped and the mark and name sit above the form.
+ *
+ * Tokens only: no raw colour, no shadow, no invented token. The one off-scale size is the display
+ * headline, and it says why where it is set. In the console's layer, like styles.css. */
+@layer shipyard {
+  .shp-entry {
+    display: grid;
+    min-height: 100vh;
+    min-height: 100dvh;
+    background: var(--color-bg);
+    color: var(--color-fg);
+  }
+
+  /* --- the story ------------------------------------------------------------------------------- */
+
+  .shp-entry__story {
+    display: none;
+  }
+
+  .shp-entry__brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    font-size: var(--text-16);
+    line-height: var(--leading-16);
+    font-weight: var(--weight-semibold);
+  }
+
+  /* In the flow, at the right, above the pitch: it can never sit under the headline. About 304px on a
+   * tall window; it gives up size first on a short one, so the panel fits a 1024×768 screen without
+   * scrolling. Pixels, not rem: the root size is 14px, Bindery's 16. */
+  .shp-entry__art {
+    align-self: flex-end;
+    flex: none;
+    width: clamp(176px, calc(100vh - 540px), 304px);
+    margin-top: auto;
+    pointer-events: none;
+  }
+
+  .shp-entry__pitch {
+    margin-top: var(--space-24);
+  }
+
+  /* d3-allow: the app's one display headline, on the screens that introduce it — the type scale tops out at 24px for working screens, and Bindery's and Postroom's front doors set the same exception */
+  .shp-entry__headline {
+    /* 22ch, not Postroom's 20: each half is a line of its own, and the longer needs about 427px. */
+    max-width: 22ch;
+    margin: 0;
+    /* d3-allow: display size, see above — 40px, as on Bindery's and Postroom's front doors */
+    font-size: 40px;
+    /* d3-allow: display leading for a two-line headline at that size */
+    line-height: 1.08;
+    font-weight: var(--weight-semibold);
+    /* d3-allow: tight tracking on display type, which is set loose at body sizes; no letter-spacing scale by decision */
+    letter-spacing: -0.025em;
+    text-wrap: balance;
+  }
+
+  .shp-entry__headline-accent {
+    display: block;
+    color: var(--color-accent);
+  }
+
+  .shp-entry__promise {
+    max-width: 44ch;
+    margin: var(--space-16) 0 0;
+    font-size: var(--text-16);
+    line-height: var(--leading-24);
+    color: var(--color-fg-muted);
+  }
+
+  .shp-entry__claims {
+    display: grid;
+    gap: var(--space-12);
+    max-width: 46ch;
+    margin: var(--space-32) 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+    color: var(--color-fg-muted);
+  }
+
+  .shp-entry__claim {
+    display: flex;
+    gap: var(--space-12);
+  }
+
+  .shp-entry__tick {
+    flex: none;
+    margin-top: var(--space-2);
+    color: var(--color-success);
+  }
+
+  .shp-entry__claim-title {
+    font-weight: var(--weight-medium);
+    color: var(--color-fg);
+  }
+
+  .shp-entry__foot {
+    display: flex;
+    gap: var(--space-16);
+    margin-top: auto;
+    padding-top: var(--space-32);
+    font-size: var(--text-12);
+    line-height: var(--leading-12);
+    color: var(--color-fg-faint);
+  }
+
+  .shp-entry__build {
+    font-family: var(--font-mono);
+  }
+
+  /* --- the form -------------------------------------------------------------------------------- */
+
+  .shp-entry__main {
+    display: flex;
+    justify-content: center;
+    min-width: 0;
+    padding: var(--space-32) var(--space-16);
+  }
+
+  /* Bindery's 24rem and 28rem columns, in pixels: the root size is 14px, not 16. */
+  .shp-entry__column {
+    width: 100%;
+    max-width: 384px;
+    min-width: 0;
+  }
+
+  .shp-entry__column--wide {
+    max-width: 448px;
+  }
+
+  .shp-entry__brand--compact {
+    margin-bottom: var(--space-32);
+  }
+
+  .shp-entry__heading {
+    margin-bottom: var(--space-24);
+  }
+
+  .shp-entry__title {
+    margin: 0;
+    font-size: var(--text-24);
+    line-height: var(--leading-24);
+    font-weight: var(--weight-title);
+    /* d3-allow: the same tight tracking the display headline uses, at the form's heading size */
+    letter-spacing: -0.015em;
+  }
+
+  .shp-entry__title:focus {
+    outline: none;
+  }
+
+  .shp-entry__lede {
+    margin: var(--space-6) 0 0;
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+    color: var(--color-fg-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .shp-entry__lede strong {
+    font-weight: var(--weight-medium);
+    color: var(--color-fg);
+  }
+
+  /* The form column's own vertical rhythm: kit components carry no margin. */
+  .shp-entry__body {
+    display: grid;
+    gap: var(--space-20);
+  }
+
+  .shp-entry__notes {
+    display: grid;
+    gap: var(--space-8);
+    margin-top: var(--space-24);
+    padding-top: var(--space-20);
+    border-top: var(--border-width) solid var(--color-border);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+    color: var(--color-fg-muted);
+    text-wrap: pretty;
+  }
+
+  .shp-entry__notes > p {
+    margin: 0;
+  }
+
+  .shp-entry__notes--row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-8) var(--space-16);
+  }
+
+  /* The theme choice: the sign-in pages have no app shell (SHP-REQ-055), so it sits under the form,
+   * where it is reachable at every width. */
+  .shp-entry__theme {
+    display: flex;
+    margin-top: var(--space-32);
+  }
+
+  /* A text button, underlined: a way round on a sign-in page is the least findable thing on it when
+   * it is styled as a caption. Resets the button's own chrome. */
+  .shp-entry-link {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-weight: var(--weight-medium);
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+
+  .shp-entry-link:hover {
+    color: var(--color-accent-hover);
+  }
+
+  .shp-entry-link--quiet {
+    color: var(--color-fg-muted);
+  }
+
+  .shp-entry-link--quiet:hover {
+    color: var(--color-fg);
+  }
+
+  .shp-entry-link:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .shp-entry-link:focus-visible {
+    outline: var(--focus-width) solid var(--color-focus);
+    outline-offset: var(--focus-offset);
+    border-radius: var(--radius-xs);
+  }
+
+  /* --- Sign in with D3 Auth -------------------------------------------------------------------- */
+
+  .shp-entry-sso-group {
+    display: grid;
+    gap: var(--space-12);
+  }
+
+  .shp-entry-or {
+    display: flex;
+    align-items: center;
+    gap: var(--space-12);
+    font-size: var(--text-12);
+    line-height: var(--leading-12);
+    color: var(--color-fg-faint);
+  }
+
+  .shp-entry-or > span {
+    flex: 1;
+    height: var(--border-width);
+    background: var(--color-border);
+  }
+
+  /* Secondary to the password form above it: an option the operator switched on, not the way in. */
+  .shp-entry-sso {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-8);
+    min-height: 40px;
+    margin: 0;
+    padding: var(--space-8) var(--space-16);
+    border: var(--border-width) solid var(--color-border-field);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-raised);
+    color: var(--color-fg);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+    font-weight: var(--weight-medium);
+    text-align: center;
+    text-decoration: none;
+    transition: background-color var(--motion-hover), border-color var(--motion-hover);
+  }
+
+  .shp-entry-sso:hover {
+    background: var(--color-surface-hover);
+  }
+
+  .shp-entry-sso:focus-visible {
+    outline: var(--focus-width) solid var(--color-focus);
+    outline-offset: var(--focus-offset);
+  }
+
+  .shp-entry-sso__glyph {
+    flex: none;
+  }
+
+  /* A finger needs 44px; the console is phone-first. */
+  @media (pointer: coarse) {
+    .shp-entry-sso,
+    .shp-entry-link {
+      min-height: 44px;
+    }
+  }
+
+  /* --- from lg up: the split ------------------------------------------------------------------- */
+
+  @media (min-width: 64rem) {
+    .shp-entry {
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+    }
+
+    /* 48px at the sides rather than Postroom's 64 until the window is wide: at 1024px that is what
+     * keeps each half of the headline on one line. */
+    .shp-entry__story {
+      display: flex;
+      flex-direction: column;
+      padding: var(--space-48);
+      border-right: var(--border-width) solid var(--color-border);
+      background: var(--color-bg-sunken);
+    }
+
+    .shp-entry__main {
+      align-items: center;
+      padding: var(--space-48) var(--space-32);
+    }
+
+    .shp-entry__brand--compact {
+      display: none;
+    }
+  }
+
+  @media (min-width: 80rem) {
+    .shp-entry__story {
+      padding: var(--space-48) var(--space-64);
+    }
+  }
+
+  /* --- the illustration ------------------------------------------------------------------------ */
+
+  .shp-entry-art__spine {
+    stroke: var(--color-border-field);
+    stroke-width: 1.4;
+  }
+
+  .shp-entry-art__node {
+    fill: var(--color-surface);
+    stroke: var(--color-success);
+    stroke-width: 1.6;
+  }
+
+  .shp-entry-art__node--lit {
+    fill: var(--color-accent-muted);
+    stroke: var(--color-accent);
+    stroke-width: 1.8;
+  }
+
+  .shp-entry-art__tick {
+    stroke: var(--color-success);
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .shp-entry-art__pulse {
+    fill: var(--color-accent);
+  }
+
+  .shp-entry-art__label {
+    fill: var(--color-fg-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-13);
+  }
+
+  .shp-entry-art__label--faint {
+    fill: var(--color-fg-faint);
+  }
+
+  .shp-entry-art__arc {
+    stroke: var(--color-fg-faint);
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-dasharray: 0.5 6;
+  }
+
+  .shp-entry-art__head {
+    stroke: var(--color-fg-faint);
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* The arrival, once: the steps light in order, then the way back appears. Backwards fill only, so
+   * nothing keeps a transform afterwards. */
+  .shp-entry-art__step {
+    transform-box: fill-box;
+    transform-origin: 0 50%;
+    animation: shp-entry-step var(--dur-4) var(--ease-spring) backwards;
+    animation-delay: calc(var(--shp-entry-i, 0) * 110ms + 120ms);
+  }
+
+  @keyframes shp-entry-step {
+    from {
+      opacity: 0;
+      transform: translateX(-8px);
+    }
+  }
+
+  .shp-entry-art__back {
+    animation: shp-entry-back var(--dur-5) var(--ease-out) 900ms backwards;
+  }
+
+  @keyframes shp-entry-back {
+    from {
+      opacity: 0;
+    }
+  }
+
+  /* Already played on this page load: arrive settled. */
+  .shp-entry__story[data-settled] .shp-entry-art__step,
+  .shp-entry__story[data-settled] .shp-entry-art__back {
+    animation: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .shp-entry-art__step,
+    .shp-entry-art__back {
+      animation: none;
+    }
+  }
+}

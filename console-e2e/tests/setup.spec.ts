@@ -99,7 +99,7 @@ test.describe('first-run setup', () => {
     try {
       const fresh = await context.newPage();
       await fresh.goto('/setup');
-      await expect(h1(fresh, 'Sign in to Shipyard')).toBeVisible();
+      await expect(h1(fresh, 'Sign in')).toBeVisible();
       // Setup's code was never seen by sign-in's replay guard, so the current step is fine here.
       await signIn(fresh, { ...FIRST, totpSecret: secret });
     } finally {

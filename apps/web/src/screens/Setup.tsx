@@ -1,18 +1,6 @@
-import {
-  Alert,
-  AuthLayout,
-  Button,
-  Card,
-  CodeInput,
-  FormActions,
-  FormField,
-  Input,
-  Link,
-  PasswordInput,
-  Stack,
-  ThemeSwitch,
-} from '@d3cloud/ui';
+import { Alert, Button, CodeInput, FormActions, FormField, Input, Link, PasswordInput, Stack } from '@d3cloud/ui';
 import { useRef, useState, type SyntheticEvent } from 'react';
+import { EntryHeading, EntryShell } from '../entry/EntryShell';
 import { RefusalError, setup, unreachableRefusal } from '../lib/api';
 
 /**
@@ -20,6 +8,7 @@ import { RefusalError, setup, unreachableRefusal } from '../lib/api';
  * all: the first visitor chooses an email, a display name and a password, adds the authenticator
  * the server generated, and confirms one code. That creates the first admin and signs them in.
  * Nothing is written until the code is confirmed, so leaving half-way leaves the server as it was.
+ * SHP-T-9.2: in the family's split entry shell, wide.
  */
 
 const MIN_PASSWORD = 12;
@@ -53,7 +42,6 @@ export function Setup({ onSignedIn, onClosed }: SetupProps) {
   // A ref as well as state: onComplete and the submit button can both fire in one tick.
   const inFlight = useRef(false);
 
-  const footer = <ThemeSwitch label="Theme" size="sm" />;
   const refusalAlert =
     refusal === null ? null : (
       <Alert tone="danger" title={refusal.message} dynamic>
@@ -70,24 +58,26 @@ export function Setup({ onSignedIn, onClosed }: SetupProps) {
 
   if (step.kind === 'closed') {
     return (
-      <AuthLayout title="Set up Shipyard" footer={footer}>
-        <Card>
-          <Stack gap="16">
-            <Alert tone="warning" title={step.refusal.message}>
-              {step.refusal.fix}
-            </Alert>
+      <EntryShell wide>
+        <EntryHeading title="Set up Shipyard" />
+        <div className="shp-entry__body">
+          <Alert tone="warning" title={step.refusal.message}>
+            {step.refusal.fix}
+          </Alert>
+          <FormActions layout="stack">
             <Button
               type="button"
               variant="primary"
+              size="lg"
               onClick={() => {
                 void onClosed();
               }}
             >
               Go to sign-in
             </Button>
-          </Stack>
-        </Card>
-      </AuthLayout>
+          </FormActions>
+        </div>
+      </EntryShell>
     );
   }
 
@@ -116,13 +106,13 @@ export function Setup({ onSignedIn, onClosed }: SetupProps) {
         });
     };
     return (
-      <AuthLayout
-        title="Add your authenticator"
-        description="Signing in to Shipyard needs a code from an authenticator app. Add this account to yours, then enter the code it shows."
-        focusOnMount={false}
-        footer={footer}
-      >
-        <Card>
+      <EntryShell wide>
+        <EntryHeading title="Add your authenticator" focusOnMount={false}>
+          Signing in to Shipyard needs a code from an authenticator app. Add this account to yours, then enter the code it
+          shows.
+        </EntryHeading>
+        <div className="shp-entry__body">
+          {refusalAlert}
           <Stack
             as="form"
             gap="16"
@@ -132,7 +122,6 @@ export function Setup({ onSignedIn, onClosed }: SetupProps) {
               submitCode(code);
             }}
           >
-            {refusalAlert}
             <FormField label="On this phone" help="Opens your authenticator app with the account filled in.">
               <Link href={step.otpauthUri} variant="standalone">
                 Add to authenticator
@@ -156,13 +145,13 @@ export function Setup({ onSignedIn, onClosed }: SetupProps) {
               />
             </FormField>
             <FormActions layout="stack">
-              <Button type="submit" variant="primary" loading={busy} disabled={code.length !== 6}>
+              <Button type="submit" variant="primary" size="lg" loading={busy} disabled={code.length !== 6}>
                 Create account and sign in
               </Button>
             </FormActions>
           </Stack>
-        </Card>
-      </AuthLayout>
+        </div>
+      </EntryShell>
     );
   }
 
@@ -189,17 +178,16 @@ export function Setup({ onSignedIn, onClosed }: SetupProps) {
   };
 
   return (
-    <AuthLayout
-      title="Set up Shipyard"
-      description="Create the first account. It is an admin, and it signs in with a password and an authenticator code."
-      footer={footer}
-    >
-      <Card>
-        <Stack as="form" gap="16" noValidate onSubmit={submitDetails}>
-          <Alert tone="info" title="This server has no account yet">
-            Until this form is finished, anyone who can reach this address can create the first account. Finish it now.
-          </Alert>
-          {refusalAlert}
+    <EntryShell wide>
+      <EntryHeading title="Set up Shipyard">
+        Create the first account. It is an admin, and it signs in with a password and an authenticator code.
+      </EntryHeading>
+      <div className="shp-entry__body">
+        <Alert tone="info" title="This server has no account yet">
+          Until this form is finished, anyone who can reach this address can create the first account. Finish it now.
+        </Alert>
+        {refusalAlert}
+        <Stack as="form" gap="16" noValidate onSubmit={submitDetails} aria-label="Create the first account">
           <FormField label="Email" {...(tried && email.trim() === '' ? { error: 'Enter your email.' } : {})}>
             <Input
               name="email"
@@ -253,12 +241,12 @@ export function Setup({ onSignedIn, onClosed }: SetupProps) {
             />
           </FormField>
           <FormActions layout="stack">
-            <Button type="submit" variant="primary" loading={busy}>
+            <Button type="submit" variant="primary" size="lg" loading={busy}>
               Continue
             </Button>
           </FormActions>
         </Stack>
-      </Card>
-    </AuthLayout>
+      </div>
+    </EntryShell>
   );
 }

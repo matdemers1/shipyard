@@ -59,7 +59,7 @@ describe('first-run setup', () => {
       'GET /api/auth/methods': { status: 200, body: { password: true, d3auth: false } },
     });
     renderAt('/setup');
-    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in to Shipyard' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/signin');
   });
 
@@ -142,7 +142,7 @@ describe('first-run setup', () => {
     await user.type(await screen.findByLabelText('Authenticator code'), '123456');
     expect(await screen.findByText('Shipyard already has an account; sign in.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Go to sign-in' }));
-    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in to Shipyard' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Sign in' })).toBeInTheDocument();
   });
 
   it('labels every setup input', async () => {

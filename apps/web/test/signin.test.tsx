@@ -144,7 +144,7 @@ describe('sign-in', () => {
     renderAt('/');
     await screen.findByLabelText('Email');
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Sign in with D3 Auth' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Sign in with D3 Auth' })).not.toBeInTheDocument();
     });
   });
 
@@ -154,7 +154,7 @@ describe('sign-in', () => {
       'GET /api/auth/methods': { status: 200, body: { password: true, d3auth: true } },
     });
     renderAt('/');
-    expect(await screen.findByRole('button', { name: 'Sign in with D3 Auth' })).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Sign in with D3 Auth' })).toBeInTheDocument();
   });
 
   it('keeps the password form working when the methods call fails', async () => {
@@ -169,7 +169,47 @@ describe('sign-in', () => {
     await fillPassword(user);
     await user.type(await screen.findByLabelText('Authenticator code'), '123456');
     expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Sign in with D3 Auth' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sign in with D3 Auth' })).not.toBeInTheDocument();
+  });
+
+  it('opens in the entry shell: one h1, the story beside it, D3 Auth below the form, the theme choice', async () => {
+    mockFetch({
+      'GET /api/auth/me': NOT_SIGNED_IN,
+      'GET /api/auth/methods': { status: 200, body: { password: true, d3auth: true } },
+    });
+    const { container } = renderAt('/');
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Sign in' });
+    expect(container.querySelectorAll('h1')).toHaveLength(1);
+    expect(h1).toHaveFocus();
+    expect(screen.getByText("Deploys for this host's compose stacks.")).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: 'About Shipyard' })).toBeInTheDocument();
+    const form = screen.getByRole('form', { name: 'Sign in with your password' });
+    const d3auth = await screen.findByRole('link', { name: 'Sign in with D3 Auth' });
+    expect(d3auth).toHaveAttribute('href', '/api/auth/oidc/start');
+    // After the password form in document order, not above it.
+    expect(form.compareDocumentPosition(d3auth) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText('New here? Accounts are by invitation — open the link you were sent.')).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup', { name: 'Theme' })).toBeInTheDocument();
+  });
+
+  it('names the account on the code step and offers the way back', async () => {
+    mockFetch({
+      'GET /api/auth/me': NOT_SIGNED_IN,
+      'GET /api/auth/methods': { status: 200, body: { password: true, d3auth: true } },
+      'POST /api/auth/login': { status: 200, body: { next: 'totp' } },
+    });
+    const user = userEvent.setup();
+    renderAt('/');
+    await fillPassword(user);
+    await screen.findByLabelText('Authenticator code');
+    expect(screen.getByRole('heading', { level: 1, name: 'Sign in' })).toBeInTheDocument();
+    expect(screen.getByText('matt@example.com', { selector: 'strong' }).closest('p')).toHaveTextContent(
+      'One more step for matt@example.com: the code from your authenticator app.',
+    );
+    // The other way in is a detour once the password half is done.
+    expect(screen.queryByRole('link', { name: 'Sign in with D3 Auth' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Use a different account' }));
+    expect(await screen.findByLabelText('Email')).toHaveValue('matt@example.com');
   });
 
   it('labels every sign-in input', async () => {

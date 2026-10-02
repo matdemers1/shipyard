@@ -1,8 +1,6 @@
 import {
   Alert,
-  AuthLayout,
   Button,
-  Card,
   CodeInput,
   DescriptionItem,
   DescriptionList,
@@ -13,10 +11,10 @@ import {
   PasswordInput,
   Spinner,
   Stack,
-  ThemeSwitch,
 } from '@d3cloud/ui';
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { useParams } from 'react-router-dom';
+import { EntryHeading, EntryShell } from '../entry/EntryShell';
 import { invites as inviteApi, type InvitePreview } from '../lib/admin';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 
@@ -25,6 +23,7 @@ import { RefusalError, unreachableRefusal } from '../lib/api';
  * email and role; the invitee chooses a display name and a password, adds the authenticator the
  * server generated, and confirms one code — only then does the account exist for sign-in and the
  * invite count as used. Leaving before the code and coming back starts the step again.
+ * SHP-T-9.2: in the family's split entry shell, wide.
  */
 
 const MIN_PASSWORD = 12;
@@ -85,40 +84,40 @@ export function AcceptInvite() {
         {refusal.fix}
       </Alert>
     );
-  const footer = <ThemeSwitch label="Theme" size="sm" />;
 
   if (step.kind === 'loading') {
     return (
-      <div className="shp-center">
+      <EntryShell wide>
+        <EntryHeading title="Join Shipyard" focusOnMount={false} />
         <Spinner size="lg" label="Loading the invite" />
-      </div>
+      </EntryShell>
     );
   }
 
   if (step.kind === 'invalid') {
     return (
-      <AuthLayout title="Join Shipyard" footer={footer}>
+      <EntryShell wide>
+        <EntryHeading title="Join Shipyard" />
         <Alert tone="danger" title={step.refusal.message}>
           {step.refusal.fix}
         </Alert>
-      </AuthLayout>
+      </EntryShell>
     );
   }
 
   if (step.kind === 'done') {
     return (
-      <AuthLayout title="Account ready, sign in" description={`${step.invite.email} can now sign in.`} footer={footer}>
-        <Card>
-          <Stack gap="16">
-            <Alert tone="success" title="Account ready">
-              Sign in with your email, your password and a code from your authenticator.
-            </Alert>
-            <Link href="/signin" variant="standalone">
-              Sign in
-            </Link>
-          </Stack>
-        </Card>
-      </AuthLayout>
+      <EntryShell wide>
+        <EntryHeading title="Account ready, sign in">{step.invite.email} can now sign in.</EntryHeading>
+        <div className="shp-entry__body">
+          <Alert tone="success" title="Account ready">
+            Sign in with your email, your password and a code from your authenticator.
+          </Alert>
+          <Link href="/signin" variant="standalone">
+            Sign in
+          </Link>
+        </div>
+      </EntryShell>
     );
   }
 
@@ -144,13 +143,12 @@ export function AcceptInvite() {
         });
     };
     return (
-      <AuthLayout
-        title="Add your authenticator"
-        description="Sign-in needs a code from an authenticator app. Add this account to yours, then enter the code it shows."
-        focusOnMount={false}
-        footer={footer}
-      >
-        <Card>
+      <EntryShell wide>
+        <EntryHeading title="Add your authenticator" focusOnMount={false}>
+          Sign-in needs a code from an authenticator app. Add this account to yours, then enter the code it shows.
+        </EntryHeading>
+        <div className="shp-entry__body">
+          {refusalAlert}
           <Stack
             as="form"
             gap="16"
@@ -160,14 +158,13 @@ export function AcceptInvite() {
               submitCode(code);
             }}
           >
-            {refusalAlert}
             <FormField label="On this phone" help="Opens your authenticator app with the account filled in.">
               <Link href={step.otpauthUri} variant="standalone">
                 Add to authenticator
               </Link>
             </FormField>
             <FormField label="Or type this setup key" help="Time-based, six digits, every 30 seconds.">
-              <code style={{ overflowWrap: 'anywhere', wordBreak: 'break-all' }}>{step.secret}</code>
+              <code className="shp-secret">{step.secret}</code>
             </FormField>
             <FormField label="Authenticator code" help="Six digits from your authenticator app.">
               <CodeInput
@@ -182,13 +179,13 @@ export function AcceptInvite() {
               />
             </FormField>
             <FormActions layout="stack">
-              <Button type="submit" variant="primary" loading={busy} disabled={code.length !== 6}>
+              <Button type="submit" variant="primary" size="lg" loading={busy} disabled={code.length !== 6}>
                 Confirm and finish
               </Button>
             </FormActions>
           </Stack>
-        </Card>
-      </AuthLayout>
+        </div>
+      </EntryShell>
     );
   }
 
@@ -214,10 +211,11 @@ export function AcceptInvite() {
   };
 
   return (
-    <AuthLayout title="Join Shipyard" description="You have been invited to this server." footer={footer}>
-      <Card>
-        <Stack as="form" gap="16" noValidate onSubmit={submitDetails}>
-          {refusalAlert}
+    <EntryShell wide>
+      <EntryHeading title="Join Shipyard">You have been invited to this server.</EntryHeading>
+      <div className="shp-entry__body">
+        {refusalAlert}
+        <Stack as="form" gap="16" noValidate onSubmit={submitDetails} aria-label="Accept the invitation">
           <DescriptionList>
             <DescriptionItem term="Email">{invite.email}</DescriptionItem>
             <DescriptionItem term="Role">{invite.role}</DescriptionItem>
@@ -246,6 +244,7 @@ export function AcceptInvite() {
             <Button
               type="submit"
               variant="primary"
+              size="lg"
               loading={busy}
               disabled={displayName.trim() === '' || password.length < MIN_PASSWORD}
             >
@@ -253,7 +252,7 @@ export function AcceptInvite() {
             </Button>
           </FormActions>
         </Stack>
-      </Card>
-    </AuthLayout>
+      </div>
+    </EntryShell>
   );
 }

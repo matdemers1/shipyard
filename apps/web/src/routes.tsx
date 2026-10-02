@@ -1,7 +1,8 @@
-import { Button, EmptyState, Page, Spinner } from '@d3cloud/ui';
+import { Button, EmptyState, FormActions, Page, Spinner } from '@d3cloud/ui';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Shell } from './components/Shell';
+import { EntryHeading, EntryShell } from './entry/EntryShell';
 import { useAuth, useCan, useIsAdmin } from './lib/auth';
 import { AcceptInvite } from './screens/AcceptInvite';
 import { Account } from './screens/Account';
@@ -111,37 +112,36 @@ function SetupRoute() {
 export function AppRoutes() {
   const { state, refresh } = useAuth();
 
+  // Before anyone is known to be signed in, the console is the front door (SHP-T-9.2): the loading
+  // and not-answering states sit in the same entry shell as Sign in, so the page does not jump.
   if (state.status === 'loading') {
     return (
-      <div className="shp-center">
+      <EntryShell>
+        <EntryHeading title="Shipyard" focusOnMount={false} />
         <Spinner size="lg" label="Loading Shipyard" />
-      </div>
+      </EntryShell>
     );
   }
 
   if (state.status === 'unreachable') {
     return (
-      <Page as="main" align="center" width="form">
-        <div className="shp-center">
-          <EmptyState
-            kind="error"
-            heading={state.error.message}
-            headingLevel={2}
-            action={
-              <Button
-                type="button"
-                onClick={() => {
-                  void refresh();
-                }}
-              >
-                Try again
-              </Button>
-            }
-          >
-            {state.error.fix}
-          </EmptyState>
+      <EntryShell>
+        <EntryHeading title={state.error.message}>{state.error.fix}</EntryHeading>
+        <div className="shp-entry__body">
+          <FormActions layout="stack">
+            <Button
+              type="button"
+              variant="primary"
+              size="lg"
+              onClick={() => {
+                void refresh();
+              }}
+            >
+              Try again
+            </Button>
+          </FormActions>
         </div>
-      </Page>
+      </EntryShell>
     );
   }
 

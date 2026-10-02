@@ -10,9 +10,10 @@ import {
   ThemeSwitch,
   useTheme,
 } from '@d3cloud/ui';
-import { Moon, Ship, Sun } from 'lucide-react';
+import { Moon, Sun } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { ShipyardMark } from '../brand/ShipyardMark';
 import { useAuth, useCan, useMe } from '../lib/auth';
 import { NAV_ITEMS } from '../nav';
 import { system } from '../lib/system';
@@ -90,7 +91,7 @@ export function Shell({ children }: { children?: ReactNode }) {
       storageKey="shipyard.nav"
       mainId="main"
       brand={
-        <AppShellBrand asChild name="Shipyard" mark={<Ship aria-hidden />}>
+        <AppShellBrand asChild name="Shipyard" mark={<ShipyardMark decorative className="shp-brand-mark" />}>
           <RouterLink to="/" />
         </AppShellBrand>
       }

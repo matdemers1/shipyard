@@ -35,23 +35,16 @@
     border: 0;
   }
 
-  /* The theme toggle on the sign-in page, which has no shell. */
-  .shp-auth-corner {
-    display: flex;
-    justify-content: flex-end;
-    padding: var(--space-8) var(--page-pad) 0;
-  }
-
   /* A setup key shown to copy: wraps anywhere rather than widening a 375 px page. */
   .shp-secret {
     overflow-wrap: anywhere;
     word-break: break-all;
   }
 
-  .shp-center {
-    display: flex;
-    justify-content: center;
-    padding: var(--space-48) var(--page-pad);
+  /* The family mark in the shell's brand (SHP-T-9.1). The brand slot colours its mark with the
+     accent; the mark's ink follows the text instead, so its lit star stays its only colour. */
+  .shp-brand-mark {
+    color: var(--color-fg);
   }
 
   /* An app's status (SHP-T-3.10): a dot, a headline and why. The dot repeats what the words say;

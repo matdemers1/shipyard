@@ -41,13 +41,13 @@ async function expectSignInOffersD3Auth(browser: Browser, offered: boolean): Pro
     await page.goto('/signin');
     const body = (await (await methods).json()) as { password: boolean; d3auth: boolean };
     expect(body).toEqual({ password: true, d3auth: offered });
-    await h1(page, 'Sign in to Shipyard');
+    await h1(page, 'Sign in');
     await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
-    const button = page.getByRole('button', { name: 'Sign in with D3 Auth' });
-    if (offered) await expect(button).toBeVisible();
+    const link = page.getByRole('link', { name: 'Sign in with D3 Auth' });
+    if (offered) await expect(link).toBeVisible();
     else {
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
-      await expect(button).toHaveCount(0);
+      await expect(link).toHaveCount(0);
     }
   } finally {
     await context.close();

@@ -133,12 +133,12 @@ test.describe('S1 sign in', () => {
   test('S1 error: D3 Auth unreachable, the app-native form is still offered', async ({ page }) => {
     await page.route(isPath('/api/auth/methods'), (route) => route.abort('connectionrefused'));
     await page.goto('/signin');
-    await h1(page, 'Sign in to Shipyard');
+    await h1(page, 'Sign in');
     await expect(page.getByRole('textbox', { name: 'Email' })).toBeVisible();
     await expect(page.getByLabel('Password', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Continue' })).toBeEnabled();
     // Nothing offered that would lead to a refusal.
-    await expect(page.getByRole('button', { name: 'Sign in with D3 Auth' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Sign in with D3 Auth' })).toHaveCount(0);
   });
 });
 

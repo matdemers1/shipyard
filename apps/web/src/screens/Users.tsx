@@ -157,7 +157,9 @@ function InviteForm({ onCreated }: { onCreated: (i: InviteCreated) => void }) {
 
 function userDescription(u: UserSummary): string {
   const ways = [u.totpEnrolled ? 'password + TOTP' : 'no authenticator', ...(u.d3authLinked ? ['D3 Auth linked'] : [])];
-  return `${u.email} · ${ways.join(' · ')} · joined ${shortDate(u.createdAt)}`;
+  // Disabled because they asked to delete their account: when it goes, and how to undo it.
+  const deleting = u.deleteAfter ? ` · deleting on ${shortDate(u.deleteAfter)} — Enable cancels it` : '';
+  return `${u.email} · ${ways.join(' · ')} · joined ${shortDate(u.createdAt)}${deleting}`;
 }
 
 export function Users() {
@@ -266,7 +268,7 @@ export function Users() {
                     meta={
                       <Cluster gap="4">
                         <Badge tone="neutral">{u.role}</Badge>
-                        {u.disabled ? <Badge tone="danger">Disabled</Badge> : null}
+                        {u.disabled ? <Badge tone="danger">{u.deleteAfter ? 'Deleting' : 'Disabled'}</Badge> : null}
                       </Cluster>
                     }
                     actions={

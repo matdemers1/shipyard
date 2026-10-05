@@ -111,6 +111,8 @@ export interface UserSummary {
   totpEnrolled: boolean;
   d3authLinked: boolean;
   createdAt: string;
+  /** Set when the user deleted their account from D3 Constellation; Enable cancels it (SHP-ADR-004). */
+  deleteAfter?: string | null;
 }
 
 export type InviteRole = 'deployer' | 'viewer';

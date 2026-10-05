@@ -19,6 +19,8 @@ export const Config = z
     PORT: z.preprocess(blankAsUnset, z.coerce.number().int().positive().default(3300)),
     PUBLIC_URL: optionalString,
     SESSION_SECRET: optionalString,
+    /** Accept a loopback http push relay — CI's mock relay only; production relays are https (SHP-T-11.4). */
+    RELAY_ALLOW_LOOPBACK_HTTP: optionalString,
     LOG_LEVEL: z.string().min(1).default('info'),
     SHIPYARD_VERSION: z.string().min(1).default('dev'),
     // Sign in with D3 Auth (SHP-REQ-001). All optional: blank means app-native login only.

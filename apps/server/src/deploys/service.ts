@@ -13,6 +13,7 @@ import type { Actor, AuditEventInput } from '../audit.js';
 import { assertCanActOn, type Role } from '../auth/scope.js';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
+import { notifyAwaitingApproval } from '../push/notify.js';
 import { assertDeployable } from '../apps/drift.js';
 import { assertNotFrozen } from '../freeze/service.js';
 import { createGroupDeploy, readGroupMeta } from '../groups/service.js';
@@ -251,6 +252,10 @@ export async function createDeploy(
   if (held) {
     // Nothing for the agent yet; wake anyone already following the deploy (and the home banner).
     bus.publish(`deploy:${deployId}`);
+    // And the phones of whoever may approve it (SHP-T-11.5) — after the answer, never instead of it.
+    void notifyAwaitingApproval(deps, { deployId, app: appName, sha }).catch((error: unknown) => {
+      deps.logger.warn({ err: error instanceof Error ? error.message : String(error), deployId }, 'approval push failed');
+    });
   } else {
     bus.publish('work');
   }

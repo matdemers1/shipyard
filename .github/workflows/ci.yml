@@ -140,7 +140,7 @@ jobs:
           docker run --rm --network host -v "$PWD:/out" ghcr.io/matdemers1/d3-app-conformance:contract-1 \
             --base "$(jq -r .base "$ARGS")" --allow-http --product shipyard \
             --email "$(jq -r .email "$ARGS")" --password "$(jq -r .password "$ARGS")" \
-            --totp-secret "$(jq -r .totpSecret "$ARGS")" --destructive --junit /out/conformance.xml
+            --totp-secret "$(jq -r .totpSecret "$ARGS")" --destructive --relay-listen 18555 --junit /out/conformance.xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always() && env.D3_CONTRACT_TOKEN != ''
         with:

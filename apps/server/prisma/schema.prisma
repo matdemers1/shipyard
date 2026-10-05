@@ -88,6 +88,7 @@ model User {
 
   identities       Identity[]
   sessions         Session[]
+  relayRegistrations RelayRegistration[]
   apiTokens        ApiToken[]
   confirmedAgents  Agent[]      @relation("AgentConfirmedByUser")
   driftResolutions DriftEvent[] @relation("DriftResolvedBy")
@@ -112,6 +113,7 @@ model Identity {
   lastUsedAt  DateTime? @map("last_used_at") @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id])
+  relayRegistrations RelayRegistration[]
 
   // Identities are linked by (iss, sub), never by email.
   @@unique([issuer, subject])
@@ -140,6 +142,7 @@ model Session {
 
   user      User            @relation(fields: [userId], references: [id])
   refreshes NativeRefresh[]
+  relayRegistrations RelayRegistration[]
 
   @@map("session")
 }
@@ -626,4 +629,31 @@ model BuildLog {
 
   @@index([buildId, id])
   @@map("build_log")
+}
+
+/// A device's push registration (SHP-T-11.4, the D3 App contract's push): the relay to post to and
+/// the device key every notification is sealed to. Shipyard never holds an APNs token. It belongs to
+/// what signed the device in — a native session, or for a D3 Auth token the identity — and goes with
+/// it; a 410 from the relay forgets it too.
+model RelayRegistration {
+  id              String   @id @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  sessionId       String?  @unique @map("session_id") @db.Uuid
+  identityId      String?  @map("identity_id") @db.Uuid
+  /// P-256, X9.63 uncompressed, 65 bytes.
+  devicePublicKey Bytes    @map("device_public_key")
+  relayUrl        String   @map("relay_url")
+  registration    String
+  /// The relay's send key, sealed with the settings key: whoever holds it can push to the device.
+  sendKeySealed   String   @map("send_key_sealed")
+  categories      String[]
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session  Session?  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  identity Identity? @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@unique([relayUrl, registration])
+  @@index([userId])
+  @@map("relay_registration")
 }

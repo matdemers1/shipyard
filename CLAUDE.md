@@ -80,6 +80,7 @@ D3 Constellation reaches Shipyard through the D3 App contract (`matdemers1/d3-ap
 - **Approve, deny and rollback from a native session need `POST /api/auth/step-up {code}` from the last ten minutes** (`staleStepUp`); console sessions and API tokens are unchanged, and a token still never approves.
 - Refusals to a native client (non-`shp_` Bearer, `Accept: application/problem+json`, or `/api/auth/native/*`) are problem+json carrying Shipyard's `code`, `gate` and `fix` (`src/errors.ts`).
 - `GET /api/auth/sessions` and `POST /api/auth/sessions/:id/revoke` back Account › Signed in.
+- **Push** (SHP-T-11.4/11.5, `src/push/`): `POST /api/push/native/register` takes the device's P-256 key and its relay registration (send key sealed with the settings key); it belongs to the native session, or for a D3 Auth token to the identity, and a 410 from the relay forgets it. A deploy held for approval pushes `shipyard.approval` to every enabled admin/operator/deployer who registered for it. Only https relays, except `RELAY_ALLOW_LOOPBACK_HTTP=1` for CI's mock relay.
 - CI's `conformance` job runs the suite against `test/conformance-server.ts`; it needs a `D3_CONTRACT_TOKEN` (read:packages) secret while the contract repo is private.
 
 ## Deploying — through Shipyard, never by hand

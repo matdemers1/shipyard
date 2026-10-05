@@ -35,7 +35,7 @@ export function wellKnownRouter(deps: { config: Config; oidc: AuthDeps['oidc'] }
         link: issuer === null ? null : `${base}/api/auth/native/link`,
         inviteAccept: null,
         deleteAccount: null,
-        relayRegister: null,
+        relayRegister: `${base}/api/push/native/register`,
         stepUp: `${base}/api/auth/step-up`,
       },
     });

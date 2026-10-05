@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { refusal, type Refusal } from '@shipyard/schema';
 import { ANONYMOUS_ACTOR, type Actor } from '../audit.js';
 import { generateTotpSecret, hashPassword, requireUser, totpUri, verifyTotp } from '../auth/index.js';
+import { issueNativeSession, type Device } from '../auth/native-sessions.js';
 import { requireRole, STATE_CHANGING_ROLES, type Role } from '../auth/scope.js';
 import { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
@@ -167,6 +168,8 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
   // ── Users ─────────────────────────────────────────────────────────────
   router.get('/users', ...canManage, async (_req, res) => {
     const rows = await db.user.findMany({
+      // A purged account (SHP-T-11.3) is only a name for the audit trail now, not a user.
+      where: { deletedAt: null },
       orderBy: { createdAt: 'asc' },
       include: { _count: { select: { identities: true } } },
     });
@@ -195,7 +198,7 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       return;
     }
     const target = await db.user.findUnique({ where: { id } });
-    if (target === null) {
+    if (target === null || target.deletedAt !== null) {
       sendRefusal(res, NO_SUCH_USER);
       return;
     }
@@ -227,7 +230,8 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       const disabledAt = disabled === undefined ? locked.disabledAt : disabled ? (locked.disabledAt ?? new Date()) : null;
       const updated = await tx.user.update({
         where: { id },
-        data: { ...(role !== undefined ? { role } : {}), disabledAt },
+        // Re-enabling cancels a deletion the person asked for (SHP-ADR-004): the grace period's point.
+        data: { ...(role !== undefined ? { role } : {}), disabledAt, ...(disabledAt === null ? { deleteAfter: null } : {}) },
       });
       // A disabled user's sessions end at once; its tokens stop resolving because the owner is disabled.
       if (disabled === true) await tx.session.deleteMany({ where: { userId: id } });
@@ -420,6 +424,45 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
     return { user, blocked: user.totpEnabledAt !== null } as const;
   }
 
+  /**
+   * The accept step's account write, shared by the console and the app (SHP-T-11.2): a pending
+   * account with a fresh, unconfirmed authenticator. `racing` when a concurrent first accept won.
+   */
+  async function writePendingAccount(
+    invite: InviteRow,
+    existing: Awaited<ReturnType<typeof pendingUserFor>>['user'],
+    displayName: string,
+    password: string,
+  ): Promise<{ user: NonNullable<typeof existing>; totpSecret: string } | 'racing'> {
+    const passwordHash = await hashPassword(password);
+    const totpSecret = generateTotpSecret();
+    const data = { displayName, passwordHash, totpSecret, totpEnabledAt: null, role: invite.role };
+    if (existing !== null) return { user: await db.user.update({ where: { id: existing.id }, data }), totpSecret };
+    try {
+      return { user: await db.user.create({ data: { email: invite.email, ...data } }), totpSecret };
+    } catch (e) {
+      // Two concurrent first-accepts of the same invite: exactly one wins the unique email.
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') return 'racing';
+      throw e;
+    }
+  }
+
+  /** Spends the invite on the account whose first code just proved its authenticator. */
+  async function consumeInvite(invite: InviteRow, userId: string, at: Date): Promise<boolean> {
+    // Conditional updates, so two concurrent confirmations cannot both consume the invite.
+    return db.$transaction(async (tx) => {
+      const claimed = await tx.invite.updateMany({
+        where: { id: invite.id, acceptedAt: null, revokedAt: null },
+        data: { acceptedAt: at },
+      });
+      if (claimed.count !== 1) return false;
+      // The invite this confirm actually consumes decides the role, even if it was restarted
+      // or the account row predates a role change on the invite itself.
+      await tx.user.update({ where: { id: userId }, data: { totpEnabledAt: at, role: invite.role } });
+      return true;
+    });
+  }
+
   router.get('/invites/:token', limited, async (req, res) => {
     const found = await inviteByToken(req);
     if (!('invite' in found)) {
@@ -453,32 +496,19 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       );
       return;
     }
-    const passwordHash = await hashPassword(parsed.data.password);
-    const totpSecret = generateTotpSecret();
-    const data = { displayName: parsed.data.displayName, passwordHash, totpSecret, totpEnabledAt: null, role: invite.role };
-    let user;
-    if (pending.user === null) {
-      try {
-        user = await db.user.create({ data: { email: invite.email, ...data } });
-      } catch (e) {
-        // Two concurrent first-accepts of the same invite: exactly one wins the unique email;
-        // the other is refused rather than surfacing the database's 500.
-        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-          sendRefusal(
-            res,
-            refusal(
-              'conflict',
-              'This invite is already being accepted by another request.',
-              'Wait a moment and check whether it went through, or reload the invite link.',
-            ),
-          );
-          return;
-        }
-        throw e;
-      }
-    } else {
-      user = await db.user.update({ where: { id: pending.user.id }, data });
+    const written = await writePendingAccount(invite, pending.user, parsed.data.displayName, parsed.data.password);
+    if (written === 'racing') {
+      sendRefusal(
+        res,
+        refusal(
+          'conflict',
+          'This invite is already being accepted by another request.',
+          'Wait a moment and check whether it went through, or reload the invite link.',
+        ),
+      );
+      return;
     }
+    const { user, totpSecret } = written;
     const actor: Actor = { type: 'user', id: user.id, label: user.email };
     await req.audit({
       action: pending.user === null ? 'invite.accepted_pending_totp' : 'invite.accept_restarted',
@@ -533,19 +563,7 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       );
       return;
     }
-    const at = new Date(now());
-    // Conditional updates, so two concurrent confirmations cannot both consume the invite.
-    const consumed = await db.$transaction(async (tx) => {
-      const claimed = await tx.invite.updateMany({
-        where: { id: invite.id, acceptedAt: null, revokedAt: null },
-        data: { acceptedAt: at },
-      });
-      if (claimed.count !== 1) return false;
-      // The invite this confirm actually consumes decides the role, even if it was restarted
-      // or the account row predates a role change on the invite itself.
-      await tx.user.update({ where: { id: user.id }, data: { totpEnabledAt: at, role: invite.role } });
-      return true;
-    });
+    const consumed = await consumeInvite(invite, user.id, new Date(now()));
     if (!consumed) {
       sendRefusal(res, INVITE_INVALID);
       return;
@@ -558,6 +576,120 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       actor: { type: 'user', id: user.id, label: user.email },
     });
     res.json({ ok: true, email: user.email });
+  });
+
+  // ── Accepting an invite from D3 Constellation (SHP-T-11.2) ─────────────
+  // The account, then its authenticator, then a native session: the console's own accept and
+  // confirm, in the contract's shape, with the token in the body. The invite is spent only by the
+  // second step, as on the web, so a person who abandons the app halfway can start again.
+  const NativeInvite = z.union([
+    z.object({
+      token: z.string().min(1).max(200),
+      displayName: z.string().trim().min(1).max(100),
+      password: z.string().min(1).max(1024),
+      device: z.object({ name: z.string().trim().min(1).max(120), platform: z.string().trim().min(1).max(40) }).optional(),
+    }),
+    z.object({ challenge: z.string().min(1).max(200), enrolTotp: z.string().min(1).max(16) }),
+  ]);
+  const enrolments = new Map<string, { userId: string; inviteId: string; device: Device | null; expiresAt: number }>();
+  const ENROL_TTL_MS = 15 * 60 * 1000;
+  const problem = (res: Response, status: number, name: string, title: string, extra: Record<string, unknown> = {}): void => {
+    res.status(status).type('application/problem+json').send(JSON.stringify({ type: `https://d3cloud.io/problems/${name}`, title, status, ...extra }));
+  };
+  const inviteInvalid = (res: Response): void => {
+    problem(res, 410, 'invite_invalid', 'This invite can’t be used.', { detail: 'It has been used, revoked or has expired. Ask whoever invited you for a new one.' });
+  };
+
+  router.post('/auth/native/invite', limited, async (req, res) => {
+    const parsed = NativeInvite.safeParse(req.body);
+    if (!parsed.success) {
+      sendRefusal(res, refusal('invalid_request', 'That request is not an invitation.'));
+      return;
+    }
+    const body = parsed.data;
+    const at = now();
+    for (const [key, value] of enrolments) if (value.expiresAt <= at) enrolments.delete(key);
+
+    if ('token' in body) {
+      const invite = INVITE_TOKEN_RE.test(body.token) ? await db.invite.findUnique({ where: { tokenHash: hashInviteToken(body.token) } }) : null;
+      // Unknown, revoked, used and expired are one answer: telling them apart says which guess was real.
+      if (invite === null || invite.revokedAt !== null || invite.acceptedAt !== null || invite.expiresAt.getTime() <= at) {
+        inviteInvalid(res);
+        return;
+      }
+      if (body.password.length < MIN_PASSWORD_LENGTH) {
+        problem(res, 422, 'weak_password', 'Choose a longer password.', { detail: `Use at least ${String(MIN_PASSWORD_LENGTH)} characters.` });
+        return;
+      }
+      const pending = await pendingUserFor(invite);
+      // A real account already holds the address: still "this invite can't be used", never a hint.
+      if (pending.blocked) {
+        inviteInvalid(res);
+        return;
+      }
+      const written = await writePendingAccount(invite, pending.user, body.displayName, body.password);
+      if (written === 'racing') {
+        inviteInvalid(res);
+        return;
+      }
+      const { user, totpSecret } = written;
+      await req.audit({
+        action: pending.user === null ? 'invite.accepted_pending_totp' : 'invite.accept_restarted',
+        entityType: 'invite',
+        entityId: invite.id,
+        after: { userId: user.id, email: user.email, role: user.role, via: 'native' },
+        actor: { type: 'user', id: user.id, label: user.email },
+      });
+      const challenge = randomBytes(32).toString('base64url');
+      enrolments.set(challenge, { userId: user.id, inviteId: invite.id, device: body.device ?? null, expiresAt: at + ENROL_TTL_MS });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ challenge, enrolment: { secret: totpSecret, otpauthUri: totpUri(totpSecret, user.email), digits: 6, period: 30 } });
+      return;
+    }
+
+    const pending = enrolments.get(body.challenge);
+    if (pending === undefined) {
+      problem(res, 401, 'invalid_code', 'This setup has expired.', { detail: 'Open the invite link again to start over.' });
+      return;
+    }
+    const [invite, user] = await Promise.all([
+      db.invite.findUnique({ where: { id: pending.inviteId } }),
+      db.user.findUnique({ where: { id: pending.userId } }),
+    ]);
+    if (invite === null || invite.revokedAt !== null || invite.acceptedAt !== null || invite.expiresAt.getTime() <= at || user === null || user.totpSecret === null) {
+      enrolments.delete(body.challenge);
+      inviteInvalid(res);
+      return;
+    }
+    // A wrong code leaves the challenge valid until it expires; the route's rate limit bounds guessing.
+    if (!verifyTotp(user.totpSecret, body.enrolTotp, at)) {
+      await req.audit({ action: 'invite.totp_failed', entityType: 'invite', entityId: invite.id, after: { userId: user.id, via: 'native' }, actor: ANONYMOUS_ACTOR });
+      problem(res, 401, 'invalid_code', 'That code didn’t work.', { detail: 'Enter the current six-digit code from the authenticator you just added.' });
+      return;
+    }
+    if (!(await consumeInvite(invite, user.id, new Date(at)))) {
+      enrolments.delete(body.challenge);
+      inviteInvalid(res);
+      return;
+    }
+    enrolments.delete(body.challenge);
+    await req.audit({
+      action: 'invite.accepted',
+      entityType: 'user',
+      entityId: user.id,
+      after: { inviteId: invite.id, email: user.email, role: invite.role, invitedById: invite.invitedById, via: 'native' },
+      actor: { type: 'user', id: user.id, label: user.email },
+    });
+    const tokens = await issueNativeSession(db, { userId: user.id, method: 'password', device: pending.device, ip: req.ip, userAgent: req.get('user-agent'), now: new Date(at) });
+    await req.audit({
+      action: 'auth.login.succeeded',
+      entityType: 'session',
+      entityId: tokens.sessionId,
+      after: { method: 'password', userId: user.id, via: 'native', device: pending.device?.name ?? null },
+      actor: { type: 'user', id: user.id, label: user.email },
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresIn: tokens.expiresIn, session: { id: tokens.sessionId } });
   });
 
   // ── Out-of-band changes (SHP-REQ-068, SHP-D-085) ──────────────────────

@@ -15,6 +15,7 @@ import {
   type DeployStep,
   type ForemanStatus,
 } from '../lib/timeline';
+import { OpenInConstellation } from '../components/OpenInConstellation';
 
 /** Deploy record (S6): the request, requester, gates, journal, images and Foreman posts. */
 
@@ -112,11 +113,14 @@ export function DeployRecord() {
         title={`${status.app} · ${shortSha(status.sha)}`}
         description={`${status.kind}${status.dryRun ? ' (dry run)' : ''}`}
         actions={
-          active ? (
-            <Link asChild>
-              <RouterLink to={`/deploys/${status.deployId}/live`}>Live view</RouterLink>
-            </Link>
-          ) : undefined
+          <>
+            <OpenInConstellation path={`app/${status.app}/deploy/${status.deployId}`} />
+            {active ? (
+              <Link asChild>
+                <RouterLink to={`/deploys/${status.deployId}/live`}>Live view</RouterLink>
+              </Link>
+            ) : null}
+          </>
         }
       />
 

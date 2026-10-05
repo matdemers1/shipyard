@@ -29,6 +29,7 @@ import { TotpReplayGuard } from './totp.js';
 import { resolveToken } from '../tokens/tokens.js';
 import { looksLikeProviderToken, materializeD3AuthSession, verifyD3AuthToken } from './d3auth-bearer.js';
 import { STEP_UP_MS, bearerOf, issueNativeSession, liveSessionWhere, rotateNativeSession, type Device, type NativeTokens } from './native-sessions.js';
+import { requestDeletion } from '../users/deletion.js';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -644,7 +645,8 @@ export function authRouter(deps: AuthDeps): Router {
     z.object({ challenge: z.string().min(1).max(200), totp: z.string().min(1).max(16) }),
   ]);
   const problemOf = (name: string, title: string, status: number, extra: Record<string, unknown> = {}) => (res: Response) => {
-    res.status(status).type('application/problem+json').send(JSON.stringify({ type: `https://d3cloud.io/problems/${name}`, title, status, ...extra }));
+    const type = name === 'about:blank' ? name : `https://d3cloud.io/problems/${name}`;
+    res.status(status).type('application/problem+json').send(JSON.stringify({ type, title, status, ...extra }));
   };
   const tokensBody = (t: NativeTokens) => ({ accessToken: t.accessToken, refreshToken: t.refreshToken, expiresIn: t.expiresIn, session: { id: t.sessionId } });
 
@@ -844,6 +846,56 @@ export function authRouter(deps: AuthDeps): Router {
     if (sessionId !== undefined) await db.session.update({ where: { id: sessionId }, data: { stepUpAt: now } });
     await req.audit({ action: 'auth.step_up', entityType: 'session', ...(sessionId !== undefined ? { entityId: sessionId } : {}), after: { native: req.nativeSession !== undefined } });
     res.json({ ok: true, until: new Date(now.getTime() + STEP_UP_MS).toISOString() });
+  });
+
+  /**
+   * Delete your own account from D3 Constellation (SHP-T-11.3, SHP-ADR-004): the host name typed
+   * out and a current code, from a native session or a D3 Auth token — never an API token, which is
+   * not a person, and never the console, which has the members screen. Then a grace period.
+   */
+  router.post('/native/delete-account', async (req, res) => {
+    if (req.nativeSession === undefined || req.actor?.type !== 'user' || req.actor.id === undefined) {
+      problemOf('session_revoked', 'Sign in again to delete this account.', 401)(res);
+      return;
+    }
+    const parsed = z.object({ confirmation: z.string().max(253), totp: z.string().min(1).max(16) }).safeParse(req.body);
+    if (!parsed.success) {
+      sendRefusal(res, refusal('invalid_request', 'That request is not a deletion.'));
+      return;
+    }
+    const host = new URL(publicOrigin(deps.config, req)).hostname;
+    if (parsed.data.confirmation.trim().toLowerCase() !== host.toLowerCase()) {
+      problemOf('about:blank', 'The confirmation doesn’t match.', 422, { detail: `Type ${host} exactly to confirm.` })(res);
+      return;
+    }
+    const user = await db.user.findUnique({ where: { id: req.actor.id } });
+    if (user === null || user.disabledAt !== null) {
+      problemOf('session_revoked', 'Sign in again to delete this account.', 401)(res);
+      return;
+    }
+    if (await nativeThrottled(req, res, user.email)) return;
+    if (user.totpSecret === null || !replay.consume(user.id, user.totpSecret, parsed.data.totp, Date.now())) {
+      recordFailure(req, user.email);
+      await nativeFail(req, res, 'invalid_code', user.id, 'delete-account');
+      return;
+    }
+    const outcome = await requestDeletion(db, user.id);
+    if (outcome.kind === 'last_admin') {
+      problemOf('last_owner', 'You’re the last admin.', 409, { detail: 'Make another user an admin first, then delete this account.' })(res);
+      return;
+    }
+    if (outcome.kind === 'gone') {
+      problemOf('session_revoked', 'This account is already being deleted.', 401)(res);
+      return;
+    }
+    await req.audit({
+      action: 'user.deletion_requested',
+      entityType: 'user',
+      entityId: user.id,
+      after: { deleteAfter: outcome.graceUntil.toISOString(), tokensRevoked: outcome.tokensRevoked, via: 'native' },
+      actor: userActor(user),
+    });
+    res.status(202).json({ graceUntil: outcome.graceUntil.toISOString() });
   });
 
   // ── Sessions (SHP-T-10.4): your own, the phone among them, each one revocable ──

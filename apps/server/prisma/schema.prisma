@@ -83,6 +83,11 @@ model User {
   totpEnabledAt DateTime? @map("totp_enabled_at") @db.Timestamptz(3)
   role          UserRole  @default(operator)
   disabledAt    DateTime? @map("disabled_at") @db.Timestamptz(3)
+  /// The person asked to delete their account (SHP-T-11.3, SHP-ADR-004): disabled until then, and an
+  /// admin re-enabling it cancels it; afterwards the hourly purge removes them.
+  deleteAfter   DateTime? @map("delete_after") @db.Timestamptz(3)
+  /// Purged: no credentials, sessions or address left, only the name the audit trail shows.
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz(3)
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 

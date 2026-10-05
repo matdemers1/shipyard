@@ -39,6 +39,7 @@ import {
   type DriftState,
   type FreezeInfo,
 } from '../lib/appdetail';
+import { OpenInConstellation } from '../components/OpenInConstellation';
 
 /**
  * App detail (S5), `/apps/:app`: what is live and how old it is, the running digests, drift and its
@@ -192,16 +193,18 @@ export function AppDetail() {
               ? 'Never deployed through Shipyard.'
               : `Live ${sha7(detail.liveSha)}, deployed ${age(detail.liveEndedAt)}${detail.repo !== null ? ` from ${detail.repo}` : ''}.`
           }
-          {...(can
-            ? {
-                actions:
-                  activeFreeze !== null ? (
-                    <UnfreezeButton app={detail.name} onCleared={reload} />
-                  ) : (
-                    <FreezeSheet app={detail.name} onFrozen={reload} />
-                  ),
-              }
-            : {})}
+          actions={
+            <>
+              <OpenInConstellation path={`app/${detail.name}`} />
+              {can ? (
+                activeFreeze !== null ? (
+                  <UnfreezeButton app={detail.name} onCleared={reload} />
+                ) : (
+                  <FreezeSheet app={detail.name} onFrozen={reload} />
+                )
+              ) : null}
+            </>
+          }
         />
 
         {activeFreeze !== null ? (

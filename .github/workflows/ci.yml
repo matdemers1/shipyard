@@ -74,6 +74,80 @@ jobs:
         run: pnpm exec prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
       - run: pnpm test:integration
 
+  # The D3 App contract (SHP-T-10.4): the conformance suite D3 Constellation's contract publishes,
+  # against this commit's server on a migrated database with a throwaway admin — manifest, native
+  # sign-in, me, refresh rotation and reuse, revoke, and throttling (destructive, on that account).
+  #
+  # The suite's image is private while matdemers1/d3-app-contract is (the owner's choice), and this
+  # repository's token cannot read another repository's package. D3_CONTRACT_TOKEN — a token with
+  # read:packages — opens it; without that secret the job says so and does nothing, loudly, rather
+  # than pretending to have run.
+  conformance:
+    name: conformance (d3-app-contract)
+    needs: unit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shipyard
+          POSTGRES_PASSWORD: shipyard
+          POSTGRES_DB: shipyard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shipyard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      D3_CONTRACT_TOKEN: ${{ secrets.D3_CONTRACT_TOKEN }}
+      DATABASE_URL: postgresql://shipyard:shipyard@127.0.0.1:5432/shipyard_test
+    steps:
+      - name: Without access to the suite, say so
+        if: env.D3_CONTRACT_TOKEN == ''
+        run: echo "::warning::D3_CONTRACT_TOKEN is not set, so the d3-app-contract suite cannot be pulled and did not run."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: env.D3_CONTRACT_TOKEN != ''
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        if: env.D3_CONTRACT_TOKEN != ''
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: env.D3_CONTRACT_TOKEN != ''
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - if: env.D3_CONTRACT_TOKEN != ''
+        run: pnpm install --frozen-lockfile
+      - name: A migrated test instance with a throwaway admin
+        if: env.D3_CONTRACT_TOKEN != ''
+        working-directory: apps/server
+        run: |
+          pnpm --filter @shipyard/schema --filter @shipyard/sequence build
+          pnpm exec prisma migrate deploy
+          CONFORMANCE_OUT="$RUNNER_TEMP/conformance.json" node --import tsx test/conformance-server.ts > "$RUNNER_TEMP/server.log" 2>&1 &
+          for _ in $(seq 1 60); do [ -s "$RUNNER_TEMP/conformance.json" ] && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/server.log"; exit 1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        if: env.D3_CONTRACT_TOKEN != ''
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ env.D3_CONTRACT_TOKEN }}
+      - name: The d3-app-contract suite
+        if: env.D3_CONTRACT_TOKEN != ''
+        run: |
+          ARGS="$RUNNER_TEMP/conformance.json"
+          docker run --rm --network host -v "$PWD:/out" ghcr.io/matdemers1/d3-app-conformance:contract-1 \
+            --base "$(jq -r .base "$ARGS")" --allow-http --product shipyard \
+            --email "$(jq -r .email "$ARGS")" --password "$(jq -r .password "$ARGS")" \
+            --totp-secret "$(jq -r .totpSecret "$ARGS")" --destructive --junit /out/conformance.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always() && env.D3_CONTRACT_TOKEN != ''
+        with:
+          name: conformance
+          path: conformance.xml
+          if-no-files-found: ignore
+
   e2e:
     needs: integration
     runs-on: ubuntu-latest

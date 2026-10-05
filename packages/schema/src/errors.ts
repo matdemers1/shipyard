@@ -64,6 +64,7 @@ export const ErrorCode = z
     'restore_limited',
     'image_line_invalid',
     'group_stopped',
+    'step_up_required',
   ])
   .meta({ id: 'ErrorCode', description: 'Machine-readable refusal reason' });
 export type ErrorCode = z.infer<typeof ErrorCode>;
@@ -115,6 +116,11 @@ export const CATALOGUE: Record<ErrorCode, CatalogueEntry> = {
   rollback_target_invalid: { gate: 'none', httpStatus: 409, defaultFix: "Choose one of the last five releases in the agent's own ledger." },
   restore_limited: { gate: 'none', httpStatus: 409, defaultFix: "Only backups the agent took may be restored, at most once per app per 24 hours." },
   image_line_invalid: { gate: 'none', httpStatus: 409, defaultFix: "Every mapped service needs exactly one literal image: line for its repository in the compose file." },
+  step_up_required: {
+    gate: 'none',
+    httpStatus: 403,
+    defaultFix: 'Confirm it is you with a code from your authenticator (POST /api/auth/step-up), then retry within ten minutes.',
+  },
   group_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the failed member, then deploy the group again; members after it were not touched.' },
 };
 

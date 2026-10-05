@@ -70,6 +70,18 @@ pnpm e2e                # Docker-in-Docker harness — needs Docker
 Workspace packages: `@shipyard/schema`, `@shipyard/sequence`, `shipyard-server`, `shipyard-agent`,
 `shipyard-cli`, `shipyard-web`, `e2e`.
 
+## The native app contract (SHP-P-10)
+
+D3 Constellation reaches Shipyard through the D3 App contract (`matdemers1/d3-app-contract`, CON-ADR-003).
+
+- `GET /.well-known/d3-app.json` (`src/routes/wellknown.ts`) — endpoints on `PUBLIC_URL`; `d3auth` and `link` only while Sign in with D3 Auth is configured.
+- `/api/auth/native/{signin,refresh,revoke,link}` (in `src/auth/index.ts`, sharing the password sign-in's throttles and TOTP replay guard) and `src/auth/native-sessions.ts`. **A native session is a `session` row** with `native = true` and a device name; its Bearer access token is the row's `token_hash`, fifteen minutes, never slid; refresh rotates through `native_refresh`, and a replayed token ends the session. A cookie only resolves a browser row and a Bearer token only a native one.
+- **`Authorization: Bearer shp_…` is still an API token**; any other Bearer is a native session or a D3 Auth token (`src/auth/d3auth-bearer.ts`: issuer's JWKS, `aud` = this origin, mapped by `(iss, sub)`, materialised as a row keyed by the token's hash and never listed). Unknown → 401, never anonymous.
+- **Approve, deny and rollback from a native session need `POST /api/auth/step-up {code}` from the last ten minutes** (`staleStepUp`); console sessions and API tokens are unchanged, and a token still never approves.
+- Refusals to a native client (non-`shp_` Bearer, `Accept: application/problem+json`, or `/api/auth/native/*`) are problem+json carrying Shipyard's `code`, `gate` and `fix` (`src/errors.ts`).
+- `GET /api/auth/sessions` and `POST /api/auth/sessions/:id/revoke` back Account › Signed in.
+- CI's `conformance` job runs the suite against `test/conformance-server.ts`; it needs a `D3_CONTRACT_TOKEN` (read:packages) secret while the contract repo is private.
+
 ## Deploying — through Shipyard, never by hand
 
 This app is deployed by **Shipyard** (`https://shipyard.d3cloud.io`). Deploy through its MCP server,

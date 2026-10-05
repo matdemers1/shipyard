@@ -21,6 +21,7 @@ import { deployEventsRouter } from './deploys/events.js';
 import { buildEventsRouter, buildsRouter } from './builds/index.js';
 import { usersRouter } from './users/index.js';
 import { healthRouter } from './routes/health.js';
+import { wellKnownRouter } from './routes/wellknown.js';
 import { freezeRouter } from './freeze/index.js';
 import { groupsRouter } from './groups/index.js';
 import { schedulesRouter } from './schedules/index.js';
@@ -105,6 +106,8 @@ export function createApp(deps: AppDeps): Express {
   app.use(authenticate(authDeps));
 
   app.use('/api', healthRouter(db, config.SHIPYARD_VERSION));
+  // The D3 App manifest, unauthenticated, for D3 Constellation (SHP-T-10.1).
+  app.use(wellKnownRouter({ config, oidc }));
 
   // ── Registration section ──────────────────────────────────────────────
   // Feature routers mount here, before the 404 handler below.

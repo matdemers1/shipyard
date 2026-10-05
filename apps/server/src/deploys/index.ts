@@ -2,6 +2,7 @@ import { Router, type Request } from 'express';
 import { AppName, DeployKind, DeployRequest, refusal, type Refusal } from '@shipyard/schema';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
+import { STEP_UP_MS, staleStepUp } from '../auth/native-sessions.js';
 import { MAX_WAIT_SECONDS, appsOf, callerFromRequest, createDeploy, isRefusal, listDeploys, waitForChange } from './service.js';
 import { foremanStatus, isTimelineOutcome, listTimeline } from './timeline.js';
 
@@ -54,6 +55,13 @@ export function deploysRouter(deps: ServiceDeps): Router {
         ),
       );
       return;
+    }
+    if (parsed.data.kind === 'rollback') {
+      const stale = staleStepUp(req);
+      if (stale !== null) {
+        sendRefusal(res, stale, { maxAgeSeconds: STEP_UP_MS / 1000 });
+        return;
+      }
     }
     const result = await createDeploy(deps, callerFromRequest(req), parsed.data);
     if (isRefusal(result)) {

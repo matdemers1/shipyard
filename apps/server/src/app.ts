@@ -15,6 +15,7 @@ import { Bus } from './events.js';
 import { mcpRouter } from './mcp/index.js';
 import { openapiRouter } from './openapi.js';
 import { tokensRouter } from './tokens/index.js';
+import { pushRouter } from './push/routes.js';
 import { approvalsRouter, pendingApprovalsRouter } from './approvals/index.js';
 import { commitsRouter } from './apps/commits.js';
 import { deployEventsRouter } from './deploys/events.js';
@@ -133,6 +134,8 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api', usersRouter(serviceDeps));
   app.use('/api', pendingApprovalsRouter(serviceDeps));
   app.use('/api/tokens', tokensRouter(serviceDeps));
+  // Push registration for D3 Constellation (SHP-T-11.4).
+  app.use('/api/push', pushRouter(serviceDeps));
   // Admin-only: Sign in with D3 Auth (SHP-REQ-110) and alert email (SHP-T-6.9) configured from the console.
   app.use(
     '/api/settings',

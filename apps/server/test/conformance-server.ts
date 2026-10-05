@@ -29,7 +29,7 @@ const email = `conformance-${randomBytes(4).toString('hex')}@example.com`;
 await db.user.create({
   data: { email, displayName: 'Conformance', role: 'admin', passwordHash: await hashPassword(password), totpSecret, totpEnabledAt: new Date() },
 });
-const config = loadConfig({ DATABASE_URL: url, PUBLIC_URL: origin, SESSION_SECRET: randomBytes(32).toString('hex') });
+const config = loadConfig({ DATABASE_URL: url, PUBLIC_URL: origin, SESSION_SECRET: randomBytes(32).toString('hex'), RELAY_ALLOW_LOOPBACK_HTTP: '1' });
 const app = createApp({ db, logger: pino({ enabled: false }), config, oidc: null });
 
 const server = app.listen(port, '127.0.0.1', () => {

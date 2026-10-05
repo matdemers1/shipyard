@@ -1,6 +1,8 @@
 import {
   Badge,
   Button,
+  DataList,
+  DataListRow,
   DescriptionItem,
   DescriptionList,
   FormActions,
@@ -9,9 +11,10 @@ import {
   Section,
   Stack,
 } from '@d3cloud/ui';
-import { LogIn, LogOut } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { OIDC_START_PATH, auth } from '../lib/api';
+import { LogIn, LogOut, Smartphone } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { OIDC_START_PATH, auth, type SignedInSession } from '../lib/api';
+import { relativeTime } from '../lib/admin';
 import { canChangeState, useAuth, useMe } from '../lib/auth';
 
 /**
@@ -91,6 +94,7 @@ export function Account() {
             ) : null}
           </Stack>
         </Section>
+        <SignedIn />
         <Section title="Session">
           <FormActions align="start">
             <Button
@@ -109,5 +113,67 @@ export function Account() {
         </Section>
       </Stack>
     </Page>
+  );
+}
+
+/** A session's name: the phone's own, or the browser's, or what little is known. */
+function sessionTitle(s: SignedInSession): string {
+  if (s.deviceName !== null && s.deviceName !== '') return s.deviceName;
+  if (s.current) return 'This browser';
+  return s.native ? 'D3 Constellation' : 'A browser';
+}
+
+/**
+ * Where you are signed in (SHP-T-10.4): this browser, others, and D3 Constellation on each device
+ * by the name it gave. Ending one signs it out at once — a phone at its next refresh.
+ */
+function SignedIn() {
+  const [sessions, setSessions] = useState<SignedInSession[] | null>(null);
+  const [ending, setEnding] = useState<string | null>(null);
+  const load = useCallback(() => {
+    auth
+      .sessions()
+      .then(setSessions)
+      .catch(() => {
+        setSessions([]);
+      });
+  }, []);
+  useEffect(load, [load]);
+
+  return (
+    <Section title="Signed in" description="Everywhere this account is signed in. End any you don’t recognise.">
+      <DataList aria-label="Signed-in sessions" empty="Only here.">
+        {(sessions ?? []).map((s) => (
+          <DataListRow
+            key={s.id}
+            title={sessionTitle(s)}
+            description={`${s.native ? 'App' : s.method === 'oidc' ? 'D3 Auth' : 'Password'} · signed in ${relativeTime(s.createdAt)}${s.ip === null ? '' : ` · ${s.ip}`}`}
+            meta={s.current ? <Badge tone="neutral">This one</Badge> : s.native ? <Smartphone aria-hidden /> : undefined}
+            actions={
+              s.current ? undefined : (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  loading={ending === s.id}
+                  aria-label={`Sign out ${sessionTitle(s)}`}
+                  onClick={() => {
+                    setEnding(s.id);
+                    void auth
+                      .revokeSession(s.id)
+                      .then(load)
+                      .finally(() => {
+                        setEnding(null);
+                      });
+                  }}
+                >
+                  Sign out
+                </Button>
+              )
+            }
+          />
+        ))}
+      </DataList>
+    </Section>
   );
 }

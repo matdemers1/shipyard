@@ -128,10 +128,35 @@ model Session {
   ip         String?
   userAgent  String?       @map("user_agent")
   method     SessionMethod
+  /// A native app's session (SHP-P-10, the D3 App contract): reached with a Bearer access token —
+  /// this row's token_hash, fifteen minutes, never slid — and renewed through native_refresh.
+  native         Boolean   @default(false)
+  deviceName     String?   @map("device_name")
+  devicePlatform String?   @map("device_platform")
+  /// When this session last re-proved who it is with an authenticator code (SHP-T-10.3).
+  stepUpAt       DateTime? @map("step_up_at") @db.Timestamptz(3)
+  /// A D3 Auth access token's row (SHP-T-10.2): keyed by the token's hash and governed by D3 Auth.
+  d3authIssuer   String?   @map("d3auth_issuer")
 
-  user User @relation(fields: [userId], references: [id])
+  user      User            @relation(fields: [userId], references: [id])
+  refreshes NativeRefresh[]
 
   @@map("session")
+}
+
+/// A native session's refresh tokens. A replaced one presented again is reuse: the session ends.
+model NativeRefresh {
+  id         String    @id @default(uuid()) @db.Uuid
+  sessionId  String    @map("session_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash")
+  createdAt  DateTime  @map("created_at") @db.Timestamptz(3)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  replacedAt DateTime? @map("replaced_at") @db.Timestamptz(3)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("native_refresh")
 }
 
 model ApiToken {

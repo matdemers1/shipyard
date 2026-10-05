@@ -38,6 +38,9 @@ cd "$repo_root"
 # The D3 Auth issuer may instead be one an admin typed into Settings (SHP-REQ-110, stored in the
 # `setting` table): the server fetches only that issuer's discovery document and the endpoints it
 # names — the operator's own sign-in provider, never a host Shipyard chose.
+#   - d3cloud.io                     the D3 App contract's problem type URIs
+#                                     (https://d3cloud.io/problems/<name>, SHP-P-10): RFC 9457 type
+#                                     identifiers in refusals to D3 Constellation — names, never fetched
 #   - *.example.com                  RFC 2606 placeholder used only in doc comments (e.g.
 #                                     apps/agent/src/config.ts's `https://shipyard.example.com`)
 # The bundle-only allowlist below adds hosts that appear in the built console but are never
@@ -48,7 +51,7 @@ cd "$repo_root"
 # copying (docs/claude/deploy-snippet.md, SHP-T-3.12). The page swaps in its own origin before
 # showing it, and nothing ever fetches that host.
 bundle_only_hosts_regex='^(react\.dev|reactrouter\.com|www\.w3\.org|shipyard\.d3cloud\.io)$'
-allowed_hosts_regex='^(api\.github\.com|github\.com|ghcr\.io|pkg-containers\.githubusercontent\.com|localhost|127\.0\.0\.1|[A-Za-z0-9-]+\.example\.com)$'
+allowed_hosts_regex='^(api\.github\.com|github\.com|ghcr\.io|pkg-containers\.githubusercontent\.com|localhost|127\.0\.0\.1|d3cloud\.io|[A-Za-z0-9-]+\.example\.com)$'
 
 # Runtime source only: excludes tests, node_modules, and the Prisma-generated client (which quotes
 # its own docs URLs in comments, not code that runs at request time).

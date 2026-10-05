@@ -45,20 +45,36 @@ export async function createSession(
 export interface ResolvedSession {
   sessionId: string;
   user: { id: string; email: string };
+  /** A native app's session (SHP-P-10): reached with a Bearer token, never the cookie. */
+  native: boolean;
+  /** When it last re-proved who it is (SHP-T-10.3). */
+  stepUpAt: Date | null;
 }
 
-/** The session and its user, when the token is known, unexpired, and the user is not disabled. */
-export async function resolveSession(db: Db, token: string, now: Date = new Date()): Promise<ResolvedSession | null> {
+/**
+ * The session and its user, when the token is known, unexpired, and the user is not disabled.
+ *
+ * `via` keeps the two kinds apart: a cookie only ever resolves a browser session and a Bearer token
+ * only a native one — so a console cookie lifted into an Authorization header is nothing, and a
+ * native access token pasted into a cookie is nothing either.
+ */
+export async function resolveSession(
+  db: Db,
+  token: string,
+  now: Date = new Date(),
+  via: 'cookie' | 'bearer' = 'cookie',
+): Promise<ResolvedSession | null> {
   const row = await db.session.findUnique({
     where: { tokenHash: hashSessionToken(token) },
     include: { user: { select: { id: true, email: true, disabledAt: true } } },
   });
   if (row === null) return null;
+  if (row.native !== (via === 'bearer')) return null;
   if (row.expiresAt.getTime() <= now.getTime()) return null;
   if (row.user.disabledAt !== null) return null;
 
   if (row.lastSeenAt === null || now.getTime() - row.lastSeenAt.getTime() >= LAST_SEEN_RESOLUTION_MS) {
     await db.session.update({ where: { id: row.id }, data: { lastSeenAt: now } });
   }
-  return { sessionId: row.id, user: { id: row.user.id, email: row.user.email } };
+  return { sessionId: row.id, user: { id: row.user.id, email: row.user.email }, native: row.native, stepUpAt: row.stepUpAt };
 }

@@ -2,6 +2,7 @@ import { Router, type Request } from 'express';
 import { refusal, type DeployAccepted, type Refusal } from '@shipyard/schema';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
+import { STEP_UP_MS, staleStepUp } from '../auth/native-sessions.js';
 import { isRefusal } from '../deploys/service.js';
 import { approveDeploy, denyDeploy, listPendingApprovals, type Decider } from './service.js';
 
@@ -32,6 +33,11 @@ export function approvalsRouter(deps: ServiceDeps): Router {
       const id = idParam(req);
       if (id === null) {
         sendRefusal(res, refusal('not_found', 'No such deploy.', 'List pending approvals and use one of their deploy IDs.'));
+        return;
+      }
+      const stale = staleStepUp(req);
+      if (stale !== null) {
+        sendRefusal(res, stale, { maxAgeSeconds: STEP_UP_MS / 1000 });
         return;
       }
       const result = await fn(deps, decider(req), id);

@@ -154,7 +154,24 @@ export const auth = {
   totp: (body: TotpRequest): Promise<Pick<Me, 'id' | 'email' | 'displayName' | 'role'>> =>
     request('/api/auth/totp', { method: 'POST', body, sessionBearing: false }),
   logout: (): Promise<{ ok: true }> => request('/api/auth/logout', { method: 'POST', sessionBearing: false }),
+  /** Your own sessions, the D3 Constellation app among them (SHP-T-10.4). */
+  sessions: (): Promise<SignedInSession[]> => request<SignedInSession[]>('/api/auth/sessions'),
+  revokeSession: (id: string): Promise<{ ok: true }> => request(`/api/auth/sessions/${encodeURIComponent(id)}/revoke`, { method: 'POST' }),
 };
+
+/** One place you are signed in: this browser, another one, or a phone by the name it gave. */
+export interface SignedInSession {
+  id: string;
+  method: 'password' | 'oidc';
+  native: boolean;
+  deviceName: string | null;
+  devicePlatform: string | null;
+  ip: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+  current: boolean;
+}
 
 // ── First-run setup (SHP-REQ-109) ───────────────────────────────────────
 

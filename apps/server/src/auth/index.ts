@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Router, type Request, type RequestHandler, type Response } from 'express';
+import { z } from 'zod';
 import { LoginRequest, TotpRequest, refusal, type Refusal } from '@shipyard/schema';
 import type { Logger } from 'pino';
 import { ANONYMOUS_ACTOR, type Actor } from '../audit.js';
 import type { Config } from '../config.js';
 import { Prisma, type Db } from '../db.js';
-import { sendRefusal } from '../errors.js';
+import { sendProblem, sendRefusal } from '../errors.js';
 import {
   MFA_COOKIE,
   OIDC_TX_COOKIE,
@@ -26,6 +27,25 @@ import { DEFAULT_ACCOUNT_GLOBAL_LIMITS,
   DEFAULT_ACCOUNT_LIMITS, DEFAULT_IP_LIMITS, Throttle, type ThrottleLimits } from './throttle.js';
 import { TotpReplayGuard } from './totp.js';
 import { resolveToken } from '../tokens/tokens.js';
+import { looksLikeProviderToken, materializeD3AuthSession, verifyD3AuthToken } from './d3auth-bearer.js';
+import { STEP_UP_MS, bearerOf, issueNativeSession, liveSessionWhere, rotateNativeSession, type Device, type NativeTokens } from './native-sessions.js';
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      /** A native app's session (SHP-P-10): its row, and when it last stepped up. */
+      nativeSession?: { id: string; stepUpAt: Date | null };
+      /** The console's own session row, for the sessions list's "this browser". */
+      consoleSessionId?: string;
+    }
+  }
+}
+
+/** This Shipyard's origin: the audience D3 Auth mints its tokens for (SHP-T-10.2). */
+export function publicOrigin(config: Config, req: Request): string {
+  return new URL(config.PUBLIC_URL ?? `${req.protocol}://${req.get('host') ?? 'localhost'}`).origin;
+}
 
 // Helpers other tasks import (SHP-T-0.6 bootstrap-admin, tests).
 export { hashPassword, verifyPassword } from './passwords.js';
@@ -125,8 +145,45 @@ const BAD_BEARER = refusal(
  * refuses later.
  */
 export function authenticate(deps: AuthDeps): RequestHandler {
+  const oidcSource = oidcSourceOf(deps.oidc);
   return async (req, res, next) => {
     const authorization = req.headers.authorization;
+    const bearer = bearerOf(authorization);
+    // Not an API token: a native app's session, or a D3 Auth token (SHP-T-10.2). Anything else is
+    // refused at once, never treated as anonymous.
+    if (bearer !== null && !bearer.startsWith('shp_')) {
+      const now = new Date();
+      let session = await resolveSession(deps.db, bearer, now, 'bearer');
+      if (session === null && looksLikeProviderToken(bearer)) {
+        const resource = publicOrigin(deps.config, req);
+        const verified = await verifyD3AuthToken(oidcSource.current()?.issuer ?? null, bearer, resource, now);
+        if (verified !== null) {
+          const made = await materializeD3AuthSession(deps.db, verified, bearer, clientInfo(req), now);
+          // The one place an unlinked identity belongs: the link route, which proves the account.
+          if (made.kind === 'unlinked' && req.path === '/api/auth/native/link') {
+            next();
+            return;
+          }
+          if (made.kind === 'unlinked') {
+            sendProblem(res, 401, refusal('unauthenticated', 'This D3 Auth account is not linked to a Shipyard account.', 'Link it once with your Shipyard email, password and authenticator code.'), {
+              type: 'https://d3cloud.io/problems/identity_not_linked',
+            });
+            return;
+          }
+          if (made.kind === 'session') session = await resolveSession(deps.db, bearer, now, 'bearer');
+        }
+      }
+      if (session === null) {
+        sendProblem(res, 401, refusal('unauthenticated', 'This sign-in has ended.', 'Sign in again.'));
+        return;
+      }
+      req.actor = userActor(session.user);
+      req.nativeSession = { id: session.sessionId, stepUpAt: session.stepUpAt };
+      const user = await deps.db.user.findUnique({ where: { id: session.user.id }, select: { role: true } });
+      if (user !== null) req.role = user.role;
+      next();
+      return;
+    }
     if (authorization !== undefined) {
       const match = /^Bearer (\S+)$/i.exec(authorization.trim());
       const resolved = match?.[1] === undefined ? null : await resolveToken(deps.db, match[1], req.ip);
@@ -146,6 +203,7 @@ export function authenticate(deps: AuthDeps): RequestHandler {
       const resolved = await resolveSession(deps.db, token);
       if (resolved !== null) {
         req.actor = userActor(resolved.user);
+        req.consoleSessionId = resolved.sessionId;
         // The role is read per request, so a demotion takes effect at once (SHP-REQ-065).
         const user = await deps.db.user.findUnique({ where: { id: resolved.user.id }, select: { role: true } });
         if (user !== null) req.role = user.role;
@@ -421,6 +479,10 @@ export function authRouter(deps: AuthDeps): Router {
     }
     res.json({
       id: user.id,
+      // The D3 App contract's names for the same things (SHP-T-10.2), so the console and D3
+      // Constellation read one answer.
+      accountId: user.id,
+      roles: [user.role],
       email: user.email,
       displayName: user.displayName,
       role: user.role,
@@ -569,6 +631,254 @@ export function authRouter(deps: AuthDeps): Router {
       after: { userId: linkToUserId, issuer: iss, subject: sub, emailAtLink: identity.emailAtLink },
     });
     res.redirect(302, '/');
+  });
+
+  // ── The D3 App contract: native sessions (SHP-P-10) ──────────────────
+  // Every refusal here is problem+json (errors.ts reads the path). The steps and protections are the
+  // password sign-in's above — the same throttles, the same TOTP replay guard, the same audit actions
+  // — and what differs is the envelope: tokens come back in JSON, never a cookie.
+  const nativeChallenges = new Map<string, { userId: string; email: string; device: Device | null; expiresAt: number; attempts: number }>();
+  const DeviceShape = z.object({ name: z.string().trim().min(1).max(120), platform: z.string().trim().min(1).max(40) });
+  const NativeSignIn = z.union([
+    z.object({ email: z.string().min(1).max(320), password: z.string().min(1).max(1024), device: DeviceShape.optional() }),
+    z.object({ challenge: z.string().min(1).max(200), totp: z.string().min(1).max(16) }),
+  ]);
+  const problemOf = (name: string, title: string, status: number, extra: Record<string, unknown> = {}) => (res: Response) => {
+    res.status(status).type('application/problem+json').send(JSON.stringify({ type: `https://d3cloud.io/problems/${name}`, title, status, ...extra }));
+  };
+  const tokensBody = (t: NativeTokens) => ({ accessToken: t.accessToken, refreshToken: t.refreshToken, expiresIn: t.expiresIn, session: { id: t.sessionId } });
+
+  async function nativeFail(req: Request, res: Response, name: 'invalid_credentials' | 'invalid_code', userId: string | undefined, step: string): Promise<void> {
+    await req.audit({
+      action: 'auth.login.failed',
+      entityType: 'user',
+      ...(userId !== undefined ? { entityId: userId } : {}),
+      after: { reason: name, method: 'password', step, via: 'native' },
+      actor: ANONYMOUS_ACTOR,
+    });
+    problemOf(name, name === 'invalid_credentials' ? 'The email or password is wrong.' : 'That code didn’t work.', 401)(res);
+  }
+
+  /** The throttle, answered as the contract's problem with retryAfter in whole seconds. */
+  async function nativeThrottled(req: Request, res: Response, email: string | undefined): Promise<boolean> {
+    const keys = [ipThrottle.blockedUntil(ipKey(req))];
+    if (email !== undefined) {
+      keys.push(accountThrottle.blockedUntil(`${accountKey(email)}|${ipKey(req)}`), accountGlobalThrottle.blockedUntil(accountKey(email)));
+    }
+    const until = Math.max(...keys.map((k) => k ?? 0));
+    if (until <= Date.now()) return false;
+    const retryAfter = Math.max(1, Math.ceil((until - Date.now()) / 1000));
+    await req.audit({ action: 'auth.login.throttled', entityType: 'user', after: { method: 'password', via: 'native' }, actor: ANONYMOUS_ACTOR });
+    res.setHeader('Retry-After', String(retryAfter));
+    problemOf('throttled', 'Too many attempts', 429, { retryAfter })(res);
+    return true;
+  }
+
+  router.post('/native/signin', async (req, res) => {
+    const parsed = NativeSignIn.safeParse(req.body);
+    if (!parsed.success) {
+      sendRefusal(res, refusal('invalid_request', 'That request is not a sign-in.'));
+      return;
+    }
+    const body = parsed.data;
+    const now = Date.now();
+    if ('email' in body) {
+      if (await nativeThrottled(req, res, body.email)) return;
+      const user = await db.user.findFirst({ where: { email: { equals: body.email, mode: 'insensitive' } } });
+      const ok = user !== null && user.passwordHash !== null ? await verifyPassword(user.passwordHash, body.password) : await verifyAgainstDummy(body.password);
+      if (user === null || !ok || user.disabledAt !== null) {
+        recordFailure(req, body.email);
+        await nativeFail(req, res, 'invalid_credentials', user?.id, 'password');
+        return;
+      }
+      if (user.totpSecret === null || user.totpEnabledAt === null) {
+        await fail(req, res, TOTP_NOT_ENROLLED, { reason: 'totp_not_enrolled', entityId: user.id, after: { method: 'password', via: 'native' } });
+        return;
+      }
+      const challenge = randomBytes(32).toString('base64url');
+      for (const [key, value] of nativeChallenges) if (value.expiresAt <= now) nativeChallenges.delete(key);
+      nativeChallenges.set(challenge, { userId: user.id, email: user.email, device: body.device ?? null, expiresAt: now + MFA_TTL_MS, attempts: 0 });
+      await req.audit({ action: 'auth.login.password_verified', entityType: 'user', entityId: user.id, after: { next: 'totp', via: 'native' }, actor: userActor(user) });
+      res.status(202).json({ next: 'totp', challenge });
+      return;
+    }
+
+    const pending = nativeChallenges.get(body.challenge);
+    if (pending === undefined || pending.expiresAt <= now) {
+      nativeChallenges.delete(body.challenge);
+      await nativeFail(req, res, 'invalid_code', undefined, 'totp');
+      return;
+    }
+    if (await nativeThrottled(req, res, pending.email)) return;
+    // Counted before anything slow, as on the web: the attempt is spent the moment it arrives.
+    pending.attempts += 1;
+    if (pending.attempts >= MFA_MAX_ATTEMPTS) nativeChallenges.delete(body.challenge);
+    const user = await db.user.findUnique({ where: { id: pending.userId } });
+    if (user === null || user.disabledAt !== null || user.totpSecret === null) {
+      await nativeFail(req, res, 'invalid_code', pending.userId, 'totp');
+      return;
+    }
+    if (!replay.consume(user.id, user.totpSecret, body.totp, now)) {
+      recordFailure(req, user.email);
+      await nativeFail(req, res, 'invalid_code', user.id, 'totp');
+      return;
+    }
+    nativeChallenges.delete(body.challenge);
+    accountThrottle.reset(`${accountKey(user.email)}|${ipKey(req)}`);
+    accountGlobalThrottle.reset(accountKey(user.email));
+    const tokens = await issueNativeSession(db, { userId: user.id, method: 'password', device: pending.device, ...clientInfo(req), now: new Date(now) });
+    await req.audit({
+      action: 'auth.login.succeeded',
+      entityType: 'session',
+      entityId: tokens.sessionId,
+      after: { method: 'password', userId: user.id, via: 'native', device: pending.device?.name ?? null },
+      actor: userActor(user),
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(tokensBody(tokens));
+  });
+
+  router.post('/native/refresh', async (req, res) => {
+    const parsed = z.object({ refreshToken: z.string().min(1).max(200) }).safeParse(req.body);
+    if (!parsed.success) {
+      sendRefusal(res, refusal('invalid_request', 'That request is not a refresh.'));
+      return;
+    }
+    const rotation = await rotateNativeSession(db, parsed.data.refreshToken, new Date());
+    if (rotation.kind === 'ended') {
+      problemOf('session_revoked', 'This sign-in has ended', 401)(res);
+      return;
+    }
+    if (rotation.kind === 'reused') {
+      // A rotated token came back: it leaked, or a client replayed it. The session ends.
+      await db.session.deleteMany({ where: { id: rotation.sessionId } });
+      await req.audit({ action: 'auth.native.refresh_reused', entityType: 'session', entityId: rotation.sessionId, after: { ended: true }, actor: { type: 'user', id: rotation.userId, label: 'native session' } });
+      problemOf('refresh_reused', 'This sign-in was used twice and has been ended', 401)(res);
+      return;
+    }
+    await req.audit({ action: 'auth.native.refresh', entityType: 'session', entityId: rotation.tokens.sessionId, after: { rotated: true }, actor: { type: 'user', id: rotation.userId, label: 'native session' } });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ accessToken: rotation.tokens.accessToken, refreshToken: rotation.tokens.refreshToken, expiresIn: rotation.tokens.expiresIn });
+  });
+
+  router.post('/native/revoke', async (req, res) => {
+    const session = req.nativeSession;
+    if (session === undefined) {
+      problemOf('session_revoked', 'This sign-in has ended', 401)(res);
+      return;
+    }
+    await db.session.deleteMany({ where: { id: session.id } });
+    await req.audit({ action: 'auth.logout', entityType: 'session', entityId: session.id, after: { via: 'native' } });
+    res.status(204).end();
+  });
+
+  /**
+   * Link the D3 Auth identity in the Bearer token to a Shipyard account, once (SHP-T-10.2). The
+   * account is proven with its own password and code, throttled as a sign-in — a link is a sign-in
+   * that leaves a lasting connection behind. Never by email.
+   */
+  router.post('/native/link', async (req, res) => {
+    const parsed = z.object({ email: z.string().min(1).max(320), password: z.string().min(1).max(1024), totp: z.string().min(1).max(16) }).safeParse(req.body);
+    if (!parsed.success) {
+      sendRefusal(res, refusal('invalid_request', 'That request is not a link.'));
+      return;
+    }
+    const token = bearerOf(req.headers.authorization);
+    const verified = token === null ? null : await verifyD3AuthToken(oidcSource.current()?.issuer ?? null, token, publicOrigin(config, req));
+    if (verified === null) {
+      problemOf('session_revoked', "This D3 Auth sign-in isn't valid here", 401)(res);
+      return;
+    }
+    const { email, password, totp } = parsed.data;
+    if (await nativeThrottled(req, res, email)) return;
+    const user = await db.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
+    const ok = user !== null && user.passwordHash !== null ? await verifyPassword(user.passwordHash, password) : await verifyAgainstDummy(password);
+    if (user === null || !ok || user.disabledAt !== null) {
+      recordFailure(req, email);
+      await nativeFail(req, res, 'invalid_credentials', user?.id, 'link');
+      return;
+    }
+    if (user.totpSecret === null || !replay.consume(user.id, user.totpSecret, totp, Date.now())) {
+      recordFailure(req, email);
+      await nativeFail(req, res, 'invalid_code', user.id, 'link');
+      return;
+    }
+    const existing = await db.identity.findUnique({ where: { issuer_subject: { issuer: verified.issuer, subject: verified.subject } } });
+    if (existing !== null && existing.userId !== user.id) {
+      sendRefusal(res, IDENTITY_TAKEN);
+      return;
+    }
+    if (existing === null) {
+      const identity = await db.identity.create({ data: { userId: user.id, issuer: verified.issuer, subject: verified.subject, lastUsedAt: new Date() } });
+      await req.audit({ action: 'auth.identity.linked', entityType: 'identity', entityId: identity.id, after: { userId: user.id, issuer: verified.issuer, subject: verified.subject, via: 'native' }, actor: userActor(user) });
+    } else {
+      await req.audit({ action: 'auth.identity.linked', entityType: 'identity', entityId: existing.id, after: { userId: user.id, already: true, via: 'native' }, actor: userActor(user) });
+    }
+    accountThrottle.reset(`${accountKey(user.email)}|${ipKey(req)}`);
+    res.json({ linked: true, accountId: user.id });
+  });
+
+  /**
+   * Step-up (SHP-T-10.3): a code from the authenticator, recorded on the session making the request.
+   * Approve, deny and rollback from a native session want one from the last ten minutes.
+   */
+  router.post('/step-up', requireUser, async (req, res) => {
+    const parsed = TotpRequest.safeParse(req.body);
+    if (!parsed.success) {
+      sendRefusal(res, refusal('invalid_request', 'A six-digit code is required.'));
+      return;
+    }
+    const user = await db.user.findUnique({ where: { id: req.actor?.id ?? '' } });
+    if (user === null || user.totpSecret === null) {
+      sendRefusal(res, TOTP_NOT_ENROLLED);
+      return;
+    }
+    if (await refuseIfThrottled(req, res, 'totp', user.email, user.id)) return;
+    if (!replay.consume(user.id, user.totpSecret, parsed.data.code, Date.now())) {
+      recordFailure(req, user.email);
+      await fail(req, res, BAD_TOTP, { action: 'auth.step_up.failed', reason: 'bad_totp', entityId: user.id });
+      return;
+    }
+    const sessionId = req.nativeSession?.id ?? req.consoleSessionId;
+    const now = new Date();
+    if (sessionId !== undefined) await db.session.update({ where: { id: sessionId }, data: { stepUpAt: now } });
+    await req.audit({ action: 'auth.step_up', entityType: 'session', ...(sessionId !== undefined ? { entityId: sessionId } : {}), after: { native: req.nativeSession !== undefined } });
+    res.json({ ok: true, until: new Date(now.getTime() + STEP_UP_MS).toISOString() });
+  });
+
+  // ── Sessions (SHP-T-10.4): your own, the phone among them, each one revocable ──
+  router.get('/sessions', requireUser, async (req, res) => {
+    const rows = await db.session.findMany({
+      where: { userId: req.actor?.id ?? '', ...liveSessionWhere(new Date()) },
+      orderBy: { createdAt: 'desc' },
+    });
+    const current = req.nativeSession?.id ?? req.consoleSessionId;
+    res.json(
+      rows.map((row) => ({
+        id: row.id,
+        method: row.method,
+        native: row.native,
+        deviceName: row.deviceName,
+        devicePlatform: row.devicePlatform,
+        ip: row.ip,
+        userAgent: row.userAgent,
+        createdAt: row.createdAt.toISOString(),
+        lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+        current: row.id === current,
+      })),
+    );
+  });
+
+  router.post('/sessions/:id/revoke', requireUser, async (req, res) => {
+    const id = req.params['id'];
+    const row = typeof id === 'string' ? await db.session.findFirst({ where: { id, userId: req.actor?.id ?? '' } }) : null;
+    if (row === null) {
+      sendRefusal(res, refusal('not_found', 'No such session.', 'List your sessions and use one of their IDs.'));
+      return;
+    }
+    await db.session.delete({ where: { id: row.id } });
+    await req.audit({ action: 'auth.session.revoked', entityType: 'session', entityId: row.id, after: { native: row.native, deviceName: row.deviceName } });
+    res.json({ ok: true });
   });
 
   return router;

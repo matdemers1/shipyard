@@ -70,6 +70,8 @@ export interface UserSummary {
   totpEnrolled: boolean;
   d3authLinked: boolean;
   createdAt: string;
+  /** Set when the user deleted their account from D3 Constellation; enabling them cancels it (SHP-ADR-004). */
+  deleteAfter: string | null;
 }
 
 export interface InviteSummary {
@@ -182,6 +184,7 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       totpEnrolled: u.totpSecret !== null && u.totpEnabledAt !== null,
       d3authLinked: u._count.identities > 0,
       createdAt: u.createdAt.toISOString(),
+      deleteAfter: u.deleteAfter?.toISOString() ?? null,
     }));
     res.json(body);
   });
@@ -277,6 +280,7 @@ export function usersRouter(deps: ServiceDeps, options: UsersRouterOptions = {})
       totpEnrolled: updated.totpSecret !== null && updated.totpEnabledAt !== null,
       d3authLinked: identities > 0,
       createdAt: updated.createdAt.toISOString(),
+      deleteAfter: updated.deleteAfter?.toISOString() ?? null,
     };
     res.json(body);
   });

@@ -52,7 +52,7 @@ export function openEnvelope(device: ECDH, envelope: string): Buffer {
   const body = raw.subarray(1 + POINT + 12, raw.length - 16);
   const tag = raw.subarray(raw.length - 16);
   const key = keyFor(device.computeSecret(ephemeralPub), ephemeralPub, device.getPublicKey());
-  const decipher = createDecipheriv('aes-256-gcm', key, nonce);
+  const decipher = createDecipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
   decipher.setAAD(Buffer.from(INFO));
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(body), decipher.final()]);

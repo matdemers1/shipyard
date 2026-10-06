@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
@@ -144,9 +144,16 @@ describe('a green commit', () => {
     renderAt(`/apps/bindery/commits/${sha('c')}`);
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Scanner ingest retries' }, LANE_TIMEOUT)).toBeInTheDocument();
-    const crumbs = within(screen.getByRole('navigation', { name: 'Breadcrumb' }));
+    // The deploy page's markup, so one rule in one block draws one separator per gap.
+    const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(nav.className).toBe('');
+    const crumbList = nav.querySelector('ol.shp-crumbs');
+    expect(crumbList).not.toBeNull();
+    expect(within(crumbList as HTMLElement).getAllByRole('listitem')).toHaveLength(3);
+    expect(nav.querySelectorAll('.shp-crumbs')).toHaveLength(1);
+    const crumbs = within(nav);
     expect(crumbs.getByRole('link', { name: 'bindery' })).toHaveAttribute('href', '/apps/bindery');
-    expect(crumbs.getByText('ccccccc')).toBeInTheDocument();
+    expect(crumbs.getByText('ccccccc')).toHaveAttribute('aria-current', 'page');
     expect(screen.getByText('Ready')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View on GitHub ↗' })).toHaveAttribute('href', `https://github.com/matdemers1/bindery/commit/${sha('c')}`);
 
@@ -159,10 +166,12 @@ describe('a green commit', () => {
     const jobs = await screen.findByRole('list', { name: 'Jobs' });
     const rows = within(jobs).getAllByRole('listitem');
     expect(rows).toHaveLength(4);
-    expect(within(rows[0] as HTMLElement).getByRole('link', { name: 'lint ↗' })).toHaveAttribute('href', 'https://github.com/matdemers1/bindery/actions/runs/412/job/1');
+    expect(within(rows[0] as HTMLElement).getByRole('link', { name: 'lint 48s' })).toHaveAttribute('href', 'https://github.com/matdemers1/bindery/actions/runs/412/job/1');
     expect(within(rows[0] as HTMLElement).getByText('48s')).toBeInTheDocument();
     expect(within(rows[1] as HTMLElement).getByText('2m 03s')).toBeInTheDocument();
     const bar = within(rows[2] as HTMLElement).getByRole('img');
+    // The bar sits inside the job's link, so it is linked to the job on GitHub.
+    expect(bar.closest('a')).toHaveAttribute('href', 'https://github.com/matdemers1/bindery/actions/runs/412/job/3');
     expect(bar).toHaveAccessibleName(/^build: 9m 30s, passed, from 2m 10s into the run$/);
     expect(bar.style.left).not.toBe('');
     expect(screen.getByText('CI · run #412')).toBeInTheDocument();
@@ -185,9 +194,7 @@ describe('a green commit', () => {
     expect(riderRows[0]).toHaveTextContent('Tidy scanner config');
     expect(riderRows[0]).toHaveTextContent('CI passed');
     expect(riderRows[1]).toHaveTextContent('Rename ingest queue');
-    await waitFor(() => {
-      expect(riderRows[1]).toHaveTextContent('CI failed at e2e');
-    });
+    expect(riderRows[1]).toHaveTextContent('CI failed · run #409');
     expect(riderRows[1]).toHaveTextContent('Rides along with ccccccc.');
     expect(within(riderRows[1] as HTMLElement).getByRole('link', { name: 'run #409 ↗' })).toHaveAttribute('href', 'https://github.com/matdemers1/bindery/actions/runs/409');
     expect(screen.getByText(/everything between live fffffff and this commit deploys together/)).toBeInTheDocument();
@@ -255,6 +262,32 @@ describe('images (SHP-REQ-158)', () => {
     expect(screen.queryByText('Expected · digest not yet verified')).not.toBeInTheDocument();
   });
 
+  it('says when a dry run verified the images if it kept no digest to show', async () => {
+    const dryRunOnly = detail({
+      targets: [
+        {
+          id: 't1',
+          deployId: 'd1',
+          kind: 'deploy',
+          sha: sha('c'),
+          dryRun: true,
+          requester: 'matt',
+          state: 'succeeded',
+          currentStep: null,
+          createdAt: at(10),
+          startedAt: at(10),
+          endedAt: at(60),
+        },
+      ],
+    });
+    routes('deployer', {}, dryRunOnly);
+    renderAt(`/apps/bindery/commits/${sha('c')}`);
+    await screen.findByRole('heading', { level: 1, name: 'Scanner ingest retries' }, LANE_TIMEOUT);
+    const images = screen.getByRole('list', { name: 'Images' });
+    expect(within(images).getAllByText(/^Verified on dry run /)).toHaveLength(2);
+    expect(within(images).queryByText(/sha256:/)).not.toBeInTheDocument();
+  });
+
   it('decides verification from the live release, a dry run, or a deploy past its verify step', () => {
     const target = (state: string, dryRun: boolean) => ({
       id: 't',
@@ -319,6 +352,23 @@ describe('a failed run', () => {
     expect(screen.getByText(/^Not built — Nothing was pushed to GHCR\./)).toBeInTheDocument();
     expect(screen.queryByText(/Deploys with it/)).not.toBeInTheDocument();
   });
+
+  it('makes exactly one run call however many red commits ride along', async () => {
+    const many = commitsInfo({
+      ahead: 10,
+      newestGreen: sha('c'),
+      commits: [
+        ...['1', '2', '3', '4', '5', '6', '7', '8'].map((c) => entry(c, `Red ${c}`, 'failure', 300 + Number(c))),
+        entry('c', 'Scanner ingest retries', 'success', 412),
+      ],
+    });
+    const calls = routes('deployer', {}, detail(), many);
+    renderAt(`/apps/bindery/commits/${sha('c')}`);
+    const riders = await screen.findByRole('list', { name: 'Commits that deploy with this one' }, LANE_TIMEOUT);
+    expect(within(riders).getAllByText('Rides along with ccccccc.', { exact: false })).toHaveLength(8);
+    expect(await screen.findByRole('list', { name: 'Jobs' })).toBeInTheDocument();
+    expect(calls.filter((c) => c.path.endsWith('/run'))).toHaveLength(1);
+  });
 });
 
 describe('when GitHub cannot be reached for the run', () => {
@@ -369,15 +419,27 @@ describe('other commits', () => {
     expect(calls.some((c) => c.path.startsWith('/api/apps/bindery'))).toBe(false);
   });
 
-  it('opens the live commit as done end to end', async () => {
-    routes('deployer', { [`GET /api/apps/bindery/commits/${sha('f')}/run`]: { status: 200, body: { run: null, jobs: [] } } });
+  it('opens the live commit as done end to end, without asking GitHub for its run', async () => {
+    const calls = routes('deployer');
     renderAt(`/apps/bindery/commits/${sha('f')}`);
     // The skeleton has the same heading; the run section only exists once the page has loaded.
-    expect(await screen.findByText('No GitHub Actions run for this commit', {}, LANE_TIMEOUT)).toBeInTheDocument();
+    expect(await screen.findByText(/This commit is live, so Shipyard does not ask GitHub for its run/, {}, LANE_TIMEOUT)).toBeInTheDocument();
     expect(screen.getAllByText('Live').length).toBeGreaterThan(1);
     expect(screen.getByRole('heading', { level: 1, name: 'Commit fffffff' })).toBeInTheDocument();
     expect(screen.getByRole('list', { name: `Journey of ${'f'.repeat(7)}` })).toHaveTextContent('fffffff is live');
     expect(screen.queryByRole('button', { name: /^Deploy / })).not.toBeInTheDocument();
+    expect(calls.some((c) => c.path.endsWith('/run'))).toBe(false);
+  });
+
+  it('makes no run call when the commits could not be read', async () => {
+    const calls = routes('deployer', {}, detail(), commitsInfo({ source: 'unavailable', commits: [] }));
+    renderAt(`/apps/bindery/commits/${sha('c')}`);
+    expect(await screen.findByText("Shipyard could not read this app's commits", {}, LANE_TIMEOUT)).toBeInTheDocument();
+    expect(calls.some((c) => c.path.endsWith('/run'))).toBe(false);
+
+    routes('deployer', { 'GET /api/apps/bindery/commits': { status: 500, body: { error: { code: 'internal', gate: 'none', message: 'x', fix: 'y' } } } });
+    renderAt(`/apps/bindery/commits/${sha('f')}`);
+    expect(await screen.findAllByText("Shipyard could not read this app's commits", {}, LANE_TIMEOUT)).not.toHaveLength(0);
   });
 });
 

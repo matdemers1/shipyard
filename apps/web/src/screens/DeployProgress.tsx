@@ -17,6 +17,7 @@ import type { DeployStatus } from '@shipyard/schema';
 import type { CSSProperties } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import { stateTone } from '../lib/appstatus';
+import { stateWords } from '../lib/words';
 import { memberTone } from '../lib/rollouts';
 import { isTerminal, useDeployProgress, type DeployStep, type ProgressOptions, type Transport } from '../lib/progress';
 
@@ -51,25 +52,6 @@ const MONO_STYLE: CSSProperties = {
 const MUTED_STYLE: CSSProperties = {
   color: 'var(--color-fg-muted)',
   fontSize: 'var(--text-13)',
-};
-
-const STATE_LABEL: Record<DeployStatus['state'], string> = {
-  queued: 'Queued',
-  awaiting_approval: 'Awaiting approval',
-  locked: 'Waiting for the agent',
-  verifying: 'Verifying',
-  backing_up: 'Backing up',
-  migrating: 'Migrating',
-  pulling: 'Pulling',
-  swapping: 'Swapping',
-  checking: 'Checking',
-  soaking: 'Soaking',
-  rolling_back: 'Rolling back',
-  succeeded: 'Succeeded',
-  failed: 'Failed',
-  rolled_back: 'Rolled back',
-  refused: 'Refused',
-  cancelled: 'Cancelled',
 };
 
 function formatDuration(ms: number): string {
@@ -165,14 +147,8 @@ function Outcome({ status }: { status: DeployStatus }) {
       </Alert>
     );
   }
-  const title =
-    status.state === 'rolled_back'
-      ? 'Rolled back'
-      : status.state === 'refused'
-        ? 'Refused'
-        : status.state === 'cancelled'
-          ? 'Cancelled'
-          : 'Failed';
+  // Rolled back, Refused, Cancelled or Failed — the same words every badge uses (SHP-T-13.3).
+  const title = stateWords(status.state);
   return (
     <Alert tone={status.state === 'cancelled' ? 'warning' : 'danger'} title={title}>
       {status.refusal !== null ? (
@@ -243,7 +219,7 @@ export function DeployProgressView({ id, options }: { id: string; options?: Prog
           <Cluster gap="8">
             {status !== null ? (
               <Badge tone={stateTone(status.state)}>
-                {STATE_LABEL[status.state]}
+                {stateWords(status.state)}
               </Badge>
             ) : null}
             <TransportNote transport={transport} done={done} />
@@ -258,7 +234,7 @@ export function DeployProgressView({ id, options }: { id: string; options?: Prog
                 <DescriptionItem key={member.targetId} term={member.app}>
                   <Cluster gap="8">
                     <Badge tone={memberTone(member)}>
-                      {STATE_LABEL[member.state]}
+                      {stateWords(member.state)}
                     </Badge>
                     {member.canary ? <Badge tone="attention">Canary</Badge> : null}
                     {member.refusal !== null ? <span style={MUTED_STYLE}>{member.refusal.message}</span> : null}
@@ -272,7 +248,7 @@ export function DeployProgressView({ id, options }: { id: string; options?: Prog
           {status === null ? (
             <Skeleton variant="text" lines={3} />
           ) : steps.length === 0 ? (
-            <p style={MUTED_STYLE}>No steps yet. {STATE_LABEL[status.state]}.</p>
+            <p style={MUTED_STYLE}>No steps yet. {stateWords(status.state)}.</p>
           ) : (
             <Stack as="ol" gap="8" aria-label="Deploy steps">
               {steps.map((step, i) => (

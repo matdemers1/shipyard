@@ -23,9 +23,10 @@ import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { FreezeSheet, UnfreezeButton } from '../components/FreezeSheet';
 import { RefusalError, request, unreachableRefusal } from '../lib/api';
 import type { CommitsInfo, PendingApproval } from '../lib/home';
-import { appStatus, ciTone, ciWords, stateTone, stateWords, summarizeCommits } from '../lib/appstatus';
+import { appStatus, ciTone, stateTone, summarizeCommits } from '../lib/appstatus';
 import { StatusLine } from '../components/StatusLine';
 import { useCan } from '../lib/auth';
+import { ciWords, deployVerb, rollBackVerb, stateWords, VERBS } from '../lib/words';
 import { builds as buildsApi, type BuildSummary } from '../lib/builds';
 import { BuildRow } from './Builds';
 import {
@@ -175,10 +176,10 @@ export function AppDetail() {
   const showBuilds = builtByShipyard(detail.manifest) || recentBuilds.length > 0;
   const status = appStatus({ ...detail, commits: load.commits, approval: load.approval, frozen: activeFreeze !== null });
   const summary = summarizeCommits(load.commits);
-  // Newest first: the one at the top is the one you would ship.
+  // Newest first: the one at the top is the one you would deploy.
   const waiting = [...(load.commits?.commits ?? [])].reverse();
   const branch = detail.defaultBranch ?? 'the default branch';
-  const ship = (sha: string) => {
+  const deploy = (sha: string) => {
     setSheet({ kind: 'deploy', app: detail.name, sha });
   };
 
@@ -278,10 +279,10 @@ export function AppDetail() {
                   type="button"
                   variant="primary"
                   onClick={() => {
-                    if (status.shipSha !== null) ship(status.shipSha);
+                    if (status.shipSha !== null) deploy(status.shipSha);
                   }}
                 >
-                  Ship {sha7(status.shipSha)}
+                  {deployVerb(status.shipSha)}
                 </Button>
                 <span className="shp-facts__sub">You review a dry run before anything changes.</span>
               </Cluster>
@@ -315,12 +316,12 @@ export function AppDetail() {
 
         {load.commits !== null && load.commits.source === 'github' && summary.ahead > 0 ? (
           <Section
-            title="Waiting to ship"
-            description={`Commits on ${branch} since live, newest first. Only a commit with built images can ship, and shipping it brings everything below it along.${
+            title="Waiting on the default branch"
+            description={`Commits on ${branch} since live, newest first. Only a commit with built images can be deployed, and deploying it brings everything below it along.${
               summary.ahead > summary.checked ? ` Showing the newest ${String(summary.checked)} of ${String(summary.ahead)}.` : ''
             }`}
           >
-            <DataList aria-label="Commits waiting to ship">
+            <DataList aria-label="Commits waiting to deploy">
               {waiting.map((c) => {
                 const firstLine = c.message.split('\n')[0] ?? c.message;
                 return (
@@ -342,7 +343,7 @@ export function AppDetail() {
                       <>
                         <code>{sha7(c.sha)}</code>
                         {c.taskIds.length > 0 ? ` · ${c.taskIds.join(', ')}` : ''}
-                        {c.sha === status.shipSha ? ' · newest shippable' : ''}
+                        {c.sha === status.shipSha ? ' · newest ready' : ''}
                       </>
                     }
                     meta={<Badge tone={ciTone(c.ci)}>{ciWords(c.ci, load.commits?.buildSource)}</Badge>}
@@ -354,10 +355,10 @@ export function AppDetail() {
                               size="sm"
                               variant={c.sha === status.shipSha ? 'primary' : 'secondary'}
                               onClick={() => {
-                                ship(c.sha);
+                                deploy(c.sha);
                               }}
                             >
-                              Ship {sha7(c.sha)}
+                              {deployVerb(c.sha)}
                             </Button>
                           ),
                         }
@@ -369,8 +370,8 @@ export function AppDetail() {
             {summary.noRun > 0 ? (
               <p className="shp-status__detail">
                 {load.commits.buildSource === 'shipyard'
-                  ? '“Not built” means Shipyard has no succeeded build of that commit. It ships inside the next built commit above it, or you can build it from Builds.'
-                  : '“No images” is normal: GitHub builds images once per push, for the newest commit in it. Those commits ship inside the next built commit above them.'}
+                  ? '“Not built” means Shipyard has no succeeded build of that commit. It deploys inside the next built commit above it, or you can build it from Builds.'
+                  : '“No images” is normal: GitHub builds images once per push, for the newest commit in it. Those commits deploy inside the next built commit above them.'}
               </p>
             ) : null}
           </Section>
@@ -386,7 +387,7 @@ export function AppDetail() {
               {builtByShipyard(detail.manifest) ? 'Shipyard — each push is built here' : 'GitHub CI — the image workflow on each push'}
             </DescriptionItem>
             <DescriptionItem term="Needs approval">
-              {detail.approvalPolicy === 'required' ? 'Yes — a deployer approves every deploy' : 'No — a deployer can ship directly'}
+              {detail.approvalPolicy === 'required' ? 'Yes — a deployer approves every deploy' : 'No — a deployer can deploy directly'}
             </DescriptionItem>
             <DescriptionItem term="Soak time" numeric>
               {detail.soakSeconds !== null ? `${String(detail.soakSeconds)} s watched healthy before a deploy counts as done` : '—'}
@@ -446,7 +447,7 @@ export function AppDetail() {
         </Section>
 
         <Section
-          title="Roll back"
+          title={VERBS.rollBack}
           description="Put an earlier release back. Only images change — data stays as it is. These are the last five successful releases in the agent's own ledger; it checks again before it acts."
         >
           <DataList
@@ -474,7 +475,7 @@ export function AppDetail() {
                             setSheet({ kind: 'rollback', app: detail.name, sha: target.sha, toDeployId: target.deployId });
                           }}
                         >
-                          Roll back to {sha7(target.sha)}
+                          {rollBackVerb(target.sha)}
                         </Button>
                       ),
                     }

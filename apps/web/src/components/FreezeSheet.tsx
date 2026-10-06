@@ -2,6 +2,7 @@ import { Alert, Button, FormField, Input, Modal, Stack, Textarea } from '@d3clou
 import { useState, type SyntheticEvent } from 'react';
 import { RefusalError } from '../lib/api';
 import { FREEZE_REASON_MAX, freeze, freezeReasonIsValid } from '../lib/appdetail';
+import { VERBS } from '../lib/words';
 
 /**
  * Freeze and unfreeze (SHP-T-5.1, SHP-REQ-077, SHP-D-049). Freezing needs a reason, shown in every
@@ -73,10 +74,10 @@ export function FreezeSheet({ app, onFrozen }: FreezeSheetProps) {
       }}
       trigger={
         <Button type="button" variant="danger">
-          Freeze
+          {VERBS.freeze}
         </Button>
       }
-      title={`Freeze ${app}`}
+      title={`${VERBS.freeze} ${app}`}
       description="Refuses new deploys until this is cleared. Rollbacks and restores are still allowed."
     >
       <Stack as="form" gap="16" onSubmit={(e) => void submit(e)} noValidate>
@@ -105,7 +106,7 @@ export function FreezeSheet({ app, onFrozen }: FreezeSheetProps) {
         </FormField>
         <Stack gap="8" align="end">
           <Button type="submit" variant="danger" disabled={!valid} loading={busy}>
-            Freeze {app}
+            {VERBS.freeze} {app}
           </Button>
         </Stack>
       </Stack>
@@ -152,10 +153,10 @@ export function UnfreezeButton({ app, onCleared }: UnfreezeButtonProps) {
       }}
       trigger={
         <Button type="button" variant="secondary">
-          Unfreeze
+          {VERBS.unfreeze}
         </Button>
       }
-      title={`Unfreeze ${app}`}
+      title={`${VERBS.unfreeze} ${app}`}
       description="Deploys are allowed again once this is cleared."
       footer={
         <>
@@ -163,7 +164,7 @@ export function UnfreezeButton({ app, onCleared }: UnfreezeButtonProps) {
             Cancel
           </Button>
           <Button type="button" variant="primary" loading={busy} onClick={() => void confirm()}>
-            Unfreeze {app}
+            {VERBS.unfreeze} {app}
           </Button>
         </>
       }

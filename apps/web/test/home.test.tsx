@@ -97,7 +97,7 @@ describe('Home', () => {
     }
   });
 
-  it("an app whose newest green commit is not the head ships that green SHA and opens the sheet with it", async () => {
+  it("an app whose newest green commit is not the head deploys that green SHA and opens the sheet with it", async () => {
     mockFetch({
       ...baseRoutes(),
       'GET /api/auth/me': meReply('deployer'),
@@ -109,16 +109,16 @@ describe('Home', () => {
     render(<App />);
     await screen.findByRole('heading', { level: 1, name: 'Home' });
 
-    const shipButton = await screen.findByRole('button', { name: `Ship ${SHA_MID.slice(0, 7)}` });
+    const shipButton = await screen.findByRole('button', { name: `Deploy ${SHA_MID.slice(0, 7)}` });
     expect(shipButton).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: `Ship ${SHA_HEAD.slice(0, 7)}` })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: `Deploy ${SHA_HEAD.slice(0, 7)}` })).not.toBeInTheDocument();
 
     const user = userEvent.setup();
     await user.click(shipButton);
     expect(await screen.findByRole('dialog')).toHaveTextContent('deploy web');
   });
 
-  it('an up-to-date app has no ship action', async () => {
+  it('an up-to-date app has no deploy action', async () => {
     mockFetch({
       ...baseRoutes(),
       'GET /api/auth/me': meReply('deployer'),
@@ -129,11 +129,11 @@ describe('Home', () => {
     render(<App />);
     await screen.findByRole('heading', { level: 1, name: 'Home' });
     await screen.findByRole('link', { name: 'api' });
-    expect(screen.getByText(/^Live is the newest commit on .*Nothing to ship\.$/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Ship /i })).not.toBeInTheDocument();
+    expect(screen.getByText(/^Live is the newest commit on .*Nothing to deploy\.$/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Deploy [0-9a-f]{7}$/i })).not.toBeInTheDocument();
   });
 
-  it('commits ahead with no images say why there is nothing to ship, and count every commit ahead', async () => {
+  it('commits ahead with no images say why there is nothing to deploy, and count every commit ahead', async () => {
     mockFetch({
       ...baseRoutes(),
       'GET /api/auth/me': meReply('deployer'),
@@ -159,10 +159,10 @@ describe('Home', () => {
     expect(await screen.findByText('14 commits since live, none with images')).toBeInTheDocument();
     expect(screen.getByText(/none of these has a finished build on main yet/)).toBeInTheDocument();
     expect(screen.getByText('2 without images · 12 older unchecked')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Ship /i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Deploy [0-9a-f]{7}$/i })).not.toBeInTheDocument();
   });
 
-  it('puts an app that is ready to ship before one that is up to date, and counts them in the overview', async () => {
+  it('puts an app that is ready before one that is up to date, and counts them in the overview', async () => {
     mockFetch({
       ...baseRoutes(),
       'GET /api/auth/me': meReply('deployer'),
@@ -177,8 +177,8 @@ describe('Home', () => {
     const titles = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
     expect(titles.slice(0, 2)).toEqual(['web', 'api']);
     const overview = screen.getByRole('list', { name: 'Overview' });
-    expect(overview).toHaveTextContent('1 ready to ship');
-    expect(overview).toHaveTextContent('1 nothing to ship');
+    expect(overview).toHaveTextContent('1 ready');
+    expect(overview).toHaveTextContent('1 up to date');
   });
 
   it('shows a group card with its members and canary, and a deployer can open its sheet', async () => {
@@ -219,7 +219,7 @@ describe('Home', () => {
     expect(screen.queryByRole('button', { name: 'Deploy group' })).not.toBeInTheDocument();
   });
 
-  it('hides every ship button from a viewer', async () => {
+  it('hides every deploy button from a viewer', async () => {
     mockFetch({
       ...baseRoutes(),
       'GET /api/auth/me': meReply('viewer'),
@@ -231,7 +231,7 @@ describe('Home', () => {
     render(<App />);
     await screen.findByRole('heading', { level: 1, name: 'Home' });
     await screen.findByRole('link', { name: 'web' });
-    expect(screen.queryByRole('button', { name: /^Ship /i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Deploy [0-9a-f]{7}$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Up to date' })).not.toBeInTheDocument();
   });
 

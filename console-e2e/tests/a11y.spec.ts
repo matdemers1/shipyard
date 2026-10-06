@@ -73,7 +73,7 @@ const SCREENS: Screen[] = [
     path: () => '/',
     ready: async (p, fx) => {
       await h1(p, 'Home');
-      await expect(card(p, fx.apps.history).getByRole('button', { name: /^Ship / })).toBeVisible();
+      await expect(card(p, fx.apps.history).getByRole('button', { name: /^Deploy [0-9a-f]{7}$/ })).toBeVisible();
     },
   },
   {
@@ -113,7 +113,7 @@ const SCREENS: Screen[] = [
     path: () => '/',
     ready: (p) => h1(p, 'Home'),
     act: async (p, fx) => {
-      await card(p, fx.apps.history).getByRole('button', { name: /^Ship / }).click();
+      await card(p, fx.apps.history).getByRole('button', { name: /^Deploy [0-9a-f]{7}$/ }).click();
       await dialog(p, `Deploy ${fx.apps.history}`);
     },
   },
@@ -169,9 +169,9 @@ const SCREENS: Screen[] = [
       );
       await p.reload();
       await h1(p, 'Home');
-      await p.getByRole('button', { name: /^Roll all \d+$/ }).click();
-      await dialog(p, /^Roll all/);
-      await expect(p.getByRole('list', { name: 'Apps to roll, in order' })).toBeVisible();
+      await p.getByRole('button', { name: /^Deploy all ready \(\d+\)$/ }).click();
+      await dialog(p, /^Deploy all ready/);
+      await expect(p.getByRole('list', { name: 'Apps to deploy, in order' })).toBeVisible();
     },
   },
   {
@@ -208,7 +208,7 @@ const SCREENS: Screen[] = [
     as: 'admin',
     path: (fx) => `/rollouts/${fx.rollouts.stopped}`,
     ready: async (p) => {
-      await h1(p, 'Roll all');
+      await h1(p, 'Deploy all ready');
       await expect(p.getByText(/^The rollout stopped at/)).toBeVisible();
     },
   },
@@ -218,7 +218,7 @@ const SCREENS: Screen[] = [
     phone: true,
     path: (fx) => `/rollouts/${fx.rollouts.stopped}`,
     ready: async (p) => {
-      await h1(p, 'Roll all');
+      await h1(p, 'Deploy all ready');
       await expect(p.getByRole('list', { name: 'Apps in this rollout, in order' })).toBeVisible();
     },
   },

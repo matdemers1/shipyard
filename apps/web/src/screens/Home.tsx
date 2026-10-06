@@ -28,52 +28,54 @@ import { useCan, useIsAdmin } from '../lib/auth';
 import { fetchGroups } from '../lib/groups';
 import { useHomeData, type HomeApp, type PendingApproval } from '../lib/home';
 import { MIN_ROLL_ALL, rolloutCandidates } from '../lib/rollouts';
+import { DEPLOY_ALL_READY, STATUS_WORDS, deployAllReadyVerb } from '../lib/words';
 
 /** How to add an app: a manifest on the agent's host (docs/runbooks/onboard-app.md). */
 const ONBOARD_RUNBOOK_URL = 'https://github.com/matdemers1/shipyard/blob/main/docs/runbooks/onboard-app.md';
 
 /** The overview line's buckets: what needs you, what is moving, what is fine. */
 const SUMMARY: { label: string; kinds: StatusKind[] }[] = [
-  { label: 'ready to ship', kinds: ['ready'] },
+  { label: STATUS_WORDS.ready.toLowerCase(), kinds: ['ready'] },
   { label: 'need attention', kinds: ['approval', 'drift', 'ci-failed'] },
   { label: 'in progress', kinds: ['deploying', 'ci-running'] },
   { label: 'frozen', kinds: ['frozen'] },
-  { label: 'nothing to ship', kinds: ['up-to-date', 'no-images'] },
+  { label: 'up to date', kinds: ['up-to-date'] },
+  { label: STATUS_WORDS.waiting.toLowerCase(), kinds: ['no-images'] },
 ];
 
 /** What each status means, for the "What do these mean?" disclosure. */
 const GLOSSARY: { term: string; meaning: string }[] = [
   {
-    term: 'Ready to ship',
-    meaning: 'A commit ahead of live has passed CI and its images are built. Ship deploys it and everything before it.',
+    term: STATUS_WORDS.ready,
+    meaning: 'A commit ahead of live has passed CI and its images are built. Deploying it brings in everything before it.',
   },
   {
-    term: 'Nothing to ship',
+    term: STATUS_WORDS.waiting,
     meaning:
-      'There are commits since live, but none has images. GitHub builds images once per push, for the newest commit in it; the others ride along when that one ships.',
+      'There are commits since live, but none has images yet. GitHub builds images once per push, for the newest commit in it; the others ride along when that one deploys.',
   },
-  { term: 'Building', meaning: 'CI is running on the newest push. When it passes, that commit becomes shippable.' },
-  { term: 'CI failed', meaning: 'The newest push failed CI, so no images were published. Fix it and push again.' },
+  { term: STATUS_WORDS.ciRunning, meaning: 'CI is running on the newest push. When it passes, that commit is ready.' },
+  { term: STATUS_WORDS.ciFailed, meaning: 'The newest push failed CI, so no images were published. Fix it and push again.' },
   {
     term: 'Built by Shipyard',
     meaning:
-      'An app whose manifest says build: shipyard gets its images from Shipyard’s own builds instead of GitHub CI, so its statuses read “Shipyard is building” or “Build failed”, and each commit links to its build.',
+      'An app whose manifest says build: shipyard gets its images from Shipyard’s own builds instead of GitHub CI, so its statuses read “Building” or “Build failed”, and each commit links to its build.',
   },
-  { term: 'Needs approval', meaning: 'Someone asked to deploy an app that requires a deployer to approve first.' },
+  { term: STATUS_WORDS.waitingForApproval, meaning: 'Someone asked to deploy an app that requires a deployer to approve first.' },
   {
-    term: 'Drift',
+    term: STATUS_WORDS.drift,
     meaning: 'What is running on the host is not what Shipyard deployed. Resolve it on the app page before the next deploy.',
   },
   {
-    term: 'Frozen',
+    term: STATUS_WORDS.frozen,
     meaning: 'Someone froze the app, so every new deploy is refused until it is unfrozen on the app page. Rollbacks and restores still work.',
   },
-  { term: 'Deploying', meaning: 'A deploy is running: backup, pull, swap, health check, then a soak before it counts as done.' },
-  { term: 'Up to date', meaning: 'Live is the newest commit on the default branch.' },
+  { term: STATUS_WORDS.deploying, meaning: 'A deploy is running: backup, pull, swap, health check, then a soak before it counts as done.' },
+  { term: STATUS_WORDS.upToDate, meaning: 'Live is the newest commit on the default branch.' },
   {
-    term: 'Roll all',
+    term: DEPLOY_ALL_READY,
     meaning:
-      'Ships every app that is ready, one at a time: each deploys and soaks before the next starts, any failure stops the rest, and Shipyard itself always goes last.',
+      'Deploys every app that is ready, one at a time: each deploys and soaks before the next starts, any failure stops the rest, and Shipyard itself always goes last.',
   },
 ];
 
@@ -139,7 +141,7 @@ export function Home() {
   return (
     <Page>
       <Stack gap="16">
-        <PageHeader title="Home" description="Every app on the host: what is live, what is waiting, and what you can ship." />
+        <PageHeader title="Home" description="Every app on the host: what is live, what is waiting, and what you can deploy." />
 
         {status === 'ready' && rows.length > 0 ? (
           <ul className="shp-summary" aria-label="Overview">
@@ -252,7 +254,7 @@ export function Home() {
                         setRollAllOpen(true);
                       }}
                     >
-                      {`Roll all ${String(rollAll.length)}`}
+                      {deployAllReadyVerb(rollAll.length)}
                     </Button>
                   ),
                 }

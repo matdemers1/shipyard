@@ -150,16 +150,16 @@ describe('status and waiting commits (SHP-T-3.10)', () => {
     routes('deployer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: commits } });
     const user = userEvent.setup();
     renderAt('/apps/web');
-    expect(await screen.findByText('Ready to ship bbbbbbb', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(await screen.findByText('Ready to deploy bbbbbbb', {}, { timeout: 4000 })).toBeInTheDocument();
     expect(screen.getByText(/1 newer commit is still being built/)).toBeInTheDocument();
 
-    const list = screen.getByRole('list', { name: 'Commits waiting to ship' });
+    const list = screen.getByRole('list', { name: 'Commits waiting to deploy' });
     const rows = within(list).getAllByRole('listitem');
     expect(rows.map((r) => within(r).getByText(/first|second|third/).textContent)).toEqual(['third', 'second', 'SHP-T-1.1: first']);
     expect(within(list).getByText('CI running')).toBeInTheDocument();
     expect(within(list).getByText('No images')).toBeInTheDocument();
 
-    await user.click(within(list).getByRole('button', { name: 'Ship bbbbbbb' }));
+    await user.click(within(list).getByRole('button', { name: 'Deploy bbbbbbb' }));
     expect(opened.at(-1)).toEqual({ kind: 'deploy', app: 'web', sha: sha('b') });
   });
 
@@ -176,19 +176,19 @@ describe('status and waiting commits (SHP-T-3.10)', () => {
     routes('deployer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: built } });
     renderAt('/apps/web');
     expect(await screen.findByText(/^Shipyard built its images\./, {}, { timeout: 4000 })).toBeInTheDocument();
-    const list = screen.getByRole('list', { name: 'Commits waiting to ship' });
+    const list = screen.getByRole('list', { name: 'Commits waiting to deploy' });
     expect(within(list).getByRole('link', { name: 'second' })).toHaveAttribute('href', '/builds/b-2');
     expect(within(list).getByText('Built')).toBeInTheDocument();
     expect(within(list).getByText('Building')).toBeInTheDocument();
     expect(within(list).getByText('Not built')).toBeInTheDocument();
   });
 
-  it('shows a viewer the status and the commits but no ship button', async () => {
+  it('shows a viewer the status and the commits but no deploy button', async () => {
     routes('viewer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: commits } });
     renderAt('/apps/web');
-    expect(await screen.findByText('Ready to ship bbbbbbb', {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByRole('list', { name: 'Commits waiting to ship' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Ship / })).not.toBeInTheDocument();
+    expect(await screen.findByText('Ready to deploy bbbbbbb', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Commits waiting to deploy' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Deploy / })).not.toBeInTheDocument();
   });
 });
 

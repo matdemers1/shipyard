@@ -2,6 +2,7 @@ import { Alert, Button, Cluster, FormActions, Modal, ModalClose, Stack } from '@
 import { useState } from 'react';
 import { request, RefusalError } from '../lib/api';
 import type { PendingApproval } from '../lib/home';
+import { VERBS } from '../lib/words';
 import type { SheetAction } from './DryRunSheet';
 
 export interface ApprovalsBannerProps {
@@ -68,7 +69,7 @@ export function ApprovalsBanner({ approvals, canDeny = true, onReview, onDenied 
                       setDenying(approval);
                     }}
                   >
-                    Deny
+                    {VERBS.deny}
                   </Button>
               </Cluster>
               ) : null}
@@ -81,7 +82,7 @@ export function ApprovalsBanner({ approvals, canDeny = true, onReview, onDenied 
         onOpenChange={(open) => {
           if (!open) setDenying(null);
         }}
-        title={denying === null ? 'Deny deploy' : `Deny ${denying.app} at ${denying.sha.slice(0, 7)}`}
+        title={denying === null ? `${VERBS.deny} deploy` : `${VERBS.deny} ${denying.app} at ${denying.sha.slice(0, 7)}`}
         description="This deploy will not run. It can be requested again later."
         destructive
         footer={
@@ -99,7 +100,7 @@ export function ApprovalsBanner({ approvals, canDeny = true, onReview, onDenied 
                 if (denying !== null) void deny(denying);
               }}
             >
-              Deny
+              {VERBS.deny}
             </Button>
           </FormActions>
         }

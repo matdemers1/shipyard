@@ -10,19 +10,28 @@ export const Gate = z
   .meta({ id: 'Gate', description: 'The deploy gate a refusal was raised at, or none' });
 export type Gate = z.infer<typeof Gate>;
 
+/**
+ * Each gate's human name, the words the console and the MCP tools show for a deploy check
+ * (SHP-REQ-165, SHP-REQ-171, SHP-T-13.3). The gate code (G5) is secondary text beside it. The
+ * console's `checkName` (apps/web/src/lib/words.ts) carries the same table: importing this module
+ * at runtime would put zod and every schema in the phone-first bundle (about 44 kB gzipped), so
+ * the console mirrors it and apps/web/test/words.test.ts fails if the two drift. G6's name is the
+ * default-branch case; the console says "On main" when it knows the branch. Disk is a check the
+ * sequence runs but not a Gate value, so the console names it itself.
+ */
 export const GATE_DESCRIPTIONS: Record<Gate, string> = {
-  G1: 'token/user authorised for the app',
-  G2: 'app not frozen',
-  G3: 'no unresolved drift',
-  G4: 'lock acquired',
-  G5: 'image workflow run for the SHA is success',
-  G6: 'SHA on default branch',
-  G7: 'ahead of live',
-  G8: 'every mapped service has sha-<40hex> in GHCR with a digest',
-  G9: 'required env names present',
-  G10: 'no later release flagged contract',
-  G11: 'approval satisfied',
-  none: 'not a gate refusal',
+  G1: 'Allowed',
+  G2: 'Not frozen',
+  G3: 'No drift',
+  G4: 'Not locked',
+  G5: 'CI passed',
+  G6: 'On the default branch',
+  G7: 'Ahead of live',
+  G8: 'Images in GHCR',
+  G9: 'Env names present',
+  G10: 'No contract release since',
+  G11: 'Approved',
+  none: 'Not a check',
 };
 
 export const ErrorCode = z

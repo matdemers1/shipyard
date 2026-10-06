@@ -1,7 +1,8 @@
 import { Badge, Button, Card, CardBody, CardTitle, Cluster, Link } from '@d3cloud/ui';
 import { Link as RouterLink } from 'react-router-dom';
-import { sha7, stateWords, summarizeCommits, type AppStatus } from '../lib/appstatus';
+import { sha7, summarizeCommits, type AppStatus } from '../lib/appstatus';
 import { ageFrom, type HomeApp, type PendingApproval } from '../lib/home';
+import { deployVerb, stateWords } from '../lib/words';
 import type { SheetAction } from './DryRunSheet';
 import { StatusLine } from './StatusLine';
 
@@ -66,7 +67,7 @@ export function AppCard({ app, status, canDeploy, onShip, approval }: AppCardPro
           onShip({ kind: 'deploy', app: app.name, sha });
         }}
       >
-        Ship {sha7(sha)}
+        {deployVerb(sha)}
       </Button>
     );
   } else if (app.active !== null) {

@@ -8,13 +8,14 @@ import {
   fetchForemanStatus,
   formatRelativeTime,
   isTerminal,
-  outcomeLabel,
   outcomeTone,
   shortSha,
   type DeployStatus,
   type DeployStep,
   type ForemanStatus,
 } from '../lib/timeline';
+import { stateWords } from '../lib/words';
+import { CheckName } from '../components/CheckName';
 import { OpenInConstellation } from '../components/OpenInConstellation';
 
 /** Deploy record (S6): the request, requester, gates, journal, images and Foreman posts. */
@@ -133,7 +134,7 @@ export function DeployRecord() {
           <DescriptionItem term="Kind">{status.kind}</DescriptionItem>
           <DescriptionItem term="Dry run">{status.dryRun ? 'Yes' : 'No'}</DescriptionItem>
           <DescriptionItem term="State">
-            <Badge tone={outcomeTone(status.state)}>{outcomeLabel(status.state)}</Badge>
+            <Badge tone={outcomeTone(status.state)}>{stateWords(status.state)}</Badge>
           </DescriptionItem>
           <DescriptionItem term="Requested">{formatRelativeTime(status.createdAt)}</DescriptionItem>
           <DescriptionItem term="Ended">{status.endedAt !== null ? formatRelativeTime(status.endedAt) : '—'}</DescriptionItem>
@@ -161,7 +162,7 @@ export function DeployRecord() {
           <DescriptionList>
             {status.group.members.map((member) => (
               <DescriptionItem key={member.targetId} term={member.app}>
-                <Badge tone={outcomeTone(member.state)}>{outcomeLabel(member.state)}</Badge>
+                <Badge tone={outcomeTone(member.state)}>{stateWords(member.state)}</Badge>
                 {member.canary ? <Badge tone="attention">Canary</Badge> : null}
                 {member.refusal !== null ? <span> — {member.refusal.message}</span> : null}
               </DescriptionItem>
@@ -170,13 +171,13 @@ export function DeployRecord() {
         </Section>
       ) : null}
 
-      <Section title="Gates">
+      <Section title="Checks">
         {status.gates.length === 0 ? (
-          <EmptyState kind="empty" heading="No gates recorded yet" headingLevel={3} size="inline" />
+          <EmptyState kind="empty" heading="No checks recorded yet" headingLevel={3} size="inline" />
         ) : (
           <DescriptionList>
             {status.gates.map((g) => (
-              <DescriptionItem key={g.gate} term={g.gate}>
+              <DescriptionItem key={g.gate} term={<CheckName gate={g.gate} />}>
                 <Badge tone={g.pass ? 'neutral' : 'danger'}>{g.pass ? 'Pass' : 'Fail'}</Badge> {g.reason}
               </DescriptionItem>
             ))}

@@ -2,6 +2,7 @@ import type { DeployAccepted, DeployRequest, DeployStatus } from '@shipyard/sche
 import { request, RefusalError } from './api';
 import type { SheetAction } from '../components/DryRunSheet';
 import { ageFrom, type AgentRow } from './home';
+import { approveVerb, deployVerb, rollBackVerb, VERBS } from './words';
 
 /**
  * The dry-run sheet's data layer (SHP-T-3.3, SHP-REQ-057, SHP-D-068): the request that starts a
@@ -98,6 +99,8 @@ export function approveDeploy(deployId: string): Promise<DeployAccepted> {
 
 export interface AppSummary {
   soakSeconds: number | null;
+  /** The branch G6 checks against; null when the app has no repository. Absent from an older server. */
+  defaultBranch?: string | null;
 }
 
 export function getApp(app: string): Promise<AppSummary> {
@@ -150,13 +153,28 @@ export function hasContractMigration(status: DeployStatus): boolean {
   return status.images.some((i) => i.migration === 'contract');
 }
 
+/**
+ * The sheet's primary button (SHP-T-13.3): it names the SHA it will act on — "Deploy 2cd9c27" —
+ * never "Confirm", so what a tap does is on the button.
+ */
+export function primaryLabelFor(action: SheetAction): string {
+  switch (action.kind) {
+    case 'deploy':
+      return deployVerb(action.sha);
+    case 'rollback':
+      return rollBackVerb(action.sha);
+    case 'approve':
+      return approveVerb(action.sha);
+  }
+}
+
 /** The label for a sheet's action, e.g. "Deploy web", used as the Modal title. */
 export function titleFor(action: SheetAction): string {
   switch (action.kind) {
     case 'deploy':
       return `Deploy ${action.app}`;
     case 'rollback':
-      return `Roll back ${action.app}`;
+      return `${VERBS.rollBack} ${action.app}`;
     case 'approve':
       return `Approve deploy of ${action.app}`;
   }

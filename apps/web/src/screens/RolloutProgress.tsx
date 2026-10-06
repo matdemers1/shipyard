@@ -1,13 +1,14 @@
 import { Alert, Badge, Cluster, DataList, DataListRow, EmptyState, Link, Page, PageHeader, Section, Skeleton, Stack } from '@d3cloud/ui';
 import type { RolloutStatus } from '@shipyard/schema';
 import { Link as RouterLink, useParams } from 'react-router-dom';
-import { sha7, stateWords } from '../lib/appstatus';
+import { sha7 } from '../lib/appstatus';
 import { isTerminal } from '../lib/progress';
 import { memberTone, rolloutFinished, useRolloutProgress } from '../lib/rollouts';
+import { DEPLOY_ALL_READY, stateWords } from '../lib/words';
 
 /**
- * Roll all in progress, `/rollouts/:id` (SHP-T-12.2, SHP-REQ-154): every app of the rollout in the
- * order it ships, each with its state as the agent reports it, linking to that app's own live deploy
+ * Deploy all ready in progress, `/rollouts/:id` (SHP-T-12.2, SHP-REQ-154; named per SHP-T-13.3): every
+ * app of the rollout in the order it deploys, each with its state as the agent reports it, linking to that app's own live deploy
  * page for the steps. Follows the rollout with long polls until every app is done.
  */
 
@@ -24,7 +25,7 @@ function memberWords(member: Member, turnHasCome: boolean): string {
 function Outcome({ status }: { status: RolloutStatus }) {
   if (status.state === 'succeeded') {
     return (
-      <Alert tone="success" title={`All ${String(status.members.length)} apps rolled`}>
+      <Alert tone="success" title={`All ${String(status.members.length)} apps deployed`}>
         Every app deployed and soaked, one after another.
       </Alert>
     );
@@ -39,7 +40,7 @@ function Outcome({ status }: { status: RolloutStatus }) {
             {stopper.refusal.message} {stopper.refusal.fix}
           </span>
         ) : null}
-        {untouched.length > 0 ? <span>Not touched: {untouched.join(', ')}. Roll again once the failure is fixed.</span> : null}
+        {untouched.length > 0 ? <span>Not touched: {untouched.join(', ')}. Deploy them again once the failure is fixed.</span> : null}
       </Stack>
     </Alert>
   );
@@ -74,7 +75,7 @@ export function RolloutProgressView({ id, retryMs }: { id: string; retryMs?: num
     <Page width="narrow">
       <Stack gap="24">
         <PageHeader
-          title="Roll all"
+          title={DEPLOY_ALL_READY}
           description={status === null ? undefined : `${String(done)} of ${String(status.members.length)} done · requested by ${status.requesterLabel}`}
         />
         {status !== null && finished ? <Outcome status={status} /> : null}

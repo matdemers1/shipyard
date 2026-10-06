@@ -117,15 +117,6 @@ export function isTerminalBuild(state: BuildState): boolean {
   return TERMINAL_BUILD_STATES.includes(state);
 }
 
-export const BUILD_STATE_LABEL: Record<BuildState, string> = {
-  queued: 'Queued',
-  running: 'Running',
-  succeeded: 'Succeeded',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-  refused: 'Refused',
-};
-
 /**
  * Tone backs the text, never replaces it (WCAG 1.4.1). One of the library's four tones: a running
  * build is `attention` so its badge is filled in light mode, a cancelled one `warning` (SHP-T-13.2).

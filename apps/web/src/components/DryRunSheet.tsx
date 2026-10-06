@@ -3,6 +3,7 @@ import type { DeployStatus } from '@shipyard/schema';
 import { useEffect, useRef, useState } from 'react';
 import { useCan, useMe } from '../lib/auth';
 import { RefusalError } from '../lib/api';
+import { CheckName } from './CheckName';
 import { getCommitsTo } from '../lib/changelog';
 import {
   approveDeploy,
@@ -12,6 +13,7 @@ import {
   getApp,
   hasContractMigration,
   pollDeployStatus,
+  primaryLabelFor,
   POLL_WAIT_SECONDS,
   startDryRun,
   startReal,
@@ -56,6 +58,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
   const me = useMe();
   const [phase, setPhase] = useState<DryRunPhase>({ kind: 'starting' });
   const [soakSeconds, setSoakSeconds] = useState<number | null>(null);
+  const [branch, setBranch] = useState<string | null>(null);
   const [commits, setCommits] = useState<CommitsResponse | null | 'loading'>('loading');
   const [confirmPhase, setConfirmPhase] = useState<ConfirmPhase>({ kind: 'idle' });
   const [elapsed, setElapsed] = useState(0);
@@ -68,6 +71,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
 
     setPhase({ kind: 'starting' });
     setSoakSeconds(null);
+    setBranch(null);
     setCommits('loading');
     setElapsed(0);
 
@@ -78,7 +82,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
       setElapsed(Math.floor((Date.now() - startedAt) / 1000));
     }, 1000);
     // A dry run that never finishes — a stale agent, or a server that does not answer — stops here
-    // with the reason, instead of spinning with Confirm disabled (SHP-DA-014).
+    // with the reason, instead of spinning with the primary button disabled (SHP-DA-014).
     let timedOut = false;
     const deadline = setTimeout(() => {
       timedOut = true;
@@ -87,10 +91,16 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
 
     void getApp(action.app)
       .then((app) => {
-        if (!stopped.current) setSoakSeconds(app.soakSeconds);
+        if (!stopped.current) {
+          setSoakSeconds(app.soakSeconds);
+          setBranch(app.defaultBranch ?? null);
+        }
       })
       .catch(() => {
-        if (!stopped.current) setSoakSeconds(null);
+        if (!stopped.current) {
+          setSoakSeconds(null);
+          setBranch(null);
+        }
       });
 
     void getCommitsTo(action.app, action.sha)
@@ -205,7 +215,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
               disabled={confirmDisabled}
               onClick={() => void onConfirm()}
             >
-              Confirm
+              {primaryLabelFor(action)}
             </Button>
           ) : null}
         </>
@@ -248,7 +258,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
             </Alert>
           ) : null}
 
-          {nothingToShip ? <Alert tone="info">Nothing to ship — live is {status.sha.slice(0, 7)}.</Alert> : null}
+          {nothingToShip ? <Alert tone="info">Nothing to deploy — live is {status.sha.slice(0, 7)}.</Alert> : null}
 
           {commits === null ? (
             <Alert tone="info">Commits unavailable.</Alert>
@@ -273,7 +283,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
             {gates.map((g) => (
               <DataListRow
                 key={g.gate}
-                title={g.gate}
+                title={<CheckName gate={g.gate} branch={branch} />}
                 description={g.pass ? undefined : g.reason}
                 meta={<Badge tone={g.pass ? 'neutral' : 'danger'}>{g.pass ? 'passed' : 'failed'}</Badge>}
               />

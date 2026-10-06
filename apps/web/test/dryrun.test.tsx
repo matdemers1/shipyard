@@ -9,11 +9,14 @@ import { meReply, mockFetch, type Reply } from './fetch';
 
 /**
  * SHP-T-3.3: the dry-run sheet (SHP-REQ-057, SHP-REQ-050, SHP-D-068). A failed gate disables
- * Confirm and shows the fix — the doneWhen — plus an all-pass confirm, the contract warning, a
+ * the Deploy button and shows the fix — the doneWhen — plus an all-pass confirm, the contract warning, a
  * viewer's read-only sheet, an approve action, and a locked refusal at confirm.
  */
 
 const SHA = 'a'.repeat(40);
+// The primary names the SHA it acts on, never "Confirm" (SHP-T-13.3).
+const DEPLOY_BUTTON = `Deploy ${SHA.slice(0, 7)}`;
+const APPROVE_BUTTON = `Approve and deploy ${SHA.slice(0, 7)}`;
 const DEPLOY_ID = 'd1';
 const APP_REPLY = { status: 200, body: { soakSeconds: 120 } };
 const COMMITS_REPLY = {
@@ -37,7 +40,7 @@ function Harness({ action }: { action: SheetAction }) {
 }
 
 describe('DryRunSheet', () => {
-  it('a failed gate disables Confirm and shows its fix', async () => {
+  it('a failed check disables the Deploy button and shows its fix', async () => {
     mockFetch({
       'GET /api/auth/me': meReply('deployer'),
       'GET /api/apps/web': APP_REPLY,
@@ -68,13 +71,13 @@ describe('DryRunSheet', () => {
 
     expect(await screen.findByText('ci.yml is red on main')).toBeInTheDocument();
     expect(await screen.findByText('Push a green commit to main and retry.')).toBeInTheDocument();
-    const confirm = screen.getByRole('button', { name: 'Confirm' });
+    const confirm = screen.getByRole('button', { name: DEPLOY_BUTTON });
     await waitFor(() => {
       expect(confirm).toBeDisabled();
     });
   });
 
-  it('an all-pass dry run enables Confirm; confirming starts the real deploy', async () => {
+  it('an all-pass dry run enables the Deploy button; deploying starts the real deploy', async () => {
     const calls = mockFetch({
       'GET /api/auth/me': meReply('deployer'),
       'GET /api/apps/web': APP_REPLY,
@@ -106,7 +109,7 @@ describe('DryRunSheet', () => {
 
     render(<Harness action={{ kind: 'deploy', app: 'web', sha: SHA }} />);
 
-    const confirm = await screen.findByRole('button', { name: 'Confirm' });
+    const confirm = await screen.findByRole('button', { name: DEPLOY_BUTTON });
     await waitFor(() => {
       expect(confirm).toBeEnabled();
     });
@@ -152,7 +155,7 @@ describe('DryRunSheet', () => {
     expect(await screen.findByText('This release includes a data migration')).toBeInTheDocument();
   });
 
-  it('a viewer sees gates but no Confirm button', async () => {
+  it('a viewer sees checks but no Deploy button', async () => {
     mockFetch({
       'GET /api/auth/me': meReply('viewer'),
       'GET /api/apps/web': APP_REPLY,
@@ -181,8 +184,10 @@ describe('DryRunSheet', () => {
 
     render(<Harness action={{ kind: 'deploy', app: 'web', sha: SHA }} />);
 
-    await screen.findByText('G5');
-    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+    // The check is named by its human name, with the gate code beside it (SHP-REQ-171).
+    expect(await screen.findByText('CI passed')).toBeInTheDocument();
+    expect(screen.getByText('G5')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: DEPLOY_BUTTON })).not.toBeInTheDocument();
   });
 
   it('shows every cited Foreman task ID as a chip from the scoped commits response (SHP-REQ-087)', async () => {
@@ -262,7 +267,7 @@ describe('DryRunSheet', () => {
     expect(await screen.findByText('claude: matdemers1/web fix')).toBeInTheDocument();
     expect(screen.getByText('Approving as')).toBeInTheDocument();
 
-    const confirm = await screen.findByRole('button', { name: 'Confirm' });
+    const confirm = await screen.findByRole('button', { name: APPROVE_BUTTON });
     await waitFor(() => {
       expect(confirm).toBeEnabled();
     });
@@ -310,7 +315,7 @@ describe('DryRunSheet', () => {
 
     render(<Harness action={{ kind: 'deploy', app: 'web', sha: SHA }} />);
 
-    const confirm = await screen.findByRole('button', { name: 'Confirm' });
+    const confirm = await screen.findByRole('button', { name: DEPLOY_BUTTON });
     await waitFor(() => {
       expect(confirm).toBeEnabled();
     });
@@ -318,7 +323,7 @@ describe('DryRunSheet', () => {
 
     expect(await screen.findByText('web is being deployed by someone else.')).toBeInTheDocument();
     expect(await screen.findByText('Wait for it to finish, then request again.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: DEPLOY_BUTTON })).toBeInTheDocument();
   });
 
   describe('a dry run the agent never finishes (SHP-DA-014)', () => {
@@ -365,7 +370,7 @@ describe('DryRunSheet', () => {
       expect(await screen.findByText('The agent is not taking work')).toBeInTheDocument();
       expect(screen.getByText(/last checked in 2\dm ago\. Nothing was changed/)).toBeInTheDocument();
       expect(screen.queryByText(/Starting the checks/)).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: DEPLOY_BUTTON })).toBeDisabled();
     });
 
     it('says the checks were slow when the agent is checking in', async () => {

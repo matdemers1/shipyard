@@ -41,6 +41,9 @@ export interface AppCardProps {
 export function AppCard({ app, status, canDeploy, onShip, approval }: AppCardProps) {
   const waiting = waitingFact(app);
   const detailHref = `/apps/${encodeURIComponent(app.name)}`;
+  // The commit page (SHP-T-13.9): the one a deploy would name, else the newest waiting.
+  const waitingCommits = app.commits?.source === 'github' ? app.commits.commits : [];
+  const nextSha = status.shipSha ?? waitingCommits[waitingCommits.length - 1]?.sha ?? null;
 
   let action: React.ReactNode = null;
   if (canDeploy && approval !== undefined) {
@@ -116,6 +119,11 @@ export function AppCard({ app, status, canDeploy, onShip, approval }: AppCardPro
 
           <div className="shp-card-stack__foot">
             {action ?? <span className="shp-facts__sub">Agent checked {ageFrom(app.reportedAt)}</span>}
+            {nextSha === null ? null : (
+              <Link asChild>
+                <RouterLink to={`${detailHref}/commits/${nextSha}`}>Commit {sha7(nextSha)}</RouterLink>
+              </Link>
+            )}
             <Link asChild>
               <RouterLink to={detailHref} aria-label={`Details for ${app.name}`}>
                 Details

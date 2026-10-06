@@ -287,6 +287,13 @@ export function AppDetail() {
                 <span className="shp-facts__sub">You review a dry run before anything changes.</span>
               </Cluster>
             ) : null}
+            {status.shipSha !== null ? (
+              <Link asChild>
+                <RouterLink to={`/apps/${encodeURIComponent(detail.name)}/commits/${status.shipSha}`}>
+                  Open commit {sha7(status.shipSha)}
+                </RouterLink>
+              </Link>
+            ) : null}
             <dl className="shp-facts">
               <div>
                 <dt>Live</dt>
@@ -341,7 +348,12 @@ export function AppDetail() {
                     }
                     description={
                       <>
-                        <code>{sha7(c.sha)}</code>
+                        {/* The commit's own page: its journey, jobs and images (SHP-T-13.9). */}
+                        <Link asChild>
+                          <RouterLink to={`/apps/${encodeURIComponent(detail.name)}/commits/${c.sha}`}>
+                            <code>{sha7(c.sha)}</code>
+                          </RouterLink>
+                        </Link>
                         {c.taskIds.length > 0 ? ` · ${c.taskIds.join(', ')}` : ''}
                         {c.sha === status.shipSha ? ' · newest ready' : ''}
                       </>

@@ -183,6 +183,16 @@ describe('status and waiting commits (SHP-T-3.10)', () => {
     expect(within(list).getByText('Not built')).toBeInTheDocument();
   });
 
+  it("links each waiting commit's SHA and the ready commit to its page (SHP-T-13.9)", async () => {
+    routes('deployer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: commits } });
+    renderAt('/apps/web');
+    expect(await screen.findByText('Ready to deploy bbbbbbb', {}, { timeout: 4000 })).toBeInTheDocument();
+    const list = screen.getByRole('list', { name: 'Commits waiting to deploy' });
+    expect(within(list).getByRole('link', { name: 'bbbbbbb' })).toHaveAttribute('href', `/apps/web/commits/${sha('b')}`);
+    expect(within(list).getByRole('link', { name: 'ccccccc' })).toHaveAttribute('href', `/apps/web/commits/${sha('c')}`);
+    expect(screen.getByRole('link', { name: 'Open commit bbbbbbb' })).toHaveAttribute('href', `/apps/web/commits/${sha('b')}`);
+  });
+
   it('shows a viewer the status and the commits but no deploy button', async () => {
     routes('viewer', detail(), noDrift, { 'GET /api/apps/web/commits': { status: 200, body: commits } });
     renderAt('/apps/web');

@@ -400,4 +400,120 @@
   .shp-steplist__row[data-state='failed'] .shp-steplist__time {
     color: var(--color-danger);
   }
+
+  /* Commit page (SHP-T-13.9) */
+
+  /* "Apps / bindery / 2cd9c27": quiet, and wrapping rather than widening a 375 px page. */
+  .shp-crumbs ol {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--text-13);
+    line-height: var(--leading-16);
+    color: var(--color-fg-muted);
+  }
+  .shp-crumbs li:not(:last-child)::after {
+    content: '/';
+    margin-left: var(--space-6);
+  }
+
+  /* The run's jobs, each a name, a length, a state in words and a bar on a shared timeline. */
+  .shp-jobs {
+    display: grid;
+    gap: var(--space-12);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-job__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2) var(--space-8);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-job__name {
+    min-width: 0;
+    font-weight: var(--weight-semibold);
+    overflow-wrap: anywhere;
+  }
+  .shp-job__time,
+  .shp-job__state {
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
+  .shp-job[data-state='failure'] .shp-job__time,
+  .shp-job[data-state='failure'] .shp-job__state {
+    color: var(--color-danger);
+  }
+  .shp-job__track {
+    position: relative;
+    height: var(--space-8);
+    margin-top: var(--space-6);
+    border-radius: var(--radius-full);
+    background: var(--color-border);
+    overflow: hidden;
+  }
+  .shp-job__bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: var(--radius-full);
+    background: var(--color-fg-muted);
+  }
+  .shp-job[data-state='failure'] .shp-job__bar {
+    background: var(--color-danger);
+  }
+  .shp-job[data-state='running'] .shp-job__bar {
+    background: var(--color-accent);
+  }
+
+  /* "0 · 5m · 10m": the shared axis the bars are positioned on. */
+  .shp-job-axis {
+    position: relative;
+    height: var(--leading-16);
+    overflow: hidden;
+    color: var(--color-fg-muted);
+    font-size: var(--text-12);
+    line-height: var(--leading-16);
+  }
+  .shp-job-axis > span {
+    position: absolute;
+    transform: translateX(-50%);
+  }
+  .shp-job-axis > span[data-edge='start'] {
+    transform: none;
+  }
+
+  /* A commit riding along: its CI marker, and the note when its own run failed. */
+  .shp-commit-ci {
+    overflow-wrap: anywhere;
+    font-size: var(--text-13);
+  }
+  .shp-commit-ci[data-ci='failure'] {
+    color: var(--color-danger);
+  }
+  .shp-commit-note {
+    display: block;
+    margin-top: var(--space-2);
+    color: var(--color-warning);
+  }
+  .shp-commit-newer {
+    display: grid;
+    gap: var(--space-6);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-16);
+    overflow-wrap: anywhere;
+  }
+  .shp-image-ref {
+    overflow-wrap: anywhere;
+  }
 }

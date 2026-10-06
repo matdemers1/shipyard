@@ -16,6 +16,8 @@ import {
 import type { DeployStatus } from '@shipyard/schema';
 import type { CSSProperties } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
+import { stateTone } from '../lib/appstatus';
+import { memberTone } from '../lib/rollouts';
 import { isTerminal, useDeployProgress, type DeployStep, type ProgressOptions, type Transport } from '../lib/progress';
 
 /**
@@ -240,7 +242,7 @@ export function DeployProgressView({ id, options }: { id: string; options?: Prog
         <Cluster gap="12" justify="between">
           <Cluster gap="8">
             {status !== null ? (
-              <Badge tone={finished && status.state !== 'succeeded' ? 'danger' : 'neutral'}>
+              <Badge tone={stateTone(status.state)}>
                 {STATE_LABEL[status.state]}
               </Badge>
             ) : null}
@@ -255,7 +257,7 @@ export function DeployProgressView({ id, options }: { id: string; options?: Prog
               {status.group.members.map((member) => (
                 <DescriptionItem key={member.targetId} term={member.app}>
                   <Cluster gap="8">
-                    <Badge tone={member.state === 'succeeded' ? 'neutral' : isTerminal(member.state) ? 'danger' : 'attention'}>
+                    <Badge tone={memberTone(member)}>
                       {STATE_LABEL[member.state]}
                     </Badge>
                     {member.canary ? <Badge tone="attention">Canary</Badge> : null}

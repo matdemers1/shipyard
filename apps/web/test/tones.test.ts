@@ -1,3 +1,4 @@
+import { DeployTargetState as DeployTargetStateSchema } from '@shipyard/schema';
 import { describe, expect, it } from 'vitest';
 import { appStatus, ciTone, stateTone, type StatusInput, type StatusKind } from '../src/lib/appstatus';
 import { buildStateTone } from '../src/lib/builds';
@@ -7,29 +8,14 @@ import { outcomeTone, type DeployTargetState } from '../src/lib/timeline';
 
 /**
  * SHP-T-13.2: every status maps onto the four tones @d3cloud/ui 1.5's Badge takes, and a state that
- * is running or active is never `neutral` — a neutral badge has no fill in light mode.
+ * is running or active is never `neutral`: neutral means quietly fine, and its fill is the card's own
+ * raised surface, so an active deploy painted neutral reads as nothing happening.
  */
 
 const LIBRARY_TONES = ['neutral', 'attention', 'warning', 'danger'];
 
-const DEPLOY_STATES: DeployTargetState[] = [
-  'queued',
-  'awaiting_approval',
-  'locked',
-  'verifying',
-  'backing_up',
-  'migrating',
-  'pulling',
-  'swapping',
-  'checking',
-  'soaking',
-  'rolling_back',
-  'succeeded',
-  'failed',
-  'rolled_back',
-  'refused',
-  'cancelled',
-];
+// From the schema's own enum, so a state added there is covered here without anyone remembering to.
+const DEPLOY_STATES: readonly DeployTargetState[] = DeployTargetStateSchema.options;
 const IN_FLIGHT = DEPLOY_STATES.filter((s) => !['queued', 'succeeded', 'failed', 'rolled_back', 'refused', 'cancelled'].includes(s));
 const BUILD_STATES = ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'refused'] as const;
 const CI_STATES: CommitEntry['ci'][] = ['success', 'failure', 'pending', 'none'];

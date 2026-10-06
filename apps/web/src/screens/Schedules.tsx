@@ -4,7 +4,7 @@ import { ScheduleSheet } from '../components/ScheduleSheet';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { sha7, when } from '../lib/appdetail';
 import { useCan } from '../lib/auth';
-import { approvalLabel, outcomeIsBad, outcomeLabel, schedules, type ScheduleEntry, type ScheduleList } from '../lib/schedules';
+import { approvalLabel, outcomeLabel, outcomeTone, schedules, type ScheduleEntry, type ScheduleList } from '../lib/schedules';
 import { fetchAppNames } from '../lib/timeline';
 
 /**
@@ -261,7 +261,7 @@ export function Schedules() {
                     : `${when(entry.fireAt)} · ${entry.by} · ${approvalLabel(entry)}`
                 }
                 meta={
-                  <Badge size="sm" tone={outcomeIsBad(entry) ? 'danger' : 'neutral'}>
+                  <Badge size="sm" tone={outcomeTone(entry)}>
                     {outcomeLabel(entry)}
                   </Badge>
                 }

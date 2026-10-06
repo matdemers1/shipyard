@@ -1,5 +1,6 @@
 import type { DeployAccepted, ScheduleEntry, ScheduleList, ScheduleRequest } from '@shipyard/schema';
 import { request } from './api';
+import { stateTone, type StatusTone } from './appstatus';
 
 /**
  * Schedules (S9, SHP-T-5.4, SHP-REQ-080/081, SHP-D-039, SHP-D-051). A schedule names one app, one
@@ -78,7 +79,10 @@ export function outcomeLabel(entry: Pick<ScheduleEntry, 'status' | 'state'>): st
   }
 }
 
-/** True when the outcome should change what someone does next. */
-export function outcomeIsBad(entry: Pick<ScheduleEntry, 'status' | 'state'>): boolean {
-  return entry.status === 'fired' && (entry.state === 'refused' || entry.state === 'failed' || entry.state === 'rolled_back');
+/**
+ * The outcome's badge tone, from the same helper every deploy badge uses (SHP-T-13.2): a fired
+ * deploy still in flight is attention, not neutral, and a cancelled schedule is warning.
+ */
+export function outcomeTone(entry: Pick<ScheduleEntry, 'status' | 'state'>): StatusTone {
+  return entry.status === 'cancelled' ? 'warning' : stateTone(entry.state);
 }

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import type { ScheduleEntry, ScheduleList } from '@shipyard/schema';
 import { describe, expect, it } from 'vitest';
 import { App } from '../src/App';
-import { approvalLabel, fireAtProblem, localToIso, outcomeLabel, shaIsValid } from '../src/lib/schedules';
+import { approvalLabel, fireAtProblem, localToIso, outcomeLabel, outcomeTone, shaIsValid } from '../src/lib/schedules';
 import { meReply, mockFetch, type Reply } from './fetch';
 
 /**
@@ -100,6 +100,15 @@ describe('schedule helpers', () => {
     expect(outcomeLabel(REFUSED)).toBe('Fired · refused');
     expect(outcomeLabel(entry({ status: 'cancelled', state: 'cancelled' }))).toBe('Cancelled');
     expect(outcomeLabel(entry({ status: 'fired', state: 'succeeded' }))).toBe('Fired · succeeded');
+  });
+
+  it("tones the outcome like every other deploy badge: in flight is attention, never neutral (SHP-T-13.2)", () => {
+    expect(outcomeTone(entry({ status: 'fired', state: 'swapping' }))).toBe('attention');
+    expect(outcomeTone(entry({ status: 'fired', state: 'soaking' }))).toBe('attention');
+    expect(outcomeTone(REFUSED)).toBe('danger');
+    expect(outcomeTone(entry({ status: 'fired', state: 'rolled_back' }))).toBe('danger');
+    expect(outcomeTone(entry({ status: 'fired', state: 'succeeded' }))).toBe('neutral');
+    expect(outcomeTone(entry({ status: 'cancelled', state: 'cancelled' }))).toBe('warning');
   });
 });
 

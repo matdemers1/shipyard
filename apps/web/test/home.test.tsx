@@ -118,6 +118,23 @@ describe('Home', () => {
     expect(await screen.findByRole('dialog')).toHaveTextContent('deploy web');
   });
 
+  it("links an app's ready commit, or its newest waiting one, to the commit page (SHP-T-13.9)", async () => {
+    mockFetch({
+      ...baseRoutes(),
+      'GET /api/auth/me': meReply('deployer'),
+      'GET /api/apps': { status: 200, body: { apps: [appRow('web'), appRow('api')] } },
+      'GET /api/approvals': { status: 200, body: [] },
+      'GET /api/apps/web/commits': { status: 200, body: commitsAheadPending() },
+      'GET /api/apps/api/commits': { status: 200, body: commitsUpToDate() },
+    });
+    render(<App />);
+    await screen.findByRole('heading', { level: 1, name: 'Home' });
+    const link = await screen.findByRole('link', { name: `Commit ${SHA_MID.slice(0, 7)}` });
+    expect(link).toHaveAttribute('href', `/apps/web/commits/${SHA_MID}`);
+    // An app with nothing waiting has no commit to open.
+    expect(screen.getAllByRole('link', { name: /^Commit [0-9a-f]{7}$/ })).toHaveLength(1);
+  });
+
   it('an up-to-date app has no deploy action', async () => {
     mockFetch({
       ...baseRoutes(),

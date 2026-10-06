@@ -78,13 +78,13 @@ jobs:
   # against this commit's server on a migrated database with a throwaway admin — manifest, native
   # sign-in, me, refresh rotation and reuse, revoke, and throttling (destructive, on that account).
   #
-  # The suite's image is private while matdemers1/d3-app-contract is (the owner's choice), and this
-  # repository's token cannot read another repository's package. D3_CONTRACT_TOKEN — a token with
-  # read:packages — opens it; without that secret the job says so and does nothing, loudly, rather
-  # than pretending to have run.
+  # The suite's image is public, as matdemers1/d3-app-contract is, so it is pulled with no token.
+  # `contract-suite` checks first that it can be: when it cannot, this job is skipped — never
+  # green having run nothing — and that job's summary carries the reason (CON-T-002).
   conformance:
     name: conformance (d3-app-contract)
-    needs: unit
+    needs: [unit, contract-suite]
+    if: needs.contract-suite.outputs.available == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -101,25 +101,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      D3_CONTRACT_TOKEN: ${{ secrets.D3_CONTRACT_TOKEN }}
       DATABASE_URL: postgresql://shipyard:shipyard@127.0.0.1:5432/shipyard_test
     steps:
-      - name: Without access to the suite, say so
-        if: env.D3_CONTRACT_TOKEN == ''
-        run: echo "::warning::D3_CONTRACT_TOKEN is not set, so the d3-app-contract suite cannot be pulled and did not run."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: env.D3_CONTRACT_TOKEN != ''
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        if: env.D3_CONTRACT_TOKEN != ''
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        if: env.D3_CONTRACT_TOKEN != ''
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - if: env.D3_CONTRACT_TOKEN != ''
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - name: A migrated test instance with a throwaway admin
-        if: env.D3_CONTRACT_TOKEN != ''
         working-directory: apps/server
         run: |
           pnpm --filter @shipyard/schema --filter @shipyard/sequence build
@@ -127,14 +118,7 @@ jobs:
           CONFORMANCE_OUT="$RUNNER_TEMP/conformance.json" node --import tsx test/conformance-server.ts > "$RUNNER_TEMP/server.log" 2>&1 &
           for _ in $(seq 1 60); do [ -s "$RUNNER_TEMP/conformance.json" ] && exit 0; sleep 1; done
           cat "$RUNNER_TEMP/server.log"; exit 1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        if: env.D3_CONTRACT_TOKEN != ''
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ env.D3_CONTRACT_TOKEN }}
       - name: The d3-app-contract suite
-        if: env.D3_CONTRACT_TOKEN != ''
         run: |
           ARGS="$RUNNER_TEMP/conformance.json"
           docker run --rm --network host -v "$PWD:/out" ghcr.io/matdemers1/d3-app-conformance:contract-1 \
@@ -145,11 +129,47 @@ jobs:
             --delete-password "$(jq -r .deletePassword "$ARGS")" --delete-totp-secret "$(jq -r .deleteTotpSecret "$ARGS")" \
             --destructive --relay-listen 18555 --junit /out/conformance.xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always() && env.D3_CONTRACT_TOKEN != ''
+        if: always()
         with:
           name: conformance
           path: conformance.xml
           if-no-files-found: ignore
+
+  # Whether the d3-app-contract suite can be fetched at all (SHP-T-10.4, CON-T-002). The contract repo
+  # and its image are public, so this pulls with no token. When the image cannot be pulled — made
+  # private again, a renamed tag, GHCR down — `conformance` is skipped rather than reported as a pass
+  # that measured nothing, and this job's summary says why.
+  contract-suite:
+    name: d3-app-contract fetch probe
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.probe.outputs.available }}
+    steps:
+      - name: Can the suite's image be pulled anonymously?
+        id: probe
+        env:
+          IMAGE: ghcr.io/matdemers1/d3-app-conformance:contract-1
+        run: |
+          if out="$(docker manifest inspect "$IMAGE" 2>&1)"; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "The d3-app-contract suite (\`$IMAGE\`) is pullable, so \`conformance\` runs it." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "::warning title=d3-app-contract suite skipped::$IMAGE cannot be pulled, so conformance is skipped: it did not run and did not pass."
+          {
+            echo "## d3-app-contract conformance: SKIPPED"
+            echo
+            echo "The suite did **not** run, so this run says nothing about the D3 App contract."
+            echo
+            echo "**Reason:** \`$IMAGE\` cannot be pulled anonymously:"
+            echo
+            echo '```'
+            printf '%s\n' "$out"
+            echo '```'
+            echo
+            echo "The package must be public: https://github.com/users/matdemers1/packages/container/d3-app-conformance/settings"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   e2e:
     needs: integration

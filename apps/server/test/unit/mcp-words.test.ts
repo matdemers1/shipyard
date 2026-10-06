@@ -25,7 +25,7 @@ const EXPECTED_TOOLS = [
 
 let client: Client | undefined;
 
-async function listTools(): Promise<{ name: string; title?: string | undefined; description?: string | undefined }[]> {
+async function listTools(): Promise<{ name: string; title?: string | undefined; description?: string | undefined; inputSchema: unknown }[]> {
   const server = buildMcpServer(deps, { tokenApps: new Set<string>() } as never, new AbortController().signal);
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'words-test', version: '0.0.0' });

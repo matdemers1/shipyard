@@ -16,6 +16,8 @@ import { fetchForemanStatus, type ForemanStatus } from './timeline';
 export interface DeployAppContext {
   soakSeconds: number | null;
   defaultBranch: string | null;
+  /** `owner/name` on GitHub, for the link to the deployed commit; null when the app has none. */
+  repo: string | null;
   liveSha: string | null;
   /** The app's last twenty targets, newest first: where "what was live before" comes from. */
   targets: HistoryTarget[];
@@ -56,6 +58,7 @@ export function useDeployAppContext(app: string | null): DeployAppContext | null
         setContext({
           soakSeconds: detail.soakSeconds,
           defaultBranch: detail.defaultBranch,
+          repo: detail.repo,
           liveSha: detail.liveSha,
           targets: detail.targets,
           foremanProject: foremanProjectOf(detail.manifest),
@@ -160,9 +163,38 @@ export function liveBefore(status: DeployStatus, targets: readonly HistoryTarget
   return running && liveSha !== status.sha ? liveSha : null;
 }
 
-/** A migrate step ran and finished, so the database is not what it was before this deploy. */
-export function migrated(steps: readonly DeployStep[]): boolean {
-  return steps.some((s) => s.name.toLowerCase() === 'migrate' && s.endedAt !== null && s.exitCode === 0);
+/**
+ * How this deploy changed the data, if it did (SHP-T-13.11): a restore step put a backup back, or a
+ * migrate step ran. A step that started counts even when it failed or never finished — the data
+ * may be half-changed — so "Data unchanged" is only ever said when neither was journaled.
+ */
+export interface DataChange {
+  step: 'restore' | 'migrate';
+  /** It finished with exit 0. */
+  ok: boolean;
+  /** It has not ended yet. */
+  running: boolean;
+  exitCode: number | null;
+}
+
+export function dataChange(steps: readonly DeployStep[]): DataChange | null {
+  const find = (name: string) => steps.find((s) => s.name.toLowerCase() === name);
+  const restore = find('restore');
+  const migrate = find('migrate');
+  const step = restore ?? migrate;
+  if (step === undefined) return null;
+  return {
+    step: restore !== undefined ? 'restore' : 'migrate',
+    ok: step.endedAt !== null && step.exitCode === 0,
+    running: step.endedAt === null,
+    exitCode: step.exitCode,
+  };
+}
+
+/** The deployed commit on GitHub, when the repository is a plain `owner/name`. */
+export function commitUrl(repo: string | null, sha: string): string | null {
+  if (repo === null || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[0-9a-f]{7,40}$/i.test(sha)) return null;
+  return `https://github.com/${repo}/commit/${sha}`;
 }
 
 /** A finished step's one-line result: the last non-empty line of its output. */

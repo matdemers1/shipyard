@@ -2,7 +2,7 @@ import type { DeployTargetState } from '@shipyard/schema';
 import { useEffect, useState } from 'react';
 import { isTerminal, type DeployStep } from '../../lib/progress';
 import { PipeNode } from './PipeNode';
-import { deploySteps, STATE_LABEL } from './stages';
+import { deploySteps, STATE_LABEL, type DeployKind } from './stages';
 
 /** The clock a running step's timer reads; ticks each second only while something is running. */
 function useNow(active: boolean, pinned: number | undefined): number {
@@ -30,16 +30,19 @@ export function StepList({
   state,
   soakSeconds,
   now,
+  kind,
 }: {
   steps: readonly DeployStep[];
   state: DeployTargetState;
   soakSeconds?: number;
   now?: number;
+  /** The deploy's kind, which decides the planned steps (SHP-T-13.11); a deploy's when absent. */
+  kind?: DeployKind;
 }) {
   // A finished deploy never ticks, even with a step the agent left open when it stopped.
   const running = !isTerminal(state) && steps.some((s) => s.endedAt === null);
   const clock = useNow(running, now);
-  const rows = deploySteps(steps, state, { now: clock, ...(soakSeconds === undefined ? {} : { soakSeconds }) });
+  const rows = deploySteps(steps, state, { now: clock, ...(soakSeconds === undefined ? {} : { soakSeconds }), ...(kind === undefined ? {} : { kind }) });
   return (
     <ol className="shp-steplist" aria-label="Deploy steps">
       {rows.map((r) => (

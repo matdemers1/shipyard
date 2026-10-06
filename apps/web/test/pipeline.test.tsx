@@ -387,3 +387,38 @@ describe('a finished deploy tells one story (SHP-T-13.7 verifier gaps)', () => {
     expect(rows.some((r) => r.state === 'running')).toBe(false);
   });
 });
+
+describe('the planned steps follow the deploy kind (SHP-T-13.11 verifier gaps)', () => {
+  it('a restore plans Back up, Restore, Pull, Swap, Check, Soak — Restore right after Back up, no Migrate, no Roll back', () => {
+    const rows = deploySteps([step('verify', '11:58:00', '11:58:01'), step('backup', '11:58:01', '11:58:20'), step('restore', '11:58:20', null)], 'migrating', {
+      now: NOW,
+      kind: 'restore',
+    });
+    expect(rows.map((r) => r.key)).toEqual(['backup', 'restore', 'pull', 'swap', 'check', 'soak']);
+    expect(rows.map((r) => r.state)).toEqual(['done', 'running', 'waiting', 'waiting', 'waiting', 'waiting']);
+    expect(rows[1]?.label).toBe('Restore');
+  });
+
+  it('a rollback plans images only: Pull, Swap, Check, Soak', () => {
+    const rows = deploySteps([step('pull', '11:58:00', '11:58:10'), step('swap', '11:58:10', null)], 'swapping', { now: NOW, kind: 'rollback' });
+    expect(rows.map((r) => r.key)).toEqual(['pull', 'swap', 'check', 'soak']);
+    expect(rows.map((r) => r.state)).toEqual(['done', 'running', 'waiting', 'waiting']);
+  });
+
+  it('a rolled-back deploy with no journaled rollback step shows Roll back done, never skipped', () => {
+    const rows = deploySteps([step('swap', '11:58:00', '11:58:05'), step('check', '11:58:05', '11:58:10', 1)], 'rolled_back', { now: NOW });
+    expect(rows.find((r) => r.key === 'rollback')).toMatchObject({ label: 'Roll back', state: 'done' });
+    const rolling = deploySteps([step('check', '11:58:05', '11:58:10', 1)], 'rolling_back', { now: NOW });
+    expect(rolling.find((r) => r.key === 'rollback')?.state).toBe('running');
+  });
+
+  it("a running soak counts to the manifest's soak and no further, in the step list and the lane", () => {
+    // Soaking since 11:58:30: 90 s at NOW, against a 60 s soak.
+    const steps = [step('swap', '11:58:00', '11:58:20'), step('check', '11:58:20', '11:58:30'), step('soak', '11:58:30', null)];
+    const rows = deploySteps(steps, 'soaking', { now: NOW, soakSeconds: 60 });
+    expect(rows.find((r) => r.key === 'soak')?.detail).toBe('60s of 60s');
+    expect(byKey(deployStages(status('soaking'), steps, { now: NOW, soakSeconds: 60 })).deploy.detail).toBe('Soaking 1m 00s');
+    render(<StepList steps={steps} state="soaking" soakSeconds={60} now={NOW} kind="deploy" />);
+    expect(screen.getByText('Soak').closest('li')).toHaveTextContent('Soak Running 60s of 60s');
+  });
+});

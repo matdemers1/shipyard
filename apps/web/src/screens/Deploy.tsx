@@ -18,7 +18,7 @@ import {
 } from '@d3cloud/ui';
 import type { DeployStatus } from '@shipyard/schema';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { Link as RouterLink, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { Link as RouterLink, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { CheckName } from '../components/CheckName';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { OpenInConstellation } from '../components/OpenInConstellation';
@@ -29,11 +29,12 @@ import { sha7, stateTone } from '../lib/appstatus';
 import { useCan } from '../lib/auth';
 import {
   clockTime,
+  commitUrl,
+  dataChange,
   dateTime,
   decideApproval,
   lastLine,
   liveBefore,
-  migrated,
   soakClock,
   useCiRunUrl,
   useDeployAppContext,
@@ -153,8 +154,118 @@ function RefusalLines({ status }: { status: DeployStatus }) {
   );
 }
 
+/** Where a failed or running deploy is, for a title: the failed row and its exit, if any. */
+function failedAt(rows: readonly StepRow[], steps: readonly DeployStep[]): string | null {
+  const failedRow = rows.find((r) => r.state === 'failed');
+  if (failedRow === undefined) return null;
+  const exit = steps.find((s) => s.name.toLowerCase() === failedRow.key)?.exitCode ?? null;
+  return `${failedRow.label}${exit === null ? '' : ` · exit ${String(exit)}`}`;
+}
+
+/**
+ * A restore's own words (SHP-T-13.11, SHP-D-038): it puts the data back from a backup and then runs
+ * the release that matches it — it is not a deploy, and its "migrating" state is the restore
+ * command. A failure after the restore command ran is never undone automatically: the data has
+ * changed, and what happens next is a person's decision. Null for states a deploy words the same.
+ */
+function restoreVerdict({ status, rows, steps, soak }: VerdictInput): { title: ReactNode; body: ReactNode } | null {
+  const short = sha7(status.sha);
+  const restored = steps.some((s) => s.name.toLowerCase() === 'restore');
+  const what = (
+    <p>
+      Putting {status.app}&apos;s data back from a backup, then running {short}, the release that matches it. A safety
+      backup is taken first, so this restore can itself be undone.
+    </p>
+  );
+  switch (status.state) {
+    case 'backing_up':
+      return { title: 'Restoring · taking a safety backup', body: what };
+    case 'migrating':
+      return { title: 'Restoring · putting the data back', body: what };
+    case 'pulling':
+    case 'swapping':
+    case 'checking':
+      return { title: `Restoring · ${stateWords(status.state)}`, body: <p>The data is restored. {short} is coming up on it.</p> };
+    case 'soaking':
+      return {
+        title: soak === null ? `Restoring · ${stateWords('soaking')}` : `Restoring · ${stateWords('soaking')} · ${String(soak.elapsed)}s of ${String(soak.total)}s`,
+        body: <p>The data is restored and {short} is serving on it. Shipyard watches for restarts and /health, then marks the restore done.</p>,
+      };
+    case 'succeeded':
+      return {
+        title: `Restored · ${status.app} is running ${short} on the restored data`,
+        body: (
+          <p>
+            The data now matches the backup; writes made after it was taken are gone. The safety backup taken before the
+            restore can undo it.
+          </p>
+        ),
+      };
+    case 'failed': {
+      const at = failedAt(rows, steps);
+      return {
+        title: at === null ? `Restore ${stateWords('failed').toLowerCase()}` : `Restore ${stateWords('failed').toLowerCase()} at ${at}`,
+        body: (
+          <>
+            <RefusalLines status={status} />
+            <p>
+              {restored
+                ? 'The restore command ran, so the data may have changed. Nothing is undone automatically: what happens next is your decision.'
+                : 'The restore command never ran: the data is unchanged.'}
+            </p>
+          </>
+        ),
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * A rollback's own words (SHP-REQ-051): images only — no backup, no migrate — to a release from the
+ * agent's ledger. Null for states a deploy words the same.
+ */
+function rollbackVerdict({ status, rows, steps, soak, before }: VerdictInput): { title: ReactNode; body: ReactNode } | null {
+  const short = sha7(status.sha);
+  const prev = before === null ? null : sha7(before);
+  const imageOnly = 'A rollback swaps the images only; the data is not touched.';
+  switch (status.state) {
+    case 'pulling':
+    case 'swapping':
+    case 'checking':
+      return { title: `${VERBS.rollBack} · ${stateWords(status.state)}`, body: <p>Going back to {short}. {imageOnly}</p> };
+    case 'soaking':
+      return {
+        title: soak === null ? `${VERBS.rollBack} · ${stateWords('soaking')}` : `${VERBS.rollBack} · ${stateWords('soaking')} · ${String(soak.elapsed)}s of ${String(soak.total)}s`,
+        body: <p>{short} is serving traffic again. Shipyard watches for restarts and /health, then marks it live. {imageOnly}</p>,
+      };
+    case 'rolling_back':
+      return { title: stateWords('rolling_back'), body: <p>{short} did not hold; {prev === null ? 'what was live' : prev} is coming back. {imageOnly}</p> };
+    case 'succeeded':
+      return { title: `Rolled back to ${short} · it is live`, body: <p>The soak passed. {imageOnly}</p> };
+    case 'rolled_back':
+      return {
+        title: prev === null ? `${short} did not hold · what was live is running again` : `${short} did not hold · ${prev} is running again`,
+        body: (
+          <>
+            <p>Data unchanged.</p>
+            <RefusalLines status={status} />
+          </>
+        ),
+      };
+    case 'failed': {
+      const at = failedAt(rows, steps);
+      return { title: at === null ? `${VERBS.rollBack} ${stateWords('failed').toLowerCase()}` : `${VERBS.rollBack} ${stateWords('failed').toLowerCase()} at ${at}`, body: <RefusalLines status={status} /> };
+    }
+    default:
+      return null;
+  }
+}
+
 /** What the banner says for each state: a title that is the outcome, then what it means. */
-function verdict({ status, rows, steps, soak, soakSeconds, before, branch }: VerdictInput): { title: ReactNode; body: ReactNode } {
+function verdict(input: VerdictInput): { title: ReactNode; body: ReactNode } {
+  const { status, rows, steps, soak, soakSeconds, before, branch } = input;
   const short = sha7(status.sha);
   const prev = before === null ? null : sha7(before);
   const stays = prev === null ? 'What was live stays live.' : `${prev} stays live.`;
@@ -180,6 +291,9 @@ function verdict({ status, rows, steps, soak, soakSeconds, before, branch }: Ver
       ),
     };
   }
+
+  const own = status.kind === 'restore' ? restoreVerdict(input) : status.kind === 'rollback' ? rollbackVerdict(input) : null;
+  if (own !== null) return own;
 
   switch (status.state) {
     case 'awaiting_approval':
@@ -236,7 +350,8 @@ function verdict({ status, rows, steps, soak, soakSeconds, before, branch }: Ver
         body: <p>{soakSeconds === null ? 'The soak passed.' : `The ${String(soakSeconds)}s soak passed.`} The digests below are what runs.</p>,
       };
     case 'rolled_back': {
-      const data = migrated(steps) ? 'The migration that ran stays in the database.' : 'Data unchanged.';
+      // "Data unchanged" only when no migrate or restore step was journaled at all (SHP-T-13.11).
+      const data = dataChange(steps) === null ? 'Data unchanged.' : 'The migration that ran stays in the database: an image rollback does not undo it.';
       return {
         title: prev === null ? `${stateWords('rolled_back')} · the previous release is running again` : `${stateWords('rolled_back')} · ${status.app} is running ${prev} again`,
         body: (
@@ -267,16 +382,8 @@ function verdict({ status, rows, steps, soak, soakSeconds, before, branch }: Ver
       };
     }
     case 'failed': {
-      const failedRow = rows.find((r) => r.state === 'failed');
-      const failedStep = failedRow === undefined ? undefined : steps.find((s) => s.name.toLowerCase() === failedRow.key);
-      const exit = failedStep?.exitCode ?? null;
-      return {
-        title:
-          failedRow === undefined
-            ? stateWords('failed')
-            : `${stateWords('failed')} at ${failedRow.label}${exit === null ? '' : ` · exit ${String(exit)}`}`,
-        body: <RefusalLines status={status} />,
-      };
+      const at = failedAt(rows, steps);
+      return { title: at === null ? stateWords('failed') : `${stateWords('failed')} at ${at}`, body: <RefusalLines status={status} /> };
     }
     case 'cancelled':
       return {
@@ -429,6 +536,7 @@ function Facts({
   status,
   steps,
   before,
+  repo,
   soakSeconds,
   done,
   now,
@@ -436,6 +544,7 @@ function Facts({
   status: DeployStatus;
   steps: readonly DeployStep[];
   before: string | null;
+  repo: string | null;
   soakSeconds: number | null;
   done: boolean;
   now: number;
@@ -443,21 +552,50 @@ function Facts({
   const short = sha7(status.sha);
   const prev = before === null ? null : sha7(before);
   const swap = steps.find((s) => s.name.toLowerCase() === 'swap' && s.endedAt !== null);
+  // This deploy's SHA links to its commit on GitHub when the app's repository is known, as the old
+  // record's did; the SHAs around it are context and stay text.
+  const href = commitUrl(repo, status.sha);
+  const self = href === null ? short : (
+    <Link href={href} target="_blank" rel="noreferrer" aria-label={`Commit ${short} on GitHub`}>
+      {short}
+    </Link>
+  );
   const chain =
-    status.state === 'rolled_back'
-      ? prev === null
-        ? `${short} → the previous release`
-        : `${prev} → ${short} → ${prev}`
-      : prev === null || status.dryRun
-        ? short
-        : `${prev} → ${short}`;
+    status.state === 'rolled_back' ? (
+      prev === null ? (
+        <>{self} → the previous release</>
+      ) : (
+        <>
+          {prev} → {self} → {prev}
+        </>
+      )
+    ) : prev === null || status.dryRun ? (
+      self
+    ) : (
+      <>
+        {prev} → {self}
+      </>
+    );
   const labels = status.images.map((i) => i.migration).filter((m): m is string => typeof m === 'string' && m !== '' && m !== 'none');
   const migrationLabel = labels.length > 0 ? [...new Set(labels)].join(', ') : null;
-  const migration = migrated(steps)
-    ? `${migrationLabel ?? 'ran'} · migrate step ran`
-    : done && !status.dryRun && status.state !== 'refused' && status.state !== 'cancelled'
-      ? `${migrationLabel ?? 'none'} · database never changed`
-      : migrationLabel;
+  const change = dataChange(steps);
+  const exit = change === null || change.exitCode === null ? '' : ` (exit ${String(change.exitCode)})`;
+  // A restore changes the data by design; a migrate step may; anything else never touches it.
+  const dataTerm = change?.step === 'restore' || status.kind === 'restore' ? 'Data' : 'Migration';
+  const migration =
+    change !== null && change.running && !done
+      ? `${change.step === 'restore' ? 'restoring now' : 'migrating now'} · the database is changing`
+      : change?.step === 'restore'
+      ? change.ok
+        ? 'restored from a backup · the database changed'
+        : `restore step did not finish${exit} · the database may have changed`
+      : change?.step === 'migrate'
+        ? change.ok
+          ? `${migrationLabel ?? 'ran'} · migrate step ran`
+          : `migrate step did not finish${exit} · the database may have changed`
+        : done && !status.dryRun && status.state !== 'refused' && status.state !== 'cancelled'
+          ? `${migrationLabel ?? 'none'} · database never changed`
+          : migrationLabel;
   const where = [status.requester.repo, status.requester.branch].filter((p): p is string => p !== null && p !== '').join(' · ');
 
   return (
@@ -499,7 +637,7 @@ function Facts({
       ) : null}
       {migration !== null ? (
         <div>
-          <dt>Migration</dt>
+          <dt>{dataTerm}</dt>
           <dd>{migration}</dd>
         </div>
       ) : null}
@@ -881,7 +1019,8 @@ export function DeployView({ id, options, now: pinnedNow, canAct = false, onDepl
   const soakSeconds = context?.soakSeconds ?? null;
   const soakOption = soakSeconds === null ? {} : { soakSeconds };
   const branch = context?.defaultBranch ?? status.requester.branch;
-  const rows = deploySteps(steps, status.state, { now, ...soakOption });
+  // The planned steps come from the deploy's kind: a rollback and a restore run different ones.
+  const rows = deploySteps(steps, status.state, { now, kind: status.kind, ...soakOption });
   const before = liveBefore(status, context?.targets ?? [], context?.liveSha ?? null, !done);
   const soak = soakClock(steps, soakSeconds, now);
   const { title, crumb } = titleFor(status);
@@ -895,9 +1034,18 @@ export function DeployView({ id, options, now: pinnedNow, canAct = false, onDepl
           <PageHeader title={title} description={status.dryRun ? 'Dry run — nothing deployed' : undefined} />
         </Stack>
         <Verdict input={{ status, rows, steps, soak, soakSeconds, before, branch }} canAct={canAct} transport={transport} done={done} />
-        <Facts status={status} steps={steps} before={before} soakSeconds={soakSeconds} done={done} now={now} />
+        <Facts
+          status={status}
+          steps={steps}
+          before={before}
+          repo={context?.repo ?? status.requester.repo}
+          soakSeconds={soakSeconds}
+          done={done}
+          now={now}
+        />
         <Group status={status} done={done} />
-        <PipeLane stages={deployStages(status, steps, { now, ...soakOption })} label="Pipeline" />
+        {/* The lane is a commit's road to live; a rollback or restore skips CI's road, so it has none. */}
+        {status.kind === 'deploy' ? <PipeLane stages={deployStages(status, steps, { now, ...soakOption })} label="Pipeline" /> : null}
         <Steps rows={rows} steps={steps} status={status} done={done} now={now} />
         <Checks status={status} branch={branch} />
         <Images status={status} />
@@ -942,5 +1090,7 @@ export function Deploy() {
 /** `/deploys/:id/live`, the old live view's address: the one page now, same deploy (SHP-DA-005). */
 export function DeployLiveRedirect() {
   const { id = '' } = useParams();
-  return <Navigate to={`/deploys/${encodeURIComponent(id)}`} replace />;
+  // A shared link's query and hash (a step anchor) survive the move.
+  const { search, hash } = useLocation();
+  return <Navigate to={{ pathname: `/deploys/${encodeURIComponent(id)}`, search, hash }} replace />;
 }

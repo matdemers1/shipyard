@@ -232,7 +232,9 @@ function deployTail(deploy: CommitDeploy, sha: string, liveSha: string | null, n
         live: stage('live', 'skipped', live, { note: 'The deploy was cancelled' }),
       };
     case 'soaking': {
-      const elapsed = between(deploy.startedAt, now);
+      const ran = between(deploy.startedAt, now);
+      // Counted up to the manifest's soak and no further, as the step list and the deploy page do.
+      const elapsed = ran === null || deploy.soakSeconds === undefined ? ran : Math.min(ran, deploy.soakSeconds * 1000);
       return {
         checks: stage('checks', 'done', 'Passed'),
         imagesVerified: true,
@@ -426,7 +428,10 @@ export interface StepRow {
   detail: string;
 }
 
-/** The steps every deploy plans, in order; the agent names them lower-case. */
+/** A deploy's kind: what it plans to run depends on it (packages/sequence). */
+export type DeployKind = 'deploy' | 'rollback' | 'restore';
+
+/** The steps every deploy plans, in order; the agent names them lower-case (machine.ts). */
 export const PLANNED_STEPS: readonly { key: string; label: string }[] = [
   { key: 'backup', label: 'Back up' },
   { key: 'migrate', label: 'Migrate' },
@@ -436,40 +441,75 @@ export const PLANNED_STEPS: readonly { key: string; label: string }[] = [
   { key: 'soak', label: 'Soak' },
 ];
 
+/**
+ * What each kind runs, in the order packages/sequence journals it (SHP-T-13.11). A rollback is
+ * image-only — no backup, no migrate (rollback.ts). A restore takes a safety backup, runs the app's
+ * restore command, then brings up the release that matches the data (restore.ts); it never rolls
+ * back on its own, so it never plans a Roll back.
+ */
+export const PLANNED_BY_KIND: Record<DeployKind, readonly { key: string; label: string }[]> = {
+  deploy: PLANNED_STEPS,
+  rollback: [
+    { key: 'pull', label: 'Pull' },
+    { key: 'swap', label: 'Swap' },
+    { key: 'check', label: 'Check' },
+    { key: 'soak', label: 'Soak' },
+  ],
+  restore: [
+    { key: 'backup', label: 'Back up' },
+    { key: 'restore', label: 'Restore' },
+    { key: 'pull', label: 'Pull' },
+    { key: 'swap', label: 'Swap' },
+    { key: 'check', label: 'Check' },
+    { key: 'soak', label: 'Soak' },
+  ],
+};
+
 const TERMINAL: readonly DeployTargetState[] = ['succeeded', 'failed', 'rolled_back', 'refused', 'cancelled'];
 
 function titleCase(name: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1).replaceAll('_', ' ');
 }
 
+export interface DeployStepsOptions {
+  now?: number;
+  soakSeconds?: number;
+  /** Which plan to list; a deploy's when absent. */
+  kind?: DeployKind;
+}
+
 /**
- * Every planned step listed up front with its timer. A step the deploy has not reached is
- * waiting; one it will never reach — the deploy ended, or a later step already ran, as when an app
- * has nothing to back up or migrate — is skipped. "Roll back" appears only when one happened.
- * The verify step is the Checks stage's, not a row here.
+ * Every planned step for the deploy's kind, listed up front with its timer. A step the deploy has
+ * not reached is waiting; one it will never reach — the deploy ended, or a later step already ran,
+ * as when an app has nothing to back up or migrate — is skipped. "Roll back" appears only when one
+ * happened: the agent journaled it, or the deploy's own state says it is rolling back or rolled
+ * back — never as a skipped row on a deploy that did roll back. The verify step is the Checks
+ * stage's, not a row here. A running soak counts up to the manifest's soak and no further.
  */
-export function deploySteps(
-  steps: readonly DeployStep[],
-  state: DeployTargetState,
-  options: { now?: number; soakSeconds?: number } = {},
-): StepRow[] {
+export function deploySteps(steps: readonly DeployStep[], state: DeployTargetState, options: DeployStepsOptions = {}): StepRow[] {
   const now = options.now ?? Date.now();
+  const kind = options.kind ?? 'deploy';
+  const base = PLANNED_BY_KIND[kind];
   const ended = TERMINAL.includes(state);
   const recorded = new Map(steps.map((s) => [s.name.toLowerCase(), s]));
-  const rolled = recorded.has('rollback') || state === 'rolling_back' || state === 'rolled_back';
+  const rolled = recorded.has('rollback') || (kind !== 'restore' && (state === 'rolling_back' || state === 'rolled_back'));
   const plan = [
-    ...PLANNED_STEPS,
+    ...base,
     ...(rolled ? [{ key: 'rollback', label: 'Roll back' }] : []),
     ...[...recorded.keys()]
-      .filter((k) => k !== 'verify' && k !== 'rollback' && !PLANNED_STEPS.some((p) => p.key === k))
+      .filter((k) => k !== 'verify' && k !== 'rollback' && !base.some((p) => p.key === k))
       .map((k) => ({ key: k, label: titleCase(k) })),
   ];
   // Planned steps before one that already ran were not needed by this app.
-  const lastPlannedRecorded = PLANNED_STEPS.reduce((last, p, i) => (recorded.has(p.key) ? i : last), -1);
+  const lastPlannedRecorded = base.reduce((last, p, i) => (recorded.has(p.key) ? i : last), -1);
 
   return plan.map((p, i): StepRow => {
     const step = recorded.get(p.key);
     if (step === undefined) {
+      if (p.key === 'rollback') {
+        // The state is the agent's report that it rolled back, even with no journaled step to time.
+        return { key: p.key, label: p.label, state: state === 'rolling_back' ? 'running' : 'done', detail: '' };
+      }
       const skipped = ended || i < lastPlannedRecorded;
       const soakLength = p.key === 'soak' && options.soakSeconds !== undefined ? `${String(options.soakSeconds)}s` : '';
       return { key: p.key, label: p.label, state: skipped ? 'skipped' : 'waiting', detail: skipped ? '' : soakLength };
@@ -478,9 +518,13 @@ export function deploySteps(
       return { key: p.key, label: p.label, state: 'failed', detail: 'Did not finish' };
     }
     if (step.endedAt === null) {
-      const elapsed = formatSpan(between(step.startedAt, now) ?? 0);
-      const of = p.key === 'soak' && options.soakSeconds !== undefined ? ` of ${String(options.soakSeconds)}s` : '';
-      return { key: p.key, label: p.label, state: 'running', detail: `${elapsed}${of}` };
+      const soakOf = p.key === 'soak' ? options.soakSeconds : undefined;
+      const ran = between(step.startedAt, now) ?? 0;
+      if (soakOf === undefined) return { key: p.key, label: p.label, state: 'running', detail: formatSpan(ran) };
+      // Whole seconds against the manifest's soak, as the deploy page's banner counts them; a soak that
+      // outlives it (the agent is finishing up) never reads 70s of 60s.
+      const soaked = Math.min(soakOf, Math.max(0, Math.floor(ran / 1000)));
+      return { key: p.key, label: p.label, state: 'running', detail: `${String(soaked)}s of ${String(soakOf)}s` };
     }
     const failed = step.exitCode !== null && step.exitCode !== 0;
     const took = between(step.startedAt, step.endedAt);

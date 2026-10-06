@@ -149,25 +149,6 @@ export interface DeployStatus {
   group?: DeployGroup;
 }
 
-export function fetchDeployStatus(id: string): Promise<DeployStatus> {
-  return request<DeployStatus>(`/api/deploys/${encodeURIComponent(id)}`);
-}
-
-export interface DeployStep {
-  name: string;
-  argv: string[];
-  startedAt: string;
-  endedAt: string | null;
-  exitCode: number | null;
-  output: string | null;
-}
-
-/** `GET /api/deploys/:id/steps`, built alongside this task; the journal (SHP-T-3.7 reads only). */
-export async function fetchDeploySteps(id: string): Promise<DeployStep[]> {
-  const { steps } = await request<{ steps: DeployStep[] }>(`/api/deploys/${encodeURIComponent(id)}/steps`);
-  return steps;
-}
-
 export interface ForemanPost {
   service: string;
   idempotencyKey: string;

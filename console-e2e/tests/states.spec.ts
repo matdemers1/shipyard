@@ -21,9 +21,11 @@ const h1 = (page: Page, name: string | RegExp) => expect(page.getByRole('heading
 /** The home card for `app`. */
 const card = (page: Page, app: string) => page.getByRole('listitem').filter({ has: page.getByRole('link', { name: app, exact: true }) });
 
-/** A step's card on the progress screen, by the step's name. */
-const stepCard = (page: Page, name: string) =>
-  page.getByRole('list', { name: 'Deploy steps' }).getByRole('listitem').filter({ has: page.locator('strong').getByText(name, { exact: true }) });
+/** A step's row on the deploy page, by the agent's name for the step (SHP-T-13.11: `data-step`). */
+const stepCard = (page: Page, name: string) => page.getByRole('list', { name: 'Deploy steps' }).locator(`[data-step="${name}"]`);
+
+/** The deploy page's verdict banner, by the start of its title (SHP-T-13.11). */
+const verdict = (page: Page, title: RegExp) => page.getByRole('region', { name: title });
 
 /** A route handler that holds the request until `release()` is called (then lets it through). */
 function hold(): { handler: (route: Route) => Promise<void>; release: () => void; seen: Promise<void> } {
@@ -222,25 +224,33 @@ test.describe('as an admin, baseline world', () => {
     await expect(dialog.getByRole('button', { name: `Approve and deploy ${HELD_SHA.slice(0, 7)}` })).toBeDisabled();
   });
 
-  test('S4 loading: the step list with live output, the current step marked', async ({ page }) => {
-    await page.goto(`/deploys/${fixture().deploys.inProgress}/live`);
+  test('S4 loading: every planned step listed, the current step marked, finished ones with their result', async ({ page }) => {
+    const id = fixture().deploys.inProgress;
+    // The old live address is a redirect to the one deploy page (SHP-T-13.11).
+    await page.goto(`/deploys/${id}/live`);
+    await expect(page).toHaveURL(new RegExp(`/deploys/${id}$`));
     const steps = page.getByRole('list', { name: 'Deploy steps' });
     await expect(steps).toBeVisible();
     const current = steps.locator('[aria-current="step"]');
-    await expect(current).toContainText('soak');
+    await expect(current).toContainText('Soak');
     await expect(current).toContainText('Running');
-    await expect(steps.getByLabel('Output of pull')).toContainText('Pulled');
+    await expect(stepCard(page, 'pull')).toContainText('Pulled');
+    await expect(verdict(page, /^Soaking/)).toBeVisible();
   });
 
   test('S4 error: the failed step highlighted, rollback steps after it', async ({ page }) => {
     await page.goto(`/deploys/${fixture().deploys.rolledBack}/live`);
     await expect(page.getByRole('list', { name: 'Deploy steps' })).toBeVisible();
     const check = stepCard(page, 'check');
-    await expect(check).toContainText('Failed (exit 1)');
+    await expect(check).toHaveAttribute('data-state', 'failed');
+    await expect(check).toContainText('exit 1');
     await expect(check).toContainText('/health: 503');
     const rollback = stepCard(page, 'rollback');
-    await expect(rollback).toContainText('Rollback');
-    await expect(alertBox(page, 'Rolled back')).toContainText('/health answered 503');
+    await expect(rollback).toContainText('Roll back');
+    await expect(verdict(page, /^Rolled back/)).toContainText('/health answered 503');
+    // Next actions, and never a Retry.
+    await expect(page.getByRole('group', { name: 'Next actions' }).getByRole('button', { name: 'Deploy again' })).toBeVisible();
+    await expect(page.getByText(/\bRetry\b/)).toHaveCount(0);
   });
 
   test('S5 empty: "Never deployed through Shipyard" with adopt-live', async ({ page }) => {
@@ -273,13 +283,14 @@ test.describe('as an admin, baseline world', () => {
   test('S6 loading: a skeleton while the deploy is read', async ({ page }) => {
     const id = fixture().deploys.succeeded;
     const held = hold();
-    await page.route(isPath(`/api/deploys/${id}`), held.handler);
+    // The page reads the deploy from its event stream first, polling only when the stream fails.
+    await page.route((url) => url.pathname === `/api/deploys/${id}` || url.pathname === `/api/deploys/${id}/events`, held.handler);
     await page.goto(`/deploys/${id}`);
     await held.seen;
     await expect(page.getByRole('status').filter({ hasText: 'Loading this deploy' })).toBeAttached();
     await expect(page.locator('[aria-busy="true"]').first()).toBeAttached();
     held.release();
-    await expect(page.getByRole('heading', { level: 1 })).toContainText('·');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(/^Deploy /);
   });
 
   test('S6 error: an outbox failing badge on a deploy Foreman never received', async ({ page }) => {
@@ -458,14 +469,14 @@ test.describe('as an admin, a changed world', () => {
       });
       return failed.deployId;
     });
-    // Confirming a restore follows it live; the record keeps the journal.
+    // Confirming a restore follows it live, at the address that is also its record (SHP-T-13.11).
     await page.goto(`/deploys/${deployId}/live`);
-    await expect(alertBox(page, 'Failed')).toContainText('The restore step exited 1.');
-    await expect(stepCard(page, 'restore')).toContainText('Failed (exit 1)');
-    await page.getByRole('link', { name: 'Deploy record' }).click();
-    const journal = page.getByRole('region', { name: 'Journal' }).or(page.locator('section').filter({ has: page.getByRole('heading', { name: 'Journal' }) }));
-    await expect(journal.first()).toContainText('exit 1');
-    await expect(journal.first()).toContainText('pg_restore: error: could not open input file');
+    await expect(page).toHaveURL(new RegExp(`/deploys/${deployId}$`));
+    await expect(verdict(page, /^Failed/)).toContainText('The restore step exited 1.');
+    const restore = stepCard(page, 'restore');
+    await expect(restore).toHaveAttribute('data-state', 'failed');
+    await expect(restore).toContainText('exit 1');
+    await expect(restore.getByLabel('Output of Restore')).toContainText('pg_restore: error: could not open input file');
   });
 
   test('S8 empty: "No deploys yet"', async ({ page }) => {

@@ -94,7 +94,8 @@ describe('the restore screen', () => {
     await user.click(confirm);
 
     await waitFor(() => {
-      expect(window.location.pathname).toBe('/deploys/d-restore/live');
+      // Restore follows it at the old live address, which redirects to the one deploy page (SHP-T-13.11).
+      expect(window.location.pathname).toBe('/deploys/d-restore');
     });
     expect(calls.find((c) => c.method === 'POST')).toEqual({
       method: 'POST',

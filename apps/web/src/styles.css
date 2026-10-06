@@ -516,4 +516,155 @@
   .shp-image-ref {
     overflow-wrap: anywhere;
   }
+
+  /* Deploy page (SHP-T-13.11) — one page that streams and then is the record (SHP-REQ-162). */
+
+  /* "Apps / bindery / Deploy 5b736e9": wraps rather than widening a 375 px page. */
+  .shp-crumbs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4) var(--space-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+    overflow-wrap: anywhere;
+  }
+  .shp-crumbs li {
+    display: flex;
+    gap: var(--space-8);
+    min-width: 0;
+  }
+  .shp-crumbs li + li::before {
+    content: '/';
+    color: var(--color-fg-faint);
+  }
+  .shp-crumbs [aria-current='page'] {
+    color: var(--color-fg);
+  }
+
+  /* The verdict leads the page: the outcome in a tinted card, the tone the state's own (stateTone).
+     A soaking deploy is accent — attention, not success: it is not live yet. */
+  .shp-deploy-verdict {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    min-width: 0;
+    padding: var(--space-16);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-card);
+    overflow-wrap: anywhere;
+  }
+  .shp-deploy-verdict[data-tone='attention'] {
+    border-color: var(--color-accent);
+    background: var(--color-accent-muted);
+  }
+  .shp-deploy-verdict[data-tone='warning'] {
+    border-color: var(--color-warning);
+    background: var(--color-warning-muted);
+  }
+  .shp-deploy-verdict[data-tone='danger'] {
+    border-color: var(--color-danger);
+    background: var(--color-danger-muted);
+  }
+  .shp-deploy-verdict__title {
+    margin: 0;
+    color: var(--color-fg);
+    font-size: var(--text-20);
+    line-height: var(--leading-24);
+    font-weight: var(--weight-semibold);
+  }
+  .shp-deploy-verdict__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-deploy-verdict__body p {
+    margin: 0;
+  }
+  .shp-deploy-verdict__cause {
+    font-weight: var(--weight-medium);
+  }
+  .shp-deploy-verdict__soak {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .shp-deploy-verdict__soak progress {
+    width: 100%;
+    height: var(--space-8);
+    accent-color: var(--color-accent);
+  }
+  .shp-deploy-verdict__meta,
+  .shp-deploy-transport,
+  .shp-deploy-muted {
+    margin: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-16);
+  }
+  .shp-deploy-note {
+    margin: 0;
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+    overflow-wrap: anywhere;
+  }
+  .shp-deploy-mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+    overflow-wrap: anywhere;
+  }
+
+  /* A step row: the running one is marked, and its output (or a failed step's) opens beneath it on
+     its own line. Output scrolls inside its box, never the page. */
+  .shp-deploy-step {
+    padding: var(--space-4) var(--space-8);
+    border-radius: var(--radius-sm);
+  }
+  .shp-deploy-step[aria-current='step'] {
+    background: var(--color-accent-muted);
+  }
+  .shp-deploy-step__result,
+  .shp-deploy-step__output {
+    flex-basis: 100%;
+    min-width: 0;
+    padding-left: var(--space-24);
+  }
+  .shp-deploy-step__result {
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-16);
+    overflow-wrap: anywhere;
+  }
+  .shp-deploy-output {
+    margin: 0;
+    max-height: calc(var(--space-64) * 4);
+    overflow: auto;
+    padding: var(--space-8);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* The next-action bar ends every state, pinned to the bottom of a phone screen while it scrolls. */
+  .shp-deploy-next {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-8) var(--space-16);
+    padding: var(--space-12) 0;
+    border-top: var(--border-width) solid var(--color-border);
+    background: var(--color-bg);
+  }
 }

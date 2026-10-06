@@ -352,7 +352,9 @@ function ApprovalActions({ status, canAct }: ApprovalProps) {
         </Button>
         <Button
           type="button"
-          variant="danger-ghost"
+          // Secondary, not danger-ghost: on the verdict banner's accent tint a danger-ghost label
+          // measured 4.44:1 in dark (axe, S6). The danger styling stays on the confirming dialog's button.
+          variant="secondary"
           onClick={() => {
             setError(null);
             setDenying(true);

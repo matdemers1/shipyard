@@ -191,7 +191,7 @@ const SCREENS: Screen[] = [
     path: (fx) => `/deploys/${fx.deploys.inProgress}/live`,
     ready: async (p) => {
       await expect(p.getByRole('heading', { level: 1 })).toBeVisible();
-      await expect(p.getByText('Requested by')).toBeVisible();
+      await expect(p.getByText('Requested by', { exact: true })).toBeVisible();
       await expect(p.getByRole('region', { name: /^Soaking/ })).toBeVisible();
     },
   },
@@ -211,7 +211,7 @@ const SCREENS: Screen[] = [
     path: (fx) => `/deploys/${fx.deploys.rolledBack}/live`,
     ready: async (p) => {
       await expect(p.getByRole('heading', { level: 1 })).toBeVisible();
-      await expect(p.getByText('Requested by')).toBeVisible();
+      await expect(p.getByText('Requested by', { exact: true })).toBeVisible();
       await expect(p.getByRole('region', { name: /^Rolled back/ })).toBeVisible();
     },
   },

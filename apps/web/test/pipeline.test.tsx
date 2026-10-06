@@ -105,7 +105,7 @@ describe('commitStages', () => {
     const s = byKey(lane({ commit: commit('failure', run({ conclusion: 'failure' })), failedJob: 'unit' }));
     expect(s.ci).toMatchObject({ state: 'failed', detail: 'Failed at unit', note: 'unit · run #412 · 14m 08s', href: RUN_URL });
     expect(s.images).toMatchObject({ state: 'skipped', detail: 'Not built', note: 'Nothing was pushed to GHCR' });
-    expect(s.checks).toMatchObject({ state: 'held', detail: 'Blocked by CI', note: 'Would refuse: CI passed (G5)' });
+    expect(s.checks).toMatchObject({ state: 'held', detail: 'Blocked by CI', note: 'Would refuse: CI passed · G5' });
     expect(s.deploy).toMatchObject({ state: 'held', detail: 'Blocked' });
     expect(s.live.state).toBe('held');
     expect(lane({ commit: commit('failure') }).map((x) => x.state)).not.toContain('waiting');
@@ -294,7 +294,7 @@ describe('deployStages', () => {
 
   it('a failed gate fails Checks and holds Deploy', () => {
     const s = byKey(deployStages(status('refused', { gates: [{ gate: 'G2', pass: false, reason: 'frozen' }] }), [], { now: NOW }));
-    expect(s.checks).toMatchObject({ state: 'failed', detail: 'G2 failed', note: 'frozen' });
+    expect(s.checks).toMatchObject({ state: 'failed', detail: 'Not frozen', note: 'frozen · G2' });
     expect(s.deploy.state).toBe('held');
   });
 
@@ -370,5 +370,20 @@ describe('deploySteps and StepList', () => {
     const rows = deploySteps([step('verify', '11:58:00', '11:58:02'), step('recover', '11:58:02', '11:58:05')], 'succeeded');
     expect(rows.map((r) => r.key)).toEqual(['backup', 'migrate', 'pull', 'swap', 'check', 'soak', 'recover']);
     expect(rows.at(-1)).toMatchObject({ label: 'Recover', state: 'done' });
+  });
+});
+
+describe('a finished deploy tells one story (SHP-T-13.7 verifier gaps)', () => {
+  it('a failed deploy passed every check, so its images read Verified, not Expected', () => {
+    const s = byKey(deployStages(status('failed', { gates: [{ gate: 'G8', pass: true, reason: 'digests found' }] }), [], { now: NOW }));
+    expect(s.checks.state).toBe('done');
+    expect(s.images.detail).not.toBe('Expected');
+  });
+
+  it("a step the agent left open on a finished deploy reads Did not finish, not Running", () => {
+    const open = { name: 'pull', argv: ['docker'], startedAt: new Date(NOW - 60_000).toISOString(), endedAt: null, exitCode: null, output: null };
+    const rows = deploySteps([open], 'failed', { now: NOW });
+    expect(rows.find((r) => r.key === 'pull')).toMatchObject({ state: 'failed', detail: 'Did not finish' });
+    expect(rows.some((r) => r.state === 'running')).toBe(false);
   });
 });

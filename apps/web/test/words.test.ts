@@ -71,6 +71,10 @@ const FORBIDDEN: { name: string; test: (text: string) => boolean }[] = [
   { name: 'Roll all', test: (t) => /\broll all\b/i.test(t) },
   { name: 'Ready to ship', test: (t) => /\bready to ship\b/i.test(t) },
   { name: 'Confirm (as a whole label)', test: (t) => t.trim() === 'Confirm' },
+  // An in-flight deploy is named by its state ("Pulling", "Soaking"), never a blanket "Active".
+  { name: 'Active (as a whole label)', test: (t) => t.trim() === 'Active' },
+  // A person reads "checks"; the gate code (G5) is only ever secondary text (SHP-REQ-171).
+  { name: 'gate (as a word)', test: (t) => /\bgates?\b/i.test(t) },
 ];
 
 
@@ -158,5 +162,22 @@ describe('the verbs name what they do', () => {
     expect(ciWords('pending')).toBe('CI running');
     expect(ciWords('none')).toBe('No images');
     expect(ciWords('success', 'shipyard')).toBe('Built');
+  });
+});
+
+describe('a check is never named by its gate code alone (SHP-REQ-171)', () => {
+  it('no template in apps/web/src puts a bare `.gate` in front of the words people read', () => {
+    // checkName() and <CheckName> are the only places allowed to turn a gate into words.
+    const allowed = new Set([join('lib', 'words.ts'), join('components', 'CheckName.tsx')]);
+    const hits = sourceFiles(SRC)
+      .filter((file) => !allowed.has(relative(SRC, file)))
+      .flatMap((file) =>
+        readFileSync(file, 'utf8')
+          .split('\n')
+          .map((line, i) => ({ line, at: `${relative(SRC, file)}:${String(i + 1)}` }))
+          .filter(({ line }) => /\$\{[\w.?]*\.gate\}\s*(failed|passed|refused)/.test(line))
+          .map(({ at }) => at),
+      );
+    expect(hits).toEqual([]);
   });
 });

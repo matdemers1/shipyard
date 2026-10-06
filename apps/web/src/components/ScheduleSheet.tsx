@@ -70,7 +70,7 @@ export function ScheduleSheet({ apps, onScheduled }: ScheduleSheetProps) {
         </Button>
       }
       title="Schedule a deploy"
-      description="Every gate re-runs when it fires; if one fails then, the deploy is refused and the reason shown here."
+      description="Every check runs again when it fires; if one fails then, the deploy is refused and the reason shown here."
     >
       <Stack as="form" gap="16" onSubmit={(e) => void submit(e)} noValidate>
         <FormField label="App" help="For an app that requires approval, scheduling it is your approval.">

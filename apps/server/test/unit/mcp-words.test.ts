@@ -47,7 +47,9 @@ describe('MCP tool descriptions (SHP-REQ-165)', () => {
   it('uses no retired word: not "ship" as a verb, not "Roll all", not "Confirm"', async () => {
     const tools = await listTools();
     for (const tool of tools) {
-      const text = `${tool.title ?? ''} ${tool.description ?? ''}`;
+      // The input fields' descriptions are read by a connected Claude too, so they are held to it.
+      const fields = JSON.stringify(tool.inputSchema).match(/"description":"[^"]*"/g) ?? [];
+      const text = `${tool.title ?? ''} ${tool.description ?? ''} ${fields.join(' ')}`;
       expect(text, tool.name).not.toMatch(/\bship(s|ped|ping|pable)?\b/i);
       expect(text, tool.name).not.toMatch(/\broll all\b/i);
       expect(text, tool.name).not.toMatch(/\bconfirm\b/i);

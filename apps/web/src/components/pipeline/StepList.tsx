@@ -1,6 +1,6 @@
 import type { DeployTargetState } from '@shipyard/schema';
 import { useEffect, useState } from 'react';
-import type { DeployStep } from '../../lib/progress';
+import { isTerminal, type DeployStep } from '../../lib/progress';
 import { PipeNode } from './PipeNode';
 import { deploySteps, STATE_LABEL } from './stages';
 
@@ -36,7 +36,8 @@ export function StepList({
   soakSeconds?: number;
   now?: number;
 }) {
-  const running = steps.some((s) => s.endedAt === null);
+  // A finished deploy never ticks, even with a step the agent left open when it stopped.
+  const running = !isTerminal(state) && steps.some((s) => s.endedAt === null);
   const clock = useNow(running, now);
   const rows = deploySteps(steps, state, { now: clock, ...(soakSeconds === undefined ? {} : { soakSeconds }) });
   return (

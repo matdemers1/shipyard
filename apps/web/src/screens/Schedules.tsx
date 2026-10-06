@@ -68,7 +68,7 @@ function Confirm({ pending, onClose, onDone }: ConfirmProps) {
           ? undefined
           : cancel
             ? `It was due ${when(entry.fireAt)}. It will not run; schedule it again if it should.`
-            : `It runs ${when(entry.fireAt)} with no further approval. Every gate still re-runs then.`
+            : `It runs ${when(entry.fireAt)} with no further approval. Every check still runs again then.`
       }
       {...(cancel ? { destructive: true } : {})}
       footer={
@@ -138,7 +138,7 @@ export function Schedules() {
   const header = (
     <PageHeader
       title="Schedules"
-      description="Deploys set for later. Every gate re-runs when one fires."
+      description="Deploys set for later. Every check runs again when one fires."
       {...(can ? { actions: <ScheduleSheet apps={apps} onScheduled={reload} /> } : {})}
     />
   );
@@ -188,7 +188,7 @@ export function Schedules() {
             aria-label="Upcoming deploys"
             empty={
               <EmptyState kind="empty" heading="Nothing scheduled" size="inline">
-                {can ? 'Schedule a deploy to have it run later, with every gate checked again then.' : 'No deploys are set for later.'}
+                {can ? 'Schedule a deploy to have it run later, with every check run again then.' : 'No deploys are set for later.'}
               </EmptyState>
             }
           >

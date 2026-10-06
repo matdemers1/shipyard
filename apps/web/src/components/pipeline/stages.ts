@@ -1,6 +1,6 @@
 import type { DeployStatus, DeployTargetState } from '@shipyard/schema';
 import { sha7 } from '../../lib/appstatus';
-import { stateWords } from '../../lib/words';
+import { checkName, stateWords } from '../../lib/words';
 import type { CommitEntry } from '../../lib/home';
 import type { DeployStep } from '../../lib/progress';
 
@@ -202,7 +202,7 @@ function deployTail(deploy: CommitDeploy, sha: string, liveSha: string | null, n
       checks:
         state === 'succeeded'
           ? stage('checks', 'done', 'Passed', { note: 'Dry run' })
-          : stage('checks', 'failed', state === 'refused' ? 'Refused' : 'Failed', reason),
+          : stage('checks', 'failed', stateWords(state), reason),
       imagesVerified: state === 'succeeded',
       deploy: stage('deploy', 'skipped', 'Dry run', { note: 'Nothing was deployed' }),
       live: stage('live', 'skipped', live, { note: 'A dry run never changes what is live' }),
@@ -211,17 +211,17 @@ function deployTail(deploy: CommitDeploy, sha: string, liveSha: string | null, n
 
   switch (state) {
     case 'queued':
-      return { checks: stage('checks', 'waiting', 'Queued'), imagesVerified: false, deploy: waitingDeploy, live: waitingLive };
+      return { checks: stage('checks', 'waiting', stateWords('queued')), imagesVerified: false, deploy: waitingDeploy, live: waitingLive };
     case 'awaiting_approval':
-      return { checks: stage('checks', 'waiting', 'Waiting for approval'), imagesVerified: false, deploy: waitingDeploy, live: waitingLive };
+      return { checks: stage('checks', 'waiting', stateWords('awaiting_approval')), imagesVerified: false, deploy: waitingDeploy, live: waitingLive };
     case 'locked':
     case 'verifying':
       return { checks: stage('checks', 'running', stateWords(state)), imagesVerified: false, deploy: waitingDeploy, live: waitingLive };
     case 'refused':
       return {
-        checks: stage('checks', 'failed', 'Refused', reason),
+        checks: stage('checks', 'failed', stateWords('refused'), reason),
         imagesVerified: false,
-        deploy: stage('deploy', 'held', 'Blocked', { note: 'The gates refused it' }),
+        deploy: stage('deploy', 'held', 'Blocked', { note: 'A check refused it' }),
         live: heldLive,
       };
     case 'cancelled':
@@ -252,15 +252,17 @@ function deployTail(deploy: CommitDeploy, sha: string, liveSha: string | null, n
     case 'failed':
       return {
         checks: stage('checks', 'done', 'Passed'),
-        imagesVerified: false,
-        deploy: stage('deploy', 'failed', 'Failed', reason),
+        // It failed after every check passed, G8 (images in GHCR) included, so its digests were
+        // verified; saying Expected beside "Checks passed" would tell two stories.
+        imagesVerified: true,
+        deploy: stage('deploy', 'failed', stateWords('failed'), reason),
         live: heldLive,
       };
     case 'rolled_back':
       return {
         checks: stage('checks', 'done', 'Passed'),
         imagesVerified: true,
-        deploy: stage('deploy', 'failed', 'Rolled back', { note: deploy.reason ?? 'The previous release is back' }),
+        deploy: stage('deploy', 'failed', stateWords('rolled_back'), { note: deploy.reason ?? 'The previous release is back' }),
         live: heldLive,
       };
     case 'rolling_back':
@@ -321,7 +323,7 @@ export function commitStages(input: CommitStagesInput): Stage[] {
       push,
       ci,
       stage('images', 'skipped', 'Not built', { note: shipyard ? 'Nothing was built' : 'Nothing was pushed to GHCR' }),
-      stage('checks', 'held', `Blocked by ${buildWord}`, { note: `Would refuse: ${shipyard ? 'build succeeded' : 'CI passed'} (G5)` }),
+      stage('checks', 'held', `Blocked by ${buildWord}`, { note: `Would refuse: ${shipyard ? 'Build succeeded' : checkName('G5')} · G5` }),
       stage('deploy', 'held', 'Blocked', { note: `Needs a green ${buildWord}` }),
       stage('live', 'held', live, { note: 'This commit cannot be deployed yet' }),
     ];
@@ -400,15 +402,15 @@ export function deployStages(status: DeployStatus, steps: readonly DeployStep[],
 
   const failedGate = gates.find((g) => !g.pass);
   const checks: Stage = ciRefused
-    ? stage('checks', 'held', 'Blocked by CI', { note: 'Refused at G5' })
+    ? stage('checks', 'held', 'Blocked by CI', { note: `Refused: ${checkName('G5')} · G5` })
     : failedGate
-      ? stage('checks', 'failed', `${failedGate.gate} failed`, { note: failedGate.reason })
+      ? stage('checks', 'failed', checkName(failedGate.gate), { note: `${failedGate.reason} · ${failedGate.gate}` })
       : gates.length > 0
         ? stage('checks', 'done', `${String(gates.length)} passed`)
         : tail.checks;
 
   const blocked = ciRefused || failedGate !== undefined;
-  const deploy = blocked ? stage('deploy', 'held', 'Blocked', { note: 'The gates refused it' }) : tail.deploy;
+  const deploy = blocked ? stage('deploy', 'held', 'Blocked', { note: 'A check refused it' }) : tail.deploy;
   const live: Stage = blocked ? { ...tail.live, state: 'held' } : tail.live;
   return [push, ci, images, checks, deploy, live];
 }
@@ -471,6 +473,9 @@ export function deploySteps(
       const skipped = ended || i < lastPlannedRecorded;
       const soakLength = p.key === 'soak' && options.soakSeconds !== undefined ? `${String(options.soakSeconds)}s` : '';
       return { key: p.key, label: p.label, state: skipped ? 'skipped' : 'waiting', detail: skipped ? '' : soakLength };
+    }
+    if (step.endedAt === null && ended) {
+      return { key: p.key, label: p.label, state: 'failed', detail: 'Did not finish' };
     }
     if (step.endedAt === null) {
       const elapsed = formatSpan(between(step.startedAt, now) ?? 0);

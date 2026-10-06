@@ -1,3 +1,4 @@
+import type { BadgeTone } from '@d3cloud/ui';
 import type { CommitEntry, CommitsInfo } from './home';
 
 /**
@@ -25,11 +26,18 @@ export type StatusKind =
   | 'github-unavailable'
   | 'no-repo';
 
-export type StatusTone = 'neutral' | 'attention' | 'danger';
+/**
+ * Every status is one of the library's four tones and nothing else (SHP-T-13.2). Derived from
+ * `Badge`'s own prop type so a tone the library drops or adds fails the typecheck here, rather than
+ * rendering an unstyled badge: `neutral` is quietly fine, `attention` should change what you do
+ * next (and marks work in flight), `warning` is degraded or held and needs a look but not action
+ * now, `danger` is blocked or failed. There is no success tone (D-016).
+ */
+export type StatusTone = BadgeTone;
 
 export interface AppStatus {
   kind: StatusKind;
-  /** `attention` where it should change what you do next; `danger` for blocked or failed. */
+  /** One of the library's four tones: `attention` where it should change what you do next, `warning` for degraded or held, `danger` for blocked or failed. */
   tone: StatusTone;
   /** A badge's worth: "Ready to ship". */
   label: string;
@@ -101,10 +109,29 @@ export function stateWords(state: string): string {
   return STATE_WORDS[state] ?? state.replaceAll('_', ' ');
 }
 
+/**
+ * A deploy state's tone. Only a finished-and-fine or not-yet-started deploy is neutral: every state
+ * in between is "Running" or "Active" on the badge, and a neutral badge is a transparent one in
+ * light mode, so in-flight states are `attention` (SHP-T-13.2). A cancelled deploy ended on someone's
+ * say-so, not a fault, but its app may be half-moved: `warning`, worth a look and not an alarm.
+ */
 export function stateTone(state: string): StatusTone {
-  if (state === 'failed' || state === 'rolled_back' || state === 'refused') return 'danger';
-  if (state === 'awaiting_approval') return 'attention';
-  return 'neutral';
+  switch (state) {
+    case 'failed':
+    case 'rolled_back':
+    case 'refused':
+      return 'danger';
+    case 'cancelled':
+      return 'warning';
+    case 'queued':
+    case 'succeeded':
+      return 'neutral';
+    default:
+      // awaiting_approval, locked, verifying, backing_up, migrating, pulling, swapping, checking,
+      // soaking, rolling_back — and any state a newer server adds, which is more likely in flight
+      // than finished.
+      return 'attention';
+  }
 }
 
 /** Per-commit build state in words, for the waiting list: GitHub CI's, or Shipyard's own build's. */
@@ -233,7 +260,7 @@ export function appStatus(input: StatusInput): AppStatus {
     const waiting = ship !== null && ship !== liveSha && entries.some((c) => c.sha === ship);
     return {
       kind: 'frozen',
-      tone: 'neutral',
+      tone: 'warning',
       label: 'Frozen',
       headline: 'Frozen — new deploys are refused',
       detail: `${waiting ? `${sha7(ship)} is ready to ship once it is unfrozen. ` : ''}Rollbacks and restores still work while it is frozen.`,
@@ -255,7 +282,7 @@ export function appStatus(input: StatusInput): AppStatus {
   if (commits === null || commits.source === 'unavailable') {
     return {
       kind: 'github-unavailable',
-      tone: 'neutral',
+      tone: 'warning',
       label: 'GitHub unreachable',
       headline: "Can't see new commits",
       detail:

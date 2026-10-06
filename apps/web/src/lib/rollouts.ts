@@ -1,7 +1,7 @@
-import type { RolloutAccepted, RolloutItem, RolloutPlan, RolloutStatus } from '@shipyard/schema';
+import type { DeployTargetState, RolloutAccepted, RolloutItem, RolloutPlan, RolloutStatus } from '@shipyard/schema';
 import { useEffect, useRef, useState } from 'react';
 import { RefusalError, request, unreachableRefusal } from './api';
-import type { AppStatus } from './appstatus';
+import { type AppStatus, type StatusTone, stateTone } from './appstatus';
 import type { HomeApp } from './home';
 import { isTerminal } from './progress';
 
@@ -37,6 +37,17 @@ export function planRollout(items: readonly RolloutItem[]): Promise<RolloutPlan>
 /** `POST /api/rollouts` — starts it: every app locked at once, shipped one at a time. */
 export function startRollout(items: readonly RolloutItem[]): Promise<RolloutAccepted> {
   return request<RolloutAccepted>('/api/rollouts', { method: 'POST', body: { items } });
+}
+
+/**
+ * A rollout member's badge tone, one of the library's four (SHP-T-13.2): a member that has not
+ * finished — running, or queued behind the app before it — is `attention`, so "Running" and
+ * "Waiting its turn" carry a fill in light mode; a finished one is neutral, a cancelled one
+ * `warning`, a failed one `danger`, as `stateTone` says for every terminal state.
+ */
+export function memberTone(member: { state: DeployTargetState }): StatusTone {
+  if (!isTerminal(member.state)) return 'attention';
+  return stateTone(member.state);
 }
 
 /** True once no member of the rollout can change any more. */

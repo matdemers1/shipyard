@@ -81,18 +81,23 @@
     border-radius: var(--radius-full);
     background: var(--color-fg-faint);
   }
+  /* The dot follows the library's four tones and nothing else (SHP-T-13.2), the same colours as the
+     library's StatusDot: neutral is the faint default above, attention the accent, warning the
+     warning colour, danger the danger colour. It used to be recoloured by status kind too — green
+     for up to date, amber for building — but the library has no success tone (D-016), and a dot
+     that disagrees with the badge beside it on the same card is two stories for one status. The
+     dot is not here to be the only signal: the headline beside it says it in words. */
+  .shp-status__dot[data-tone='neutral'] {
+    background: var(--color-fg-muted);
+  }
   .shp-status__dot[data-tone='attention'] {
     background: var(--color-accent);
   }
+  .shp-status__dot[data-tone='warning'] {
+    background: var(--color-warning);
+  }
   .shp-status__dot[data-tone='danger'] {
     background: var(--color-danger);
-  }
-  .shp-status__dot[data-kind='up-to-date'] {
-    background: var(--color-success);
-  }
-  .shp-status__dot[data-kind='deploying'],
-  .shp-status__dot[data-kind='ci-running'] {
-    background: var(--color-warning);
   }
   .shp-status__text {
     display: flex;

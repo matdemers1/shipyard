@@ -140,7 +140,7 @@ jobs:
   # private again, a renamed tag, GHCR down — `conformance` is skipped rather than reported as a pass
   # that measured nothing, and this job's summary says why.
   contract-suite:
-    name: d3-app-contract suite available
+    name: d3-app-contract fetch probe
     runs-on: ubuntu-latest
     outputs:
       available: ${{ steps.probe.outputs.available }}

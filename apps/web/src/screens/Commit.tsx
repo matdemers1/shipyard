@@ -7,7 +7,7 @@ import { EmptyState, Page } from '@d3cloud/ui';
 export function Commit() {
   return (
     <Page width="narrow">
-      <EmptyState title="Commit" description="This page is being built." />
+      <EmptyState kind="no-results" heading="Commit" headingLevel={1}>This page is being built.</EmptyState>
     </Page>
   );
 }

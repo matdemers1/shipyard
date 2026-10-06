@@ -1,5 +1,6 @@
-// Preloaded into the server process (`node --import`): answers the two GitHub REST calls the
-// server makes — `compare` and a workflow's runs — from a fixed commit graph, so the console's
+// Preloaded into the server process (`node --import`): answers the GitHub REST calls the
+// server makes — `compare`, a workflow's runs, and (SHP-T-13.4) a run's jobs — from a fixed commit
+// graph, so the console's
 // "commits waiting", CI dots and Ship buttons are the same on every run and no request leaves the
 // machine. Every other URL goes to the real `fetch`.
 //
@@ -49,6 +50,35 @@ const commits = new Map(
   Object.entries(GRAPH).map(([repo, list]) => [repo, list.map(([n, message, conclusion]) => ({ sha: sha(n), message, conclusion }))]),
 );
 
+// A run's id is derived from its commit, so the jobs endpoint can find the commit again, and its
+// times are fixed so a lane's durations are the same on every run (SHP-T-13.4).
+const runIdOf = (c) => 9_000_000 + Number.parseInt(c.sha.slice(0, 6), 16);
+const RUN_STARTED = '2026-10-05T10:00:00Z';
+const RUN_UPDATED = '2026-10-05T10:04:30Z';
+
+/** Three jobs per run: lint and test follow the commit's conclusion; the image build only runs when CI passed. */
+function jobsOf(repo, c) {
+  const done = c.conclusion !== null;
+  const job = (n, name, status, conclusion, started, completed) => ({
+    id: runIdOf(c) * 10 + n,
+    name,
+    status,
+    conclusion,
+    started_at: started,
+    completed_at: completed,
+    html_url: `https://github.com/${repo}/actions/runs/${String(runIdOf(c))}/job/${String(runIdOf(c) * 10 + n)}`,
+  });
+  return [
+    job(1, 'lint', 'completed', 'success', '2026-10-05T10:00:05Z', '2026-10-05T10:00:50Z'),
+    done
+      ? job(2, 'test', 'completed', c.conclusion === 'success' ? 'success' : 'failure', '2026-10-05T10:00:05Z', '2026-10-05T10:03:05Z')
+      : job(2, 'test', 'in_progress', null, '2026-10-05T10:00:05Z', null),
+    c.conclusion === 'success'
+      ? job(3, 'images', 'completed', 'success', '2026-10-05T10:03:10Z', '2026-10-05T10:04:25Z')
+      : job(3, 'images', done ? 'completed' : 'queued', done ? 'skipped' : null, null, null),
+  ];
+}
+
 function json(status, body) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
@@ -88,16 +118,28 @@ function answer(url) {
         ? []
         : [
             {
-              id: 1,
+              id: runIdOf(found),
               head_sha: found.sha,
               path: `.github/workflows/${decodeURIComponent(runs[2])}`,
               status: found.conclusion === null ? 'in_progress' : 'completed',
               conclusion: found.conclusion,
               event: 'push',
               head_branch: 'main',
+              html_url: `https://github.com/${decodeURIComponent(runs[1])}/actions/runs/${String(runIdOf(found))}`,
+              run_started_at: RUN_STARTED,
+              updated_at: found.conclusion === null ? RUN_STARTED : RUN_UPDATED,
             },
           ];
     return json(200, { total_count: workflowRuns.length, workflow_runs: workflowRuns });
+  }
+  const jobs = /^\/repos\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)\/jobs$/.exec(url.pathname);
+  if (jobs !== null) {
+    const repo = decodeURIComponent(jobs[1]);
+    const list = commits.get(repo);
+    const found = list?.find((c) => String(runIdOf(c)) === jobs[2]);
+    if (found === undefined) return notFound();
+    const all = jobsOf(repo, found);
+    return json(200, { total_count: all.length, jobs: all });
   }
   return notFound();
 }

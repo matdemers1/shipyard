@@ -1,11 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 import { parseManifestYaml, refusal, type BuildState } from '@shipyard/schema';
-import { RefusalError as SequenceRefusalError, type GitHubPort } from '@shipyard/sequence/github';
+import { RefusalError as SequenceRefusalError, type GitHubPort, type WorkflowRun } from '@shipyard/sequence/github';
 import { taskIdsIn } from '../changelog.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { recordedRelease } from './drift.js';
 import { liveGitHub } from '../github/token.js';
+import { runRouter } from './run.js';
 
 /**
  * GET /api/apps/:app/commits — commits waiting on the default branch ahead of the recorded
@@ -20,10 +21,27 @@ const CACHE_TTL_MS = 60_000;
 
 export type CiState = 'success' | 'failure' | 'pending' | 'none';
 
+/**
+ * The workflow run behind a commit's `ci` (SHP-T-13.4, SHP-ADR-007): what the Home lane and the
+ * commit page need for the CI stage. It rides the run list the poll already fetches, so it adds no
+ * GitHub call; the run's jobs are a separate, on-demand route (`run.ts`, SHP-REQ-168).
+ */
+export interface CommitRun {
+  id: number;
+  url: string | null;
+  startedAt: string | null;
+  /** Set only once the run has completed. */
+  completedAt: string | null;
+  /** `success`, `failure`, `cancelled`, … or null while the run is going. */
+  conclusion: string | null;
+}
+
 export interface CommitEntry {
   sha: string;
   message: string;
   ci: CiState;
+  /** The run `ci` came from; null when there is none, and always null for a `build: shipyard` app. */
+  run: CommitRun | null;
   taskIds: string[];
   /** For a `build: shipyard` app, the latest Shipyard build of this SHA, if any (SHP-T-3.11). */
   buildId?: string;
@@ -51,7 +69,7 @@ export interface CommitsRouterOptions {
   github?: GitHubPort;
 }
 
-function parseWorkflow(manifestYaml: string): string | null {
+export function parseWorkflow(manifestYaml: string): string | null {
   try {
     const manifest = JSON.parse(manifestYaml) as { workflow?: unknown };
     return typeof manifest.workflow === 'string' ? manifest.workflow : null;
@@ -128,7 +146,7 @@ export function makeCompareCache(): Map<string, CompareCacheEntry> {
 /** Entries kept per cache; the oldest goes first. A long-lived process never grows without bound. */
 const CACHE_MAX_ENTRIES = 500;
 
-function setBounded<V>(cache: Map<string, V>, key: string, value: V): void {
+export function setBounded<V>(cache: Map<string, V>, key: string, value: V): void {
   cache.delete(key);
   cache.set(key, value);
   while (cache.size > CACHE_MAX_ENTRIES) {
@@ -157,11 +175,11 @@ export async function cachedCompare(
 }
 
 /** For a token, the apps it is scoped to; for a user, undefined (every app). */
-function scopeOf(req: Request): ReadonlySet<string> | undefined {
+export function scopeOf(req: Request): ReadonlySet<string> | undefined {
   return req.actor?.type === 'token' ? (req.tokenApps ?? new Set<string>()) : undefined;
 }
 
-function readerOrRefuse(req: Request, res: Response): boolean {
+export function readerOrRefuse(req: Request, res: Response): boolean {
   const type = req.actor?.type;
   if (type !== 'user' && type !== 'token') {
     sendRefusal(res, refusal('unauthenticated', 'You are not signed in.'));
@@ -174,6 +192,8 @@ export function commitsRouter(deps: ServiceDeps, options: CommitsRouterOptions =
   const { db } = deps;
   const github = options.github ?? liveGitHub(deps);
   const router = Router();
+  // The on-demand run-jobs route sits beside the commits route it belongs to (SHP-T-13.4).
+  router.use(runRouter(deps, options));
   const compareCache = makeCompareCache();
   // The whole response, per-commit CI state included: a hit makes no GitHub call at all.
   const responseCache = new Map<string, ResponseCacheEntry>();
@@ -293,8 +313,8 @@ async function computeCommits(
   const toCheck = commits.slice(-MAX_COMMITS_FOR_CI);
   const entries: CommitEntry[] = await Promise.all(
     toCheck.map(async (c) => {
-      const ci = workflow === null ? 'none' : await ciStateFor(github, repo, workflow, c.sha, defaultBranch);
-      return { sha: c.sha, message: c.message, ci, taskIds: taskIdsIn(c.message) };
+      const { ci, run } = workflow === null ? { ci: 'none' as const, run: null } : await ciStateFor(github, repo, workflow, c.sha, defaultBranch);
+      return { sha: c.sha, message: c.message, ci, run, taskIds: taskIdsIn(c.message) };
     }),
   );
 
@@ -307,13 +327,23 @@ async function computeCommits(
   return value;
 }
 
-async function ciStateFor(github: GitHubPort, repo: string, workflow: string, sha: string, branch: string): Promise<CiState> {
-  // Only a push to the default branch publishes images, so only such a run makes a commit
-  // deployable — the same rule as the agent's G5. A pull-request-only commit shows as 'none'.
+/**
+ * The run that decides a commit's CI: the newest push to the default branch for this SHA. Only
+ * such a run publishes images, so only it makes a commit deployable — the same rule as the agent's
+ * G5; a pull-request-only commit has none. Shared with the run route so both agree on which run a
+ * commit means.
+ */
+export async function pushRunFor(github: Pick<GitHubPort, 'workflowRuns'>, repo: string, workflow: string, sha: string, branch: string): Promise<WorkflowRun | null> {
   const runs = (await github.workflowRuns(repo, workflow, sha)).filter((run) => run.event === 'push' && run.headBranch === branch);
-  if (runs.length === 0) return 'none';
   // Newest first per the port's contract; the first run for this SHA is the one that matters.
-  const run = runs[0];
-  if (run === undefined) return 'none';
-  return conclusionToCi(run.conclusion, run.status);
+  return runs[0] ?? null;
+}
+
+async function ciStateFor(github: GitHubPort, repo: string, workflow: string, sha: string, branch: string): Promise<{ ci: CiState; run: CommitRun | null }> {
+  const run = await pushRunFor(github, repo, workflow, sha, branch);
+  if (run === null) return { ci: 'none', run: null };
+  return {
+    ci: conclusionToCi(run.conclusion, run.status),
+    run: { id: run.id, url: run.url ?? null, startedAt: run.startedAt ?? null, completedAt: run.completedAt ?? null, conclusion: run.conclusion },
+  };
 }

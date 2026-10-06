@@ -73,12 +73,6 @@ const FORBIDDEN: { name: string; test: (text: string) => boolean }[] = [
   { name: 'Confirm (as a whole label)', test: (t) => t.trim() === 'Confirm' },
 ];
 
-/**
- * The front door's tagline ("Nothing ships that CI did not pass.", SHP-T-9.2) is marketing prose
- * outside the screens and components this vocabulary pass covers; it is the one place the verb is
- * left, listed here so it stays a decision rather than a gap.
- */
-const LEFT_ALONE = [join('entry', 'EntryShell.tsx')];
 
 describe('the console speaks one vocabulary (SHP-REQ-165)', () => {
   const files = sourceFiles(SRC);
@@ -89,7 +83,6 @@ describe('the console speaks one vocabulary (SHP-REQ-165)', () => {
 
   it.each(FORBIDDEN)('no string or JSX text in apps/web/src says $name', ({ test }) => {
     const hits = files
-      .filter((file) => !LEFT_ALONE.includes(relative(SRC, file)))
       .flatMap((file) =>
       literals(file)
         .filter(test)

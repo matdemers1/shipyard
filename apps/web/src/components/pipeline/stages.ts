@@ -1,5 +1,6 @@
 import type { DeployStatus, DeployTargetState } from '@shipyard/schema';
-import { sha7, stateWords } from '../../lib/appstatus';
+import { sha7 } from '../../lib/appstatus';
+import { stateWords } from '../../lib/words';
 import type { CommitEntry } from '../../lib/home';
 import type { DeployStep } from '../../lib/progress';
 
@@ -193,7 +194,7 @@ function deployTail(deploy: CommitDeploy, sha: string, liveSha: string | null, n
   const reason = noted(deploy.reason);
   const waitingDeploy = stage('deploy', 'waiting', 'Not started', { note: planNote(deploy.soakSeconds) });
   const waitingLive = stage('live', 'waiting', live, { note: 'This commit goes live after soak' });
-  const heldLive = stage('live', 'held', live, { note: 'This commit did not ship' });
+  const heldLive = stage('live', 'held', live, { note: 'This commit was not deployed' });
 
   if (dryRun && (state === 'succeeded' || state === 'failed' || state === 'refused')) {
     // A dry run checks and verifies and stops; saying "Deploy: done" would be a lie.
@@ -322,7 +323,7 @@ export function commitStages(input: CommitStagesInput): Stage[] {
       stage('images', 'skipped', 'Not built', { note: shipyard ? 'Nothing was built' : 'Nothing was pushed to GHCR' }),
       stage('checks', 'held', `Blocked by ${buildWord}`, { note: `Would refuse: ${shipyard ? 'build succeeded' : 'CI passed'} (G5)` }),
       stage('deploy', 'held', 'Blocked', { note: `Needs a green ${buildWord}` }),
-      stage('live', 'held', live, { note: 'This commit cannot ship yet' }),
+      stage('live', 'held', live, { note: 'This commit cannot be deployed yet' }),
     ];
   }
 

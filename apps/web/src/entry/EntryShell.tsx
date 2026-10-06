@@ -49,7 +49,7 @@ export const ENTRY_HEADLINE_ACCENT = 'and one to take it back.';
 export const ENTRY_PROMISE =
   "Pick an app and a green commit. Shipyard runs the app's backup, swaps the image by digest, watches it soak, and puts the old image back if it fails.";
 export const ENTRY_CLAIMS: readonly { title: string; detail: string }[] = [
-  { title: 'Nothing ships that CI did not pass.', detail: 'The agent on the host checks it again itself.' },
+  { title: 'Nothing deploys that CI did not pass.', detail: 'The agent on the host checks it again itself.' },
   { title: 'The backup runs before the migration.', detail: 'If it fails, nothing is swapped.' },
   { title: 'A failed soak rolls itself back.', detail: 'To the old digests — unless it carries a contract migration.' },
 ];

@@ -556,7 +556,7 @@ function Facts({
   // record's did; the SHAs around it are context and stay text.
   const href = commitUrl(repo, status.sha);
   const self = href === null ? short : (
-    <Link href={href} target="_blank" rel="noreferrer" aria-label={`Commit ${short} on GitHub`}>
+    <Link variant="inline" href={href} target="_blank" rel="noreferrer" aria-label={`Commit ${short} on GitHub`}>
       {short}
     </Link>
   );

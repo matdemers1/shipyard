@@ -16,6 +16,7 @@ import { DeployRecord } from './screens/DeployRecord';
 import { Home } from './screens/Home';
 import { NotFound } from './screens/NotFound';
 import { Restore } from './screens/Restore';
+import { RolloutProgress } from './screens/RolloutProgress';
 import { Schedules } from './screens/Schedules';
 import { Settings } from './screens/Settings';
 import { Setup } from './screens/Setup';
@@ -163,6 +164,7 @@ export function AppRoutes() {
         <Route path="apps/:app/restore" element={<Restore />} />
         <Route path="deploys/:id" element={<DeployRecord />} />
         <Route path="deploys/:id/live" element={<DeployProgress />} />
+        <Route path="rollouts/:id" element={<RolloutProgress />} />
         <Route path="builds" element={<Builds />} />
         <Route path="builds/:id" element={<BuildDetail />} />
         <Route path="timeline" element={<Timeline />} />

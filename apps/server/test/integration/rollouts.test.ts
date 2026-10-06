@@ -383,6 +383,12 @@ describe('rollout: locks, scope and refusals', () => {
     expect(res.status).toBe(409);
     expect(err(res).code).toBe('app_frozen');
     expect(await db.rollout.count()).toBe(0);
+
+    // Home reads the freeze from the app list, so it can leave the app out of Roll all.
+    const list = await request(app).get('/api/apps').set('Cookie', cookie);
+    const rows = (list.body as { apps: { name: string; frozen: boolean }[] }).apps;
+    expect(rows.find((r) => r.name === 'bravo')?.frozen).toBe(true);
+    expect(rows.find((r) => r.name === 'alpha')?.frozen).toBe(false);
   });
 
   it('an unknown app, a repeated app or a bad SHA is refused', async () => {

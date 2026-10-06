@@ -24,6 +24,7 @@ const ALL_TABLES = [
   'approval',
   'deploy_target',
   'deploy',
+  'rollout',
   'drift_event',
   'freeze',
   'api_token_app',
@@ -335,6 +336,10 @@ export interface Fixture {
     /** Held for approval. */
     awaitingApproval: string;
   };
+  rollouts: {
+    /** A Roll all that stopped at its second app (rolled back), both deploys finished. */
+    stopped: string;
+  };
   inviteToken: string;
 }
 
@@ -603,7 +608,7 @@ export async function seedWorld(db: Db, users: SeededUsers, now: number = Date.n
   await db.schedule.create({ data: { deployId: r4.deployId, fireAt: ago(DAY + 4 * MINUTE, now), firedAt: ago(DAY + 4 * MINUTE, now), byUserId: admin.id } });
 
   // foreman: a recorded release, then someone pulled by hand — drift, open; and one resolved earlier.
-  await createDeploy(db, {
+  const foremanRelease = await createDeploy(db, {
     ...base(drifted, driftedId),
     sha: sha(21),
     state: 'succeeded',
@@ -766,6 +771,15 @@ export async function seedWorld(db: Db, users: SeededUsers, now: number = Date.n
     ],
   });
 
+  // A Roll all that stopped (SHP-T-12.2): foreman's release shipped first, then bindery's rolled back.
+  // Both deploys are already finished, so the rollout holds no lock and changes no other screen.
+  const stoppedRollout = await db.rollout.create({
+    data: { requesterLabel: USERS.admin.displayName, createdAt: ago(3 * DAY + 10 * MINUTE, now) },
+    select: { id: true },
+  });
+  await db.deploy.update({ where: { id: foremanRelease.deployId }, data: { rolloutId: stoppedRollout.id, rolloutPosition: 0 } });
+  await db.deploy.update({ where: { id: rolledBack.deployId }, data: { rolloutId: stoppedRollout.id, rolloutPosition: 1 } });
+
   return {
     users,
     agentId: agent.id,
@@ -786,6 +800,7 @@ export async function seedWorld(db: Db, users: SeededUsers, now: number = Date.n
       inProgress: inProgress.deployId,
       awaitingApproval: held.deployId,
     },
+    rollouts: { stopped: stoppedRollout.id },
     inviteToken: INVITE_TOKEN,
   };
 }

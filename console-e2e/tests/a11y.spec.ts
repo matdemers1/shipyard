@@ -138,6 +138,17 @@ const SCREENS: Screen[] = [
     },
   },
   {
+    name: 'S3 roll all sheet',
+    as: 'admin',
+    path: () => '/',
+    ready: (p) => h1(p, 'Home'),
+    act: async (p) => {
+      await p.getByRole('button', { name: /^Roll all \d+$/ }).click();
+      await dialog(p, /^Roll all/);
+      await expect(p.getByRole('list', { name: 'Apps to roll, in order' })).toBeVisible();
+    },
+  },
+  {
     name: 'S2 deny-approval confirm',
     as: 'admin',
     path: () => '/',
@@ -164,6 +175,25 @@ const SCREENS: Screen[] = [
     ready: async (p) => {
       await expect(p.getByRole('heading', { level: 1 })).toBeVisible();
       await expect(p.getByText(/requested by/)).toBeVisible();
+    },
+  },
+  {
+    name: 'Rollout, stopped at a rolled-back app',
+    as: 'admin',
+    path: (fx) => `/rollouts/${fx.rollouts.stopped}`,
+    ready: async (p) => {
+      await h1(p, 'Roll all');
+      await expect(p.getByText(/^The rollout stopped at/)).toBeVisible();
+    },
+  },
+  {
+    name: 'Rollout at phone width',
+    as: 'viewer',
+    phone: true,
+    path: (fx) => `/rollouts/${fx.rollouts.stopped}`,
+    ready: async (p) => {
+      await h1(p, 'Roll all');
+      await expect(p.getByRole('list', { name: 'Apps in this rollout, in order' })).toBeVisible();
     },
   },
   // S5 App detail — every variant.

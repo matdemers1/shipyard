@@ -64,6 +64,7 @@ export const ErrorCode = z
     'restore_limited',
     'image_line_invalid',
     'group_stopped',
+    'rollout_stopped',
     'step_up_required',
   ])
   .meta({ id: 'ErrorCode', description: 'Machine-readable refusal reason' });
@@ -122,6 +123,7 @@ export const CATALOGUE: Record<ErrorCode, CatalogueEntry> = {
     defaultFix: 'Confirm it is you with a code from your authenticator (POST /api/auth/step-up), then retry within ten minutes.',
   },
   group_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the failed member, then deploy the group again; members after it were not touched.' },
+  rollout_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the member that stopped the rollout, then roll again; the apps after it were not touched.' },
 };
 
 export const Refusal = z

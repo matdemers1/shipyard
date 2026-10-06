@@ -8,6 +8,7 @@ export * from './mcp.js';
 export * from './signing.js';
 export * from './freeze.js';
 export * from './groups.js';
+export * from './rollouts.js';
 export * from './schedules.js';
 export * from './restore.js';
 export * from './system.js';

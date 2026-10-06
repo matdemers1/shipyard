@@ -19,6 +19,7 @@ import { TERMINAL_STATES } from '../deploys/service.js';
 import { sendRefusal } from '../errors.js';
 import { enqueueDeployment } from '../outbox/index.js';
 import { readGroupMeta, stopGroupAfter } from '../groups/service.js';
+import { stopRolloutAfter } from '../rollouts/service.js';
 import { recordBuildProgress, recordBuildResult } from '../builds/service.js';
 import { loadBuildSettings } from '../settings/build.js';
 import {
@@ -83,7 +84,7 @@ const TARGET_SELECT = {
   dispatchedAt: true,
   result: true,
   app: { select: { name: true, agentId: true, services: true } },
-  deploy: { select: { dryRun: true, groupName: true } },
+  deploy: { select: { dryRun: true, groupName: true, rolloutId: true, rolloutPosition: true } },
 } satisfies Prisma.DeployTargetSelect;
 
 /** The target, if it exists, was dispatched, and belongs to an app this agent owns. */
@@ -326,6 +327,7 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
       after: { targetId: target.id, state: advance ? body.state : target.state, step },
     });
     bus.publish(`deploy:${target.deployId}`);
+    if (target.deploy.rolloutId !== null) bus.publish(`rollout:${target.deploy.rolloutId}`);
     res.json({ state: advance ? body.state : target.state, currentStep: step });
   });
 
@@ -388,6 +390,7 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
     // A group member keeps its place in the group (deploy order, canary) alongside its result.
     const groupMeta = target.deploy.groupName === null ? null : readGroupMeta(target.result);
     let groupStopped: string[] = [];
+    let rolloutStopped: { app: string; deployId: string }[] = [];
 
     const recorded = await db.$transaction(async (tx) => {
       // Only once: the state guard makes a late or duplicate result a no-op, reported as 409.
@@ -413,6 +416,11 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
       // transaction, so no poll can ever hand one out.
       if (target.deploy.groupName !== null && !dryRun && body.state !== 'succeeded') {
         groupStopped = await stopGroupAfter(tx, { deployId: target.deployId, targetId: target.id, app: target.app.name, state: body.state });
+      }
+      // A rollout stops the same way (SHP-REQ-153): its later members are separate deploys.
+      const { rolloutId, rolloutPosition } = target.deploy;
+      if (rolloutId !== null && rolloutPosition !== null && !dryRun && body.state !== 'succeeded') {
+        rolloutStopped = await stopRolloutAfter(tx, { rolloutId, position: rolloutPosition, app: target.app.name, state: body.state });
       }
       if (!dryRun && body.images.length > 0) {
         await tx.targetImage.createMany({
@@ -472,6 +480,8 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
         ...(body.backupArtifact === undefined ? {} : { backupArtifact: body.backupArtifact.path }),
         ...(target.deploy.groupName === null ? {} : { group: target.deploy.groupName }),
         ...(groupStopped.length === 0 ? {} : { groupStopped }),
+        ...(target.deploy.rolloutId === null ? {} : { rollout: target.deploy.rolloutId }),
+        ...(rolloutStopped.length === 0 ? {} : { rolloutStopped: rolloutStopped.map((m) => m.app) }),
       },
     });
     logger.info({ deployId: target.deployId, targetId: target.id, state: body.state }, 'target result recorded');
@@ -480,6 +490,15 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
     for (const name of groupStopped) bus.publish(`app:${name}`);
     // A group member that succeeded makes the next one runnable.
     if (target.deploy.groupName !== null && body.state === 'succeeded') bus.publish('work');
+    // A rollout member that succeeded makes the next one runnable (SHP-REQ-151).
+    if (target.deploy.rolloutId !== null) {
+      for (const m of rolloutStopped) {
+        bus.publish(`deploy:${m.deployId}`);
+        bus.publish(`app:${m.app}`);
+      }
+      bus.publish(`rollout:${target.deploy.rolloutId}`);
+      if (body.state === 'succeeded') bus.publish('work');
+    }
     res.json({ state: body.state, outbox });
   });
 }

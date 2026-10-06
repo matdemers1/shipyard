@@ -63,6 +63,9 @@ export const Config = z
     GITHUB_WEBHOOK_SECRET: z.preprocess(blankAsUnset, z.string().min(20, 'GITHUB_WEBHOOK_SECRET must be at least 20 characters').optional()),
     // How often the default-branch head of every `build: shipyard` app is reconciled (SHP-REQ-114).
     BUILD_RECONCILE_INTERVAL_SECONDS: z.preprocess(blankAsUnset, z.coerce.number().int().min(30).max(86_400).default(300)),
+    // The app name of Shipyard's own server manifest (docs/manifests/shipyard.yml). A rollout always
+    // ships it last, so its restart never interrupts the apps before it (SHP-REQ-152).
+    SELF_APP: z.preprocess(blankAsUnset, z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).default('shipyard')),
   })
   .transform((c) => ({
     ...c,

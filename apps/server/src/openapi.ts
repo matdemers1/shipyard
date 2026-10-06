@@ -284,9 +284,48 @@ function buildPathsForBuilds(): Record<string, unknown> {
   };
 }
 
+/** "Roll all" (SHP-T-12.1): the responses are plain types in `@shipyard/schema/rollouts`. */
+function buildPathsForRollouts(): Record<string, unknown> {
+  const body = { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/RolloutRequest' } } } };
+  const plain = (description: string) => ({ description, content: { 'application/json': { schema: { type: 'object' } } } });
+  return {
+    '/rollouts/plan': {
+      post: {
+        summary: 'What a rollout of these apps would ship, in order (Shipyard last), or the refusal it would get now; writes nothing',
+        operationId: 'planRollout',
+        security: [{ session: [] }, { bearer: [] }],
+        requestBody: body,
+        responses: { '200': plain('The plan: { members: [{ app, sha, liveSha, self }] } in rollout order.'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/rollouts': {
+      post: {
+        summary: 'Roll several apps one at a time, each at its own SHA; every lock is taken at once and the first failure stops the rest',
+        operationId: 'postRollout',
+        security: [{ session: [] }, { bearer: [] }],
+        requestBody: body,
+        responses: { '201': plain('Accepted: { rolloutId, deployIds } in rollout order.'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/rollouts/{id}': {
+      get: {
+        summary: "A rollout with every member's deploy status, in order; ?wait= holds until one changes (at most 90 s)",
+        operationId: 'getRollout',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          { name: 'wait', in: 'query', required: false, schema: { type: 'integer', minimum: 0, maximum: 90 } },
+        ],
+        responses: { '200': plain('The rollout status.'), '4XX': ERROR_RESPONSE },
+      },
+    },
+  };
+}
+
 function buildPaths(): Record<string, unknown> {
   return {
     ...buildPathsForBuilds(),
+    ...buildPathsForRollouts(),
     '/health': {
       get: {
         summary: 'Health check',

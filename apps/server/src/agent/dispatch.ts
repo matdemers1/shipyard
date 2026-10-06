@@ -14,8 +14,10 @@ import { expectedDigestsFor } from '../groups/service.js';
  *
  * A group deploy's members (SHP-REQ-078) all sit in `locked` from the start, holding their apps;
  * one is runnable only once every earlier member of the same deploy (by `created_at`, which is
- * deploy order) has succeeded. The two-minute re-dispatch below applies only to a member that was
- * already runnable, so it can never hand a later member out early.
+ * deploy order) has succeeded. A rollout's members (SHP-REQ-151) are separate deploys tied by
+ * `rollout_id`, and wait the same way on every member with a lower `rollout_position`. The
+ * two-minute re-dispatch below applies only to a member that was already runnable, so it can never
+ * hand a later member out early.
  */
 
 export type PollTarget = NonNullable<PollResponse['target']>;
@@ -57,6 +59,13 @@ export async function claimTarget(db: Db, agentId: string): Promise<string | nul
                 and p."id" <> t."id"
                 and (p."created_at", p."id") < (t."created_at", t."id")
                 and p."state" <> 'succeeded'))
+        -- A rollout member waits for every earlier member of its rollout to succeed (SHP-REQ-151).
+        and (d."rollout_id" is null or not exists (
+              select 1 from "deploy" pd
+              join "deploy_target" pt on pt."deploy_id" = pd."id"
+              where pd."rollout_id" = d."rollout_id"
+                and pd."rollout_position" < d."rollout_position"
+                and pt."state" <> 'succeeded'))
       order by t."created_at", t."id"
       for update of t skip locked
       limit 1

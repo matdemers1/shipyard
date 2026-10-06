@@ -1,9 +1,9 @@
 import { Alert, Badge, Cluster, DataList, DataListRow, EmptyState, Link, Page, PageHeader, Section, Skeleton, Stack } from '@d3cloud/ui';
 import type { RolloutStatus } from '@shipyard/schema';
 import { Link as RouterLink, useParams } from 'react-router-dom';
-import { sha7, stateTone, stateWords } from '../lib/appstatus';
+import { sha7, stateWords } from '../lib/appstatus';
 import { isTerminal } from '../lib/progress';
-import { rolloutFinished, useRolloutProgress } from '../lib/rollouts';
+import { memberTone, rolloutFinished, useRolloutProgress } from '../lib/rollouts';
 
 /**
  * Roll all in progress, `/rollouts/:id` (SHP-T-12.2, SHP-REQ-154): every app of the rollout in the
@@ -12,13 +12,6 @@ import { rolloutFinished, useRolloutProgress } from '../lib/rollouts';
  */
 
 type Member = RolloutStatus['members'][number];
-
-function memberTone(member: Member): 'neutral' | 'attention' | 'danger' {
-  if (member.state === 'succeeded') return 'neutral';
-  if (member.state === 'cancelled') return 'neutral';
-  if (!isTerminal(member.state)) return 'attention';
-  return stateTone(member.state);
-}
 
 /** Running, done, or waiting its turn — in words a person uses. */
 function memberWords(member: Member, turnHasCome: boolean): string {

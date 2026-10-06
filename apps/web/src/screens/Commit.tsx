@@ -18,7 +18,7 @@ import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { PipeLane, commitStages } from '../components/pipeline';
 import { agoShort, formatSpan } from '../components/pipeline/stages';
 import { RefusalError, request, unreachableRefusal } from '../lib/api';
-import { appDetail, freeze as freezeApi, type AppDetail } from '../lib/appdetail';
+import { appDetail, freeze as freezeApi, when, type AppDetail } from '../lib/appdetail';
 import { appStatus, ciTone, sha7, type StatusTone } from '../lib/appstatus';
 import { useCan } from '../lib/auth';
 import {
@@ -94,8 +94,8 @@ function CommitSkeleton({ app, sha }: { app: string; sha: string }) {
 
 function Crumbs({ app, sha }: { app: string; sha: string }) {
   return (
-    <nav aria-label="Breadcrumb" className="shp-crumbs">
-      <ol>
+    <nav aria-label="Breadcrumb">
+      <ol className="shp-crumbs">
         <li>
           <Link asChild>
             <RouterLink to="/">Apps</RouterLink>
@@ -106,9 +106,7 @@ function Crumbs({ app, sha }: { app: string; sha: string }) {
             <RouterLink to={`/apps/${encodeURIComponent(app)}`}>{app}</RouterLink>
           </Link>
         </li>
-        <li aria-current="page">
-          <code>{sha7(sha)}</code>
-        </li>
+        <li aria-current="page">{sha7(sha)}</li>
       </ol>
     </nav>
   );
@@ -128,8 +126,6 @@ export function Commit() {
   const valid = FULL_SHA.test(sha);
   const [load, setLoad] = useState<Load>({ status: 'loading' });
   const [jobs, setJobs] = useState<Jobs>({ status: 'idle' });
-  /** The failing job's name for each rider whose own run failed. */
-  const [riderFailures, setRiderFailures] = useState<Record<string, string>>({});
   const [sheet, setSheet] = useState<SheetAction | null>(null);
   const [reloads, setReloads] = useState(0);
   const [jobReloads, setJobReloads] = useState(0);
@@ -147,11 +143,11 @@ export function Commit() {
       appDetail.get(app, signal),
       request<CommitsInfo>(`/api/apps/${encodeURIComponent(app)}/commits`, { signal }).catch(() => null),
       // A freeze refuses new deploys, so the page does not offer one; reading it must not break the page.
+      // Both reads fail open (no freeze, no approval): the server refuses a deploy it should not run anyway.
       freezeApi
         .get(app, signal)
         .then((r) => r.freeze !== null)
         .catch(() => false),
-      // Reading what is waiting on approval must not break the page (SHP-REQ-060).
       request<PendingApproval[]>('/api/approvals', { signal }).catch(() => [] as PendingApproval[]),
     ])
       .then(([detail, commits, frozen, approvals]) => {
@@ -180,9 +176,13 @@ export function Commit() {
 
   const source = load.status === 'ready' ? (load.commits?.buildSource ?? 'github') : 'github';
 
-  // The run's jobs, once, when the page opens (SHP-REQ-157). A `build: shipyard` app has no run to ask for.
+  // The run's jobs, once, when the page opens (SHP-REQ-157): one call for this commit and nothing else
+  // (SHP-ADR-007). Not for a `build: shipyard` app, which has no run; not for the live commit, which is
+  // no longer waiting; not when the commits could not be read, so there is no commit to ask about.
+  const wantJobs =
+    load.status === 'ready' && load.commits?.source === 'github' && found !== null && !found.live && source === 'github';
   useEffect(() => {
-    if (found === null || source === 'shipyard') {
+    if (!wantJobs) {
       setJobs({ status: 'idle' });
       return;
     }
@@ -199,29 +199,9 @@ export function Commit() {
     return () => {
       controller.abort();
     };
-    // `found` changes with every load; what the call depends on is whether the commit exists.
-  }, [app, sha, source, found === null, jobReloads]);
+  }, [app, sha, wantJobs, jobReloads]);
 
-  // A rider whose own run failed is named by the job that failed, as best the server can say.
   const riders = useMemo(() => (found === null ? [] : found.entries.slice(0, Math.max(found.index, 0))), [found]);
-  useEffect(() => {
-    if (source === 'shipyard') return;
-    const red = riders.filter((r) => r.ci === 'failure' && r.run?.id !== undefined);
-    if (red.length === 0) return;
-    const controller = new AbortController();
-    for (const r of red) {
-      fetchRunJobs(app, r.sha, controller.signal)
-        .then(({ jobs: list }) => {
-          const job = failedJob(list);
-          if (job !== null) setRiderFailures((prev) => ({ ...prev, [r.sha]: job.name }));
-        })
-        // Naming the failing job is a courtesy; "CI failed" stands without it.
-        .catch(() => undefined);
-    }
-    return () => {
-      controller.abort();
-    };
-  }, [app, riders, source]);
 
   if (!valid) {
     return <NotWaiting app={app} sha={sha} reason="That is not a full commit SHA: forty lower-case hex characters." />;
@@ -285,11 +265,6 @@ export function Commit() {
   const { entry, index, live } = found;
   const shipyard = source === 'shipyard';
   const runJobs = jobs.status === 'ready' ? jobs.data : null;
-  // A live commit has no list entry, so its lane takes the run the server found for it.
-  const withRun: CommitEntry =
-    live && entry.run === undefined && runJobs?.run
-      ? { ...entry, run: { id: runJobs.run.id, url: runJobs.run.url, startedAt: runJobs.run.startedAt, completedAt: runJobs.run.completedAt, conclusion: runJobs.run.conclusion } }
-      : entry;
   const failing = runJobs === null ? null : failedJob(runJobs.jobs);
   const verification = imageVerification(detail, sha);
   const status = appStatus({ ...detail, commits, approval: load.approval, frozen: load.frozen });
@@ -298,7 +273,7 @@ export function Commit() {
   const now = Date.now();
 
   const stages = commitStages({
-    commit: withRun,
+    commit: entry,
     branch: detail.defaultBranch,
     liveSha: detail.liveSha,
     buildSource: source,
@@ -310,7 +285,7 @@ export function Commit() {
 
   const badge = badgeFor(entry, live, ready, source);
   const title = firstLine(entry.message) || `Commit ${sha7(sha)}`;
-  const pushedAt = withRun.run?.startedAt ?? null;
+  const pushedAt = entry.run?.startedAt ?? null;
   const red = entry.ci === 'failure' && !live;
   const includes = Math.max(1, Math.max(commits.ahead ?? 0, found.entries.length) - (found.entries.length - index - 1));
   const olderHidden = Math.max(0, includes - 1 - Math.max(index, 0));
@@ -372,6 +347,18 @@ export function Commit() {
 
         {shipyard ? (
           <ShipyardBuild entry={entry} />
+        ) : live ? (
+          <Section title="CI" description="The jobs of a commit's run are fetched for commits waiting to deploy.">
+            <p className="shp-status__detail">
+              This commit is live, so Shipyard does not ask GitHub for its run.
+              {detail.repo === null ? null : (
+                <>
+                  {' '}
+                  <External href={`https://github.com/${detail.repo}/commit/${sha}`}>View on GitHub</External>
+                </>
+              )}
+            </p>
+          </Section>
         ) : (
           <CiSection
             jobs={jobs}
@@ -399,7 +386,7 @@ export function Commit() {
             <Stack gap="12">
               <DataList aria-label="Commits that deploy with this one" empty={<span className="shp-status__detail">Nothing else: this is the only commit between live and itself.</span>}>
                 {[...riders].reverse().map((r) => (
-                  <RiderRow key={r.sha} app={app} entry={r} rideWith={sha} source={source} failedAt={riderFailures[r.sha] ?? null} />
+                  <RiderRow key={r.sha} app={app} entry={r} rideWith={sha} source={source} />
                 ))}
               </DataList>
               {olderHidden > 0 ? (
@@ -479,18 +466,16 @@ function RiderRow({
   entry,
   rideWith,
   source,
-  failedAt,
 }: {
   app: string;
   entry: CommitEntry;
   rideWith: string;
   source: 'github' | 'shipyard';
-  failedAt: string | null;
 }) {
   const failed = entry.ci === 'failure';
   const run = source === 'github' ? (entry.run ?? null) : null;
   const marker =
-    failed && source === 'github' ? (failedAt === null ? 'CI failed' : `CI failed at ${failedAt}`) : ciWords(entry.ci, source);
+    ciWords(entry.ci, source);
   return (
     <DataListRow
       truncate={false}
@@ -676,14 +661,16 @@ function JobRow({ job, failing, track }: { job: RunJob; failing: RunJob | null; 
   const bar = track?.bars.get(job.id);
   const span = jobSpan(job);
   const skippedWhy = job.state === 'skipped' && failing !== null ? ` — ${failing.name} failed` : '';
-  const label = bar === undefined || track === null
-    ? `${job.name}: ${JOB_STATE_WORDS[job.state].toLowerCase()}`
-    : `${job.name}: ${span}, ${JOB_STATE_WORDS[job.state].toLowerCase()}, from ${formatSpan((bar.left / 100) * track.totalMs)} into the run`;
-  return (
-    <li className="shp-job" data-state={job.state}>
+  const label =
+    bar === undefined || track === null
+      ? `${job.name}: ${JOB_STATE_WORDS[job.state].toLowerCase()}`
+      : `${job.name}: ${span}, ${JOB_STATE_WORDS[job.state].toLowerCase()}, from ${formatSpan((bar.left / 100) * track.totalMs)} into the run`;
+  const body = (
+    <>
       <div className="shp-job__head">
         <span className="shp-job__name">
-          {job.url ? <External href={job.url}>{job.name}</External> : job.name}
+          {job.name}
+          {job.url ? <span aria-hidden="true"> ↗</span> : null}
         </span>
         <span className="shp-job__time">{span}</span>
         <span className="shp-job__state">
@@ -702,6 +689,24 @@ function JobRow({ job, failing, track }: { job: RunJob; failing: RunJob | null; 
           />
         )}
       </div>
+    </>
+  );
+  return (
+    <li className="shp-job" data-state={job.state}>
+      {job.url ? (
+        // The name and its bar are one link to the job on GitHub, so the bar is linked to the run too.
+        <a
+          className="shp-job__link"
+          href={job.url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={job.durationMs === null ? job.name : `${job.name} ${span}`}
+        >
+          {body}
+        </a>
+      ) : (
+        body
+      )}
     </li>
   );
 }
@@ -763,7 +768,7 @@ function ImagesSection({
                 }
                 description={
                   verification.verified
-                    ? `Verified${verification.digests[r.service] === undefined ? '' : ` · ${verification.digests[r.service]?.slice(0, 19) ?? ''}`}`
+                    ? verifiedWords(verification, r.service)
                     : ci === 'success'
                       ? 'Expected · digest not yet verified'
                       : 'Not yet built'
@@ -781,4 +786,11 @@ function ImagesSection({
       </Stack>
     </Section>
   );
+}
+
+/** "Verified · sha256:abc…", or, when the target kept no digest (a dry run's are not stored), when it was verified. */
+function verifiedWords(v: ReturnType<typeof imageVerification>, service: string): string {
+  const digest = v.digests[service];
+  if (digest !== undefined) return `Verified · ${digest.slice(0, 19)}`;
+  return v.at === null ? 'Verified' : `Verified on dry run ${when(v.at)}`;
 }

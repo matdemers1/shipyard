@@ -153,6 +153,8 @@ export interface ImageVerification {
   verified: boolean;
   /** What verified it, in words: "Verified by a dry run". Null while expected. */
   by: string | null;
+  /** When it was verified, for a target that kept no digest to show. */
+  at: string | null;
   /** The digest per service, when the page holds them; a dry run's are not kept on the target. */
   digests: Record<string, string>;
 }
@@ -174,13 +176,13 @@ export function imageVerification(detail: AppDetail, sha: string): ImageVerifica
   }
   if (detail.liveSha === sha && detail.digests !== null) Object.assign(digests, detail.digests);
 
-  if (detail.liveSha === sha) return { verified: true, by: 'Verified when it deployed', digests };
+  if (detail.liveSha === sha) return { verified: true, by: 'Verified when it deployed', at: detail.liveEndedAt, digests };
   const mine = targetsOf(detail, sha);
-  if (mine.some((t) => !t.dryRun && PAST_VERIFY.includes(t.state as DeployTargetState))) {
-    return { verified: true, by: 'Verified by a deploy', digests };
-  }
-  if (mine.some((t) => t.dryRun && t.state === 'succeeded')) return { verified: true, by: 'Verified by a dry run', digests };
-  return { verified: false, by: null, digests };
+  const deploy = mine.find((t) => !t.dryRun && PAST_VERIFY.includes(t.state as DeployTargetState));
+  if (deploy !== undefined) return { verified: true, by: 'Verified by a deploy', at: deploy.endedAt ?? deploy.createdAt, digests };
+  const dry = mine.find((t) => t.dryRun && t.state === 'succeeded');
+  if (dry !== undefined) return { verified: true, by: 'Verified by a dry run', at: dry.endedAt ?? dry.createdAt, digests };
+  return { verified: false, by: null, at: null, digests };
 }
 
 /** An image the manifest names for a service, with the tag a build of this commit carries. */

@@ -403,23 +403,6 @@
 
   /* Commit page (SHP-T-13.9) */
 
-  /* "Apps / bindery / 2cd9c27": quiet, and wrapping rather than widening a 375 px page. */
-  .shp-crumbs ol {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-6);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    font-size: var(--text-13);
-    line-height: var(--leading-16);
-    color: var(--color-fg-muted);
-  }
-  .shp-crumbs li:not(:last-child)::after {
-    content: '/';
-    margin-left: var(--space-6);
-  }
-
   /* The run's jobs, each a name, a length, a state in words and a bar on a shared timeline. */
   .shp-jobs {
     display: grid;
@@ -427,6 +410,20 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+  /* The name and its bar, one link to the job on GitHub. */
+  .shp-job__link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    border-radius: var(--radius-xs);
+  }
+  .shp-job__link .shp-job__name {
+    text-decoration: underline;
+  }
+  .shp-job__link:focus-visible {
+    outline: var(--focus-width) solid var(--color-focus);
+    outline-offset: var(--focus-offset);
   }
   .shp-job__head {
     display: flex;

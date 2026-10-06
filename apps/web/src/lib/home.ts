@@ -11,6 +11,18 @@ import { request, RefusalError } from './api';
 
 export type CiState = 'success' | 'failure' | 'pending' | 'none';
 
+/**
+ * The push-to-default-branch GitHub Actions run behind a commit's `ci` (SHP-T-13.7, SHP-REQ-167): the
+ * pipeline's CI stage links to `url`. `completedAt` is present only once the run has completed.
+ */
+export interface CommitRun {
+  id: number;
+  url: string | null;
+  startedAt: string | null;
+  completedAt?: string | null;
+  conclusion: string | null;
+}
+
 export interface CommitEntry {
   sha: string;
   message: string;
@@ -18,6 +30,8 @@ export interface CommitEntry {
   taskIds: string[];
   /** For a `build: shipyard` app, the latest Shipyard build of this SHA (SHP-T-3.11). */
   buildId?: string;
+  /** The run behind `ci`; null with no such run or for a `build: shipyard` app, absent from a server that predates the field. */
+  run?: CommitRun | null;
 }
 
 /** `GET /api/apps/:app/commits`. */

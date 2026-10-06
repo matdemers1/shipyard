@@ -236,4 +236,168 @@
     font-size: var(--text-14);
     line-height: var(--leading-20);
   }
+
+  /* Pipeline lane (SHP-T-13.7, SHP-REQ-156): Push, CI, Images, Checks, Deploy, Live as nodes. A node
+     is a Lucide mark in the state's colour: accent while running, danger when failed, quiet
+     otherwise. Success is only ever the done icon, never a green badge. */
+  .shp-pipe-node {
+    display: inline-flex;
+    flex: none;
+    color: var(--color-fg-muted);
+  }
+  .shp-pipe-node[data-state='done'] {
+    color: var(--color-fg);
+  }
+  .shp-pipe-node[data-state='running'] {
+    color: var(--color-accent);
+  }
+  .shp-pipe-node[data-state='running'] svg {
+    animation: shp-pipe-spin 1s linear infinite;
+  }
+  .shp-pipe-node[data-state='failed'] {
+    color: var(--color-danger);
+  }
+  .shp-pipe-node[data-state='held'] {
+    color: var(--color-warning);
+  }
+  .shp-pipe-node[data-state='waiting'],
+  .shp-pipe-node[data-state='skipped'] {
+    color: var(--color-fg-faint);
+  }
+  @keyframes shp-pipe-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .shp-pipe-node[data-state='running'] svg {
+      animation: none;
+    }
+  }
+
+  /* Text a screen reader hears and the eye does not need: the state beside a label. */
+  .shp-pipe-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* The mini lane on an app row: six 16 px nodes joined by short rules, well inside 375 px. */
+  .shp-pipe-mini {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+  }
+  .shp-pipe-mini__stage {
+    display: inline-flex;
+    align-items: center;
+  }
+  .shp-pipe-mini__stage:not(:last-child)::after {
+    content: '';
+    width: var(--space-8);
+    height: var(--border-width);
+    background: var(--color-border);
+  }
+
+  /* The full lane: a vertical list under 768 px, six columns from there. */
+  .shp-pipe-lane {
+    display: grid;
+    gap: var(--space-12);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-pipe-lane__stage {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--space-12);
+    align-items: start;
+  }
+  .shp-pipe-lane__text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .shp-pipe-lane__label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-6);
+    font-weight: var(--weight-semibold);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-pipe-glyph {
+    color: var(--color-fg-muted);
+  }
+  .shp-pipe-lane__detail {
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-pipe-lane__link {
+    font-size: var(--text-13);
+    line-height: var(--leading-16);
+  }
+  .shp-pipe-lane__note {
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-16);
+  }
+  .shp-pipe-lane__stage[data-state='failed'] .shp-pipe-lane__detail {
+    color: var(--color-danger);
+  }
+  @media (min-width: 768px) {
+    .shp-pipe-lane {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: var(--space-16);
+    }
+    .shp-pipe-lane__stage {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--space-8);
+    }
+    /* The rule runs from a node to the next column's node. */
+    .shp-pipe-lane__stage:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      top: var(--space-12);
+      left: calc(var(--space-24) + var(--space-8));
+      right: calc(var(--space-16) * -1 + var(--space-8));
+      height: var(--border-width);
+      background: var(--color-border);
+    }
+  }
+
+  /* The deploy page's planned steps, each with its state in words and a timer. */
+  .shp-steplist {
+    display: grid;
+    gap: var(--space-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-steplist__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-8);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-steplist__label {
+    font-weight: var(--weight-semibold);
+  }
+  .shp-steplist__state,
+  .shp-steplist__time {
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
+  .shp-steplist__row[data-state='failed'] .shp-steplist__state,
+  .shp-steplist__row[data-state='failed'] .shp-steplist__time {
+    color: var(--color-danger);
+  }
 }

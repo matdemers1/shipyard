@@ -11,8 +11,8 @@ import { RolloutProgressView } from '../src/screens/RolloutProgress';
 import { meReply, mockFetch } from './fetch';
 
 /**
- * SHP-T-12.2 (SHP-REQ-154): Roll all on Home. The button appears for a deployer once two or more
- * apps are ready to ship; the sheet shows the order the server plans (Shipyard last) and starts
+ * SHP-T-12.2 (SHP-REQ-154): Deploy all ready on Home (named "Roll all" before SHP-T-13.3). The button appears for a deployer once two or more
+ * apps are ready; the sheet shows the order the server plans (Shipyard last) and starts
  * exactly that; the rollout screen follows each app in turn and says where a stopped one stopped.
  */
 
@@ -103,7 +103,7 @@ describe('rolloutCandidates', () => {
   });
   const app = (name: string, frozen = false) => ({ name, frozen }) as HomeApp;
 
-  it('takes only ready, unfrozen apps, at the SHA their card would ship', () => {
+  it('takes only ready, unfrozen apps, at the SHA their card would deploy', () => {
     expect(
       rolloutCandidates([
         { app: app('a'), status: status('ready', SHA_GREEN) },
@@ -120,8 +120,8 @@ describe('rolloutCandidates', () => {
   });
 });
 
-describe('Roll all on Home', () => {
-  it('offers Roll all for the ready apps, shows the server’s order with Shipyard last, starts it and follows it', async () => {
+describe('Deploy all ready on Home', () => {
+  it('offers Deploy all ready for the ready apps, shows the server’s order with Shipyard last, starts it and follows it', async () => {
     const calls = mockFetch({
       ...homeRoutes(),
       'POST /api/rollouts/plan': {
@@ -156,9 +156,9 @@ describe('Roll all on Home', () => {
 
     // Three ready apps — the frozen one and the up-to-date one are left out.
     const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Roll all 3' }));
+    await user.click(await screen.findByRole('button', { name: 'Deploy all ready (3)' }));
 
-    const plan = await screen.findByRole('list', { name: 'Apps to roll, in order' });
+    const plan = await screen.findByRole('list', { name: 'Apps to deploy, in order' });
     const rows = within(plan).getAllByRole('listitem');
     expect(rows.map((r) => r.textContent)).toEqual([
       expect.stringContaining('1. api'),
@@ -172,7 +172,7 @@ describe('Roll all on Home', () => {
     const planned = calls.find((c) => c.method === 'POST' && c.path === '/api/rollouts/plan');
     expect((planned?.body as { items: { app: string }[] }).items.map((i) => i.app).sort()).toEqual(['api', 'shipyard', 'web']);
 
-    await user.click(screen.getByRole('button', { name: 'Roll all' }));
+    await user.click(screen.getByRole('button', { name: 'Deploy all ready' }));
     await waitFor(() => {
       expect(calls.some((c) => c.method === 'POST' && c.path === '/api/rollouts')).toBe(true);
     });
@@ -186,7 +186,7 @@ describe('Roll all on Home', () => {
       ],
     });
 
-    await screen.findByRole('heading', { level: 1, name: 'Roll all' });
+    await screen.findByRole('heading', { level: 1, name: 'Deploy all ready' });
     const progress = await screen.findByRole('list', { name: 'Apps in this rollout, in order' });
     const items = within(progress).getAllByRole('listitem');
     expect(items[0]).toHaveTextContent('Succeeded');
@@ -197,7 +197,7 @@ describe('Roll all on Home', () => {
     expect(screen.getByText(/1 of 3 done/)).toBeInTheDocument();
   });
 
-  it('shows the plan’s refusal and keeps Roll all disabled', async () => {
+  it('shows the plan’s refusal and keeps Deploy all ready disabled', async () => {
     mockFetch({
       ...homeRoutes(),
       'POST /api/rollouts/plan': {
@@ -208,19 +208,19 @@ describe('Roll all on Home', () => {
     window.history.replaceState(null, '', '/');
     render(<App />);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Roll all 3' }));
+    await user.click(await screen.findByRole('button', { name: 'Deploy all ready (3)' }));
     expect(await screen.findByText('web is being deployed by someone else.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Roll all' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Deploy all ready' })).toBeDisabled();
   });
 
   it('is not offered with fewer than two ready apps', async () => {
     mockFetch({ ...homeRoutes(), 'GET /api/apps/web/commits': upToDate(), 'GET /api/apps/api/commits': upToDate() });
     window.history.replaceState(null, '', '/');
     render(<App />);
-    // Only shipyard is ready: the frozen app reads Frozen and offers no Ship (SHP-DA-011).
-    expect(await screen.findAllByRole('button', { name: `Ship ${SHA_GREEN.slice(0, 7)}` })).toHaveLength(1);
+    // Only shipyard is ready: the frozen app reads Frozen and offers no Deploy (SHP-DA-011).
+    expect(await screen.findAllByRole('button', { name: `Deploy ${SHA_GREEN.slice(0, 7)}` })).toHaveLength(1);
     expect(screen.getAllByText('Frozen').length).toBeGreaterThan(0);
-    expect(screen.queryByRole('button', { name: /^Roll all/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Deploy all ready/ })).not.toBeInTheDocument();
   });
 
   it('is not offered to a viewer', async () => {
@@ -228,7 +228,7 @@ describe('Roll all on Home', () => {
     window.history.replaceState(null, '', '/');
     render(<App />);
     await screen.findByRole('link', { name: 'web' });
-    expect(screen.queryByRole('button', { name: /^Roll all/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Deploy all ready/ })).not.toBeInTheDocument();
   });
 });
 
@@ -270,7 +270,7 @@ describe('Rollout screen', () => {
     expect(within(items[1] as HTMLElement).getByRole('link', { name: '2. web' })).toHaveAttribute('href', '/deploys/d-web');
   });
 
-  it('says so when every app rolled', async () => {
+  it('says so when every app deployed', async () => {
     mockFetch({
       'GET /api/rollouts/r3': {
         status: 200,
@@ -288,7 +288,7 @@ describe('Rollout screen', () => {
         <RolloutProgressView id="r3" />
       </MemoryRouter>,
     );
-    expect(await screen.findByText('All 2 apps rolled')).toBeInTheDocument();
+    expect(await screen.findByText('All 2 apps deployed')).toBeInTheDocument();
   });
 
   it('the first app waits for the agent, the rest wait their turn', async () => {

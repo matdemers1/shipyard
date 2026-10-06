@@ -8,7 +8,6 @@ import {
   fetchAppNames,
   fetchTimeline,
   formatRelativeTime,
-  outcomeLabel,
   outcomeTone,
   shortSha,
   type DeployKind,
@@ -16,6 +15,7 @@ import {
   type TimelineItem,
   type TimelineOutcome,
 } from '../lib/timeline';
+import { stateWords } from '../lib/words';
 
 /** Timeline (S8, SHP-REQ-062): every deploy, rollback and refusal, filterable by app, requester and outcome. */
 
@@ -228,7 +228,7 @@ export function Timeline() {
               }
               meta={
                 <span className="shp-row-meta">
-                  <Badge tone={outcomeTone(item.state)}>{outcomeLabel(item.state)}</Badge>
+                  <Badge tone={outcomeTone(item.state)}>{stateWords(item.state)}</Badge>
                   <span>{formatRelativeTime(item.createdAt)}</span>
                 </span>
               }

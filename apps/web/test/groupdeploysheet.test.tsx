@@ -44,7 +44,7 @@ describe('GroupDeploySheet', () => {
     const input = await screen.findByDisplayValue(SHA);
     expect(input).toBeInTheDocument();
 
-    const confirm = screen.getByRole('button', { name: 'Confirm' });
+    const confirm = screen.getByRole('button', { name: `Deploy ${SHA.slice(0, 7)}` });
     await waitFor(() => {
       expect(confirm).not.toBeDisabled();
     });
@@ -57,7 +57,7 @@ describe('GroupDeploySheet', () => {
     expect(post?.body).toEqual({ kind: 'deploy', group: 'trio', sha: SHA });
   });
 
-  it('disables Confirm until a valid 40-hex SHA is entered when no candidate is found', async () => {
+  it('disables Deploy until a valid 40-hex SHA is entered when no candidate is found', async () => {
     mockFetch({
       'GET /api/apps/alpha/commits': commitsReply(null),
     });
@@ -65,7 +65,7 @@ describe('GroupDeploySheet', () => {
     render(<Harness group={GROUP} />);
 
     await screen.findByText('No candidate SHA found — enter one to deploy the group.');
-    const confirm = screen.getByRole('button', { name: 'Confirm' });
+    const confirm = screen.getByRole('button', { name: 'Deploy' });
     expect(confirm).toBeDisabled();
 
     const input = screen.getByPlaceholderText('40-character commit SHA');
@@ -85,7 +85,7 @@ describe('GroupDeploySheet', () => {
     });
 
     render(<Harness group={GROUP} />);
-    const confirm = await screen.findByRole('button', { name: 'Confirm' });
+    const confirm = await screen.findByRole('button', { name: `Deploy ${SHA.slice(0, 7)}` });
     await waitFor(() => {
       expect(confirm).not.toBeDisabled();
     });

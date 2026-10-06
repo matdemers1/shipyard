@@ -23,7 +23,6 @@ import type { StatusTone } from '../lib/appstatus';
 import { useCan } from '../lib/auth';
 import {
   BUILD_STAGES,
-  BUILD_STATE_LABEL,
   STAGE_LABEL,
   TRIGGER_LABEL,
   buildStateTone,
@@ -39,6 +38,7 @@ import {
   type BuildStreamOptions,
   type Transport,
 } from '../lib/builds';
+import { BUILD_STATE_WORDS } from '../lib/words';
 import { formatRelativeTime } from '../lib/timeline';
 
 /**
@@ -432,7 +432,7 @@ export function BuildDetailView({ id, options }: { id: string; options?: BuildSt
         <div ref={stateRef} tabIndex={-1} role="group" aria-label="Build state">
           <Cluster gap="12" justify="between">
             <Cluster gap="8">
-              <Badge tone={buildStateTone(build.state)}>{BUILD_STATE_LABEL[build.state]}</Badge>
+              <Badge tone={buildStateTone(build.state)}>{BUILD_STATE_WORDS[build.state]}</Badge>
               <TransportNote transport={transport} done={done} />
             </Cluster>
             <Link asChild>

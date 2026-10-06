@@ -50,8 +50,8 @@ export const DEFAULT_DRY_RUN_WAIT_SECONDS = 85;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const NO_GREEN_SHA_NOTE =
-  'The newest green SHA on main is not reported: the Shipyard server does not track CI. The agent ' +
-  're-verifies CI, main and GHCR itself for every deploy; use shipyard_dry_run to check a SHA.';
+  'Whether CI passed for the newest commit on main is not reported: the Shipyard server does not track CI. ' +
+  'The agent re-checks CI, main and the images in GHCR itself for every deploy; use shipyard_dry_run to check a SHA.';
 
 /**
  * The schema package's tool inputs carry a `.meta({ id })`, which makes their JSON Schema a root
@@ -109,12 +109,13 @@ export function buildMcpServer(
     {
       title: 'Shipyard status',
       description:
-        'Read-only. For each app this token is scoped to (or just `app`): the live release (SHA, image digest per ' +
-        'service, schema revision), open drift, who holds the deploy lock and at which step, the last finished ' +
-        'result, `buildSource` (`shipyard` or `github`), and the commits waiting on the default branch ahead of the ' +
-        'live release — each with `build: { state, buildId } | null`, the state of the latest Shipyard build of that ' +
-        'SHA when this app is `build: shipyard` (queue one with shipyard_build). The newest green SHA on main is not ' +
-        'included: the server does not track CI. Changes nothing.',
+        'Read-only. For each app this token is scoped to (or just `app`): what is live (SHA, image digest per ' +
+        'service, schema revision), open drift, who holds the deploy lock and at which step, ' +
+        'the last finished result (succeeded, failed, rolled back or refused), `buildSource` (`shipyard` or ' +
+        '`github`), and the commits waiting on the default branch ahead of live — each with ' +
+        '`build: { state, buildId } | null`, the state of the latest Shipyard build of that SHA when this app is ' +
+        '`build: shipyard` (queue one with shipyard_build). Whether CI passed for a waiting commit is not included: ' +
+        'the server does not track CI, so use shipyard_dry_run to check a commit. Changes nothing.',
       inputSchema: toolInput(ShipyardStatusInput),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -140,10 +141,12 @@ export function buildMcpServer(
     {
       title: 'Dry-run a deploy',
       description:
-        'Asks the agent to evaluate every deploy gate for `app` at `sha` without changing anything and without ' +
-        `taking the lock. Waits up to ${String(dryRunWait)} s, then returns each gate with pass/fail and its reason. ` +
-        'If the agent has not finished by then, returns the deployId with finished: false; follow up with ' +
-        'shipyard_deploy_status. `sha` must be a full 40-character commit SHA.',
+        'Asks the agent to run every deploy check (allowed, not frozen, no drift, not locked, CI passed, on the ' +
+        'default branch, ahead of live, images in GHCR, env names present, no contract release since, approved, ' +
+        'disk space) for `app` at `sha` without changing anything and without taking the lock. Waits up to ' +
+        `${String(dryRunWait)} s, then returns each check with pass/fail and its reason; a check that fails is ` +
+        'refused, with the fix. If the agent has not finished by then, returns the deployId with finished: false; ' +
+        'follow up with shipyard_deploy_status. `sha` must be a full 40-character commit SHA.',
       inputSchema: toolInput(ShipyardDryRunInput),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -191,7 +194,8 @@ export function buildMcpServer(
       title: 'Deploy an app',
       description:
         'Requests a deploy of `app` at the full 40-character `sha` and returns { deployId, state } at once, without ' +
-        'waiting for it to finish; follow it with shipyard_deploy_status. `requester` (repo, branch, label) is ' +
+        'waiting for it to finish; a failed check refuses it before anything changes, and a deploy that fails its ' +
+        'soak is rolled back to the previous release. Follow it with shipyard_deploy_status. `requester` (repo, branch, label) is ' +
         'required and recorded; the label is shown to anyone this deploy locks out, so make it say who you are ' +
         '(e.g. "claude: <session>"). If another deploy holds the app, the call is refused at once naming the holder — ' +
         'Shipyard never queues. Pass `group` instead of `app` to deploy every member of a group at `sha`: every ' +
@@ -216,7 +220,8 @@ export function buildMcpServer(
     {
       title: 'Deploy status',
       description:
-        "Returns a deploy's status: state, current step, requester, gate results and any refusal. Once it has " +
+        "Returns a deploy's status: state (waiting for approval, deploying, soaking, succeeded, failed, rolled " +
+        'back or refused), current step, requester, the result of each check and any refusal. Once it has ' +
         'succeeded, also the SHA and digest of every image and the schema revision. With `wait` (seconds, at most ' +
         '90) it returns on the next state change or when the wait runs out, whichever is first; a finished deploy ' +
         'returns at once. Poll again with wait to keep following it. For a group deploy it returns { group, canary, ' +
@@ -251,8 +256,8 @@ export function buildMcpServer(
     {
       title: 'Roll back an app',
       description:
-        'Requests a rollback of `app` to the images of `toDeployId`, an earlier successful deploy of the same app, ' +
-        'and returns { deployId, state } at once; follow it with shipyard_deploy_status. Image-only: the database ' +
+        'Rolls `app` back to the images of `toDeployId`, an earlier successful deploy of the same app, and ' +
+        'returns { deployId, state } at once; follow it with shipyard_deploy_status. Image-only: the database ' +
         'is not rolled back. `requester` (repo, branch, label) is required and recorded. Refused at once if another ' +
         'deploy holds the app.',
       inputSchema: toolInput(ShipyardRollbackInput),
@@ -307,8 +312,8 @@ export function buildMcpServer(
       description:
         "Returns a build's status by `buildId`: state, each stage's state (fetch, test, integration, build, push), " +
         'the failed stage if any, any refusal verbatim, and the digest pushed for each service once it has ' +
-        'succeeded. `deployable` is true once the build has succeeded — only then can shipyard_deploy use its ' +
-        'images. Changes nothing.',
+        'succeeded. `deployable` is true once the build has succeeded and its images are ready — only then can ' +
+        'shipyard_deploy use them. Changes nothing.',
       inputSchema: toolInput(ShipyardBuildStatusInput),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },

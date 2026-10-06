@@ -215,7 +215,7 @@ export function Connect() {
       <Stack gap="24">
         <PageHeader
           title="Connect Claude Code"
-          description="Let Claude Code see what is live and ship through Shipyard from any repo — no SSH, and every deploy still passes every check."
+          description="Let Claude Code see what is live and deploy through Shipyard from any repo — no SSH, and every deploy still passes every check."
         />
 
         {refusal === null ? null : (
@@ -310,7 +310,7 @@ export function Connect() {
 
         <Section
           title="4. Teach the repo how to deploy"
-          description="Optional, and worth it: paste this into the repo’s CLAUDE.md so Claude Code deploys through Shipyard, names itself, and reports what shipped."
+          description="Optional, and worth it: paste this into the repo’s CLAUDE.md so Claude Code deploys through Shipyard, names itself, and reports what it deployed."
         >
           <Stack gap="8">
             <Textarea mono readOnly aria-label="CLAUDE.md snippet" rows={10} value={snippet} />

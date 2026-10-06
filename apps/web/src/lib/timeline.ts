@@ -1,5 +1,6 @@
 import { request } from './api';
-import { stateWords, type StatusTone } from './appstatus';
+import type { StatusTone } from './appstatus';
+import { stateWords } from './words';
 
 /**
  * The console's read side of the deploy history: the timeline (S8, SHP-REQ-062) and a single
@@ -31,11 +32,11 @@ export type TimelineOutcome = 'succeeded' | 'failed' | 'rolled_back' | 'refused'
 
 export const OUTCOME_OPTIONS: readonly { value: TimelineOutcome; label: string }[] = [
   { value: 'active', label: 'In progress' },
-  { value: 'succeeded', label: 'Succeeded' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'rolled_back', label: 'Rolled back' },
-  { value: 'refused', label: 'Refused' },
-  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'succeeded', label: stateWords('succeeded') },
+  { value: 'failed', label: stateWords('failed') },
+  { value: 'rolled_back', label: stateWords('rolled_back') },
+  { value: 'refused', label: stateWords('refused') },
+  { value: 'cancelled', label: stateWords('cancelled') },
 ];
 
 export const KIND_OPTIONS: readonly { value: DeployKind; label: string }[] = [
@@ -193,24 +194,6 @@ export function shortSha(sha: string): string {
 
 export function isTerminal(state: DeployTargetState): boolean {
   return ['succeeded', 'failed', 'rolled_back', 'refused', 'cancelled'].includes(state);
-}
-
-export function outcomeLabel(state: DeployTargetState): string {
-  switch (state) {
-    case 'succeeded':
-      return 'Succeeded';
-    case 'failed':
-      return 'Failed';
-    case 'rolled_back':
-      return 'Rolled back';
-    case 'refused':
-      return 'Refused';
-    case 'cancelled':
-      return 'Cancelled';
-    default:
-      // Not finished yet: say which step, not one "Active" for queued, held and soaking alike (SHP-DA-013).
-      return stateWords(state);
-  }
 }
 
 export type BadgeTone = StatusTone;

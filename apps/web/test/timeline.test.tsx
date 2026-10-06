@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { App } from '../src/App';
 import type { Call } from './fetch';
 import { meReply, mockFetch } from './fetch';
-import { outcomeLabel, type TimelinePage } from '../src/lib/timeline';
+import type { TimelinePage } from '../src/lib/timeline';
+import { stateWords } from '../src/lib/words';
 
 /** SHP-T-3.7: the timeline (S8, SHP-REQ-062) and the deploy record (S6). */
 
@@ -275,11 +276,11 @@ describe('Deploy record (S6)', () => {
   });
 });
 
-describe('outcomeLabel (SHP-DA-013)', () => {
+describe('stateWords (SHP-DA-013)', () => {
   it('names each unfinished state instead of one "Active"', () => {
-    expect(outcomeLabel('queued')).toBe('Queued');
-    expect(outcomeLabel('awaiting_approval')).toBe('Waiting for approval');
-    expect(outcomeLabel('soaking')).toBe('Soaking');
-    expect(outcomeLabel('rolled_back')).toBe('Rolled back');
+    expect(stateWords('queued')).toBe('Queued');
+    expect(stateWords('awaiting_approval')).toBe('Waiting for approval');
+    expect(stateWords('soaking')).toBe('Soaking');
+    expect(stateWords('rolled_back')).toBe('Rolled back');
   });
 });

@@ -6,17 +6,18 @@ import type { HomeApp } from './home';
 import { isTerminal } from './progress';
 
 /**
- * "Roll all" (SHP-T-12.2, SHP-REQ-154): every app Home calls ready to ship, rolled one at a time —
- * each at the SHA its card would ship, the next only once the one before has soaked. The server
+ * "Deploy all ready" (SHP-T-12.2, SHP-REQ-154; the console's word since SHP-T-13.3, while the rollout
+ * routes and types keep their names): every app Home calls ready, deployed one at a time — each at
+ * the SHA its card would deploy, the next only once the one before has soaked. The server
  * decides the order (Shipyard's own app always last, SHP-REQ-152), so the sheet shows the order the
  * plan endpoint answers, never one worked out here.
  */
 
-/** The fewest ready apps for which Home offers Roll all; one app is just its own Ship button. */
+/** The fewest ready apps for which Home offers Deploy all ready; one app is just its own Deploy button. */
 export const MIN_ROLL_ALL = 2;
 
 /**
- * The apps Roll all would ship: those whose status is "ready to ship" with a SHA to ship, and not
+ * The apps Deploy all ready would deploy: those whose status is "ready" with a SHA to deploy, and not
  * frozen (a frozen app would refuse the whole rollout). Deploying, drifted and approval-waiting apps
  * already have another status, so they are never "ready".
  */

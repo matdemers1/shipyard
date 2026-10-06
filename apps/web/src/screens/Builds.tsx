@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import {
-  BUILD_STATE_LABEL,
   TRIGGER_LABEL,
   buildStateTone,
   builds,
@@ -11,6 +10,7 @@ import {
   type BuildSummary,
 } from '../lib/builds';
 import { fetchAppNames, formatRelativeTime } from '../lib/timeline';
+import { BUILD_STATE_WORDS } from '../lib/words';
 
 /**
  * Builds, `/builds` (SHP-T-7.12, SHP-REQ-142): every build Shipyard ran or queued, newest first,
@@ -35,7 +35,7 @@ export function BuildRow({ build }: { build: BuildSummary }) {
       description={`${TRIGGER_LABEL[build.trigger]} · ${build.requesterLabel}`}
       meta={
         <>
-          <Badge tone={buildStateTone(build.state)}>{BUILD_STATE_LABEL[build.state]}</Badge>
+          <Badge tone={buildStateTone(build.state)}>{BUILD_STATE_WORDS[build.state]}</Badge>
           <span>{formatRelativeTime(build.createdAt)}</span>
         </>
       }

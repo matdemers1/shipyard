@@ -169,7 +169,7 @@ test.describe('as an admin, baseline world', () => {
     await expect(page.getByRole('link', { name: fixture().apps.history, exact: true })).toHaveCount(0);
   });
 
-  test('S3 empty: "Nothing to ship — live is" the SHA asked for', async ({ page }) => {
+  test('S3 empty: "Nothing to deploy — live is" the SHA asked for', async ({ page }) => {
     const fx = fixture();
     await fakeDryRun(page, dryRunStatus(fx.apps.approval, HELD_SHA, {}));
     await page.route(isPath(`/api/apps/${fx.apps.approval}/commits`), (route) =>
@@ -178,7 +178,7 @@ test.describe('as an admin, baseline world', () => {
     await page.goto('/');
     await page.getByRole('button', { name: 'Review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
-    await expect(dialog.getByText(`Nothing to ship — live is ${HELD_SHA.slice(0, 7)}.`)).toBeVisible();
+    await expect(dialog.getByText(`Nothing to deploy — live is ${HELD_SHA.slice(0, 7)}.`)).toBeVisible();
   });
 
   test('S3 loading: a spinner while the gates are checked', async ({ page }) => {
@@ -193,7 +193,7 @@ test.describe('as an admin, baseline world', () => {
     const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
     await expect(dialog.getByText(/Starting the checks · \d+s/)).toBeVisible();
     await expect(dialog.locator('.d3-spn')).toBeAttached();
-    await expect(dialog.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: `Approve and deploy ${HELD_SHA.slice(0, 7)}` })).toBeDisabled();
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
 
@@ -219,7 +219,7 @@ test.describe('as an admin, baseline world', () => {
     await expect(g5).toContainText('failed');
     await expect(g5).toContainText(reason);
     await expect(dialog.getByRole('alert').filter({ hasText: fix })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: `Approve and deploy ${HELD_SHA.slice(0, 7)}` })).toBeDisabled();
   });
 
   test('S4 loading: the step list with live output, the current step marked', async ({ page }) => {
@@ -534,7 +534,7 @@ test.describe('as a viewer', () => {
     await page.goto('/');
     await expect(page.getByRole('link', { name: fx.apps.history, exact: true })).toBeVisible();
     await expect(card(page, fx.apps.history)).toContainText('Since live');
-    await expect(page.getByRole('button', { name: /^Ship / })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Deploy [0-9a-f]{7}$/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^(Up to date|Nothing green)$/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Deploy group' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Deny' })).toHaveCount(0);

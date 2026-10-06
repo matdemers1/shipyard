@@ -58,11 +58,11 @@ export function deploySnippetFor(origin: string): string {
 
 /** What each MCP tool does, in the words the page shows. The server's tool list is the source. */
 export const TOOLS: readonly { name: string; does: string }[] = [
-  { name: 'shipyard_status', does: 'What is live for each app, what is waiting to ship, and its build state.' },
-  { name: 'shipyard_dry_run', does: 'Runs every check for a commit without changing anything.' },
-  { name: 'shipyard_deploy', does: 'Ships a commit to an app or a group — the same checks, backup and rollback as the Ship button.' },
-  { name: 'shipyard_deploy_status', does: 'Follows a deploy to the end and reports the SHA per image and the schema revision.' },
-  { name: 'shipyard_rollback', does: 'Puts an earlier successful release back, from the agent’s own ledger.' },
+  { name: 'shipyard_status', does: 'What is live for each app, what is waiting on the default branch, and its build state.' },
+  { name: 'shipyard_dry_run', does: 'Runs every check for a commit — refused or ready — without changing anything.' },
+  { name: 'shipyard_deploy', does: 'Deploys a commit to an app or a group — the same checks, backup and rollback as the Deploy button.' },
+  { name: 'shipyard_deploy_status', does: 'Follows a deploy to the end — succeeded, rolled back or refused — and reports the SHA per image and the schema revision.' },
+  { name: 'shipyard_rollback', does: 'Rolls back to an earlier successful release, from the agent’s own ledger.' },
   { name: 'shipyard_build', does: 'Queues a Shipyard build of a commit, for an app whose images Shipyard builds.' },
-  { name: 'shipyard_build_status', does: 'Follows a build and says when it is deployable.' },
+  { name: 'shipyard_build_status', does: 'Follows a build and says when its images are ready to deploy.' },
 ];

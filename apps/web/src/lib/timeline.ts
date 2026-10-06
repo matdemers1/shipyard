@@ -1,5 +1,5 @@
 import { request } from './api';
-import { stateWords } from './appstatus';
+import { stateWords, type StatusTone } from './appstatus';
 
 /**
  * The console's read side of the deploy history: the timeline (S8, SHP-REQ-062) and a single
@@ -213,8 +213,9 @@ export function outcomeLabel(state: DeployTargetState): string {
   }
 }
 
-export type BadgeTone = 'neutral' | 'attention' | 'danger';
+export type BadgeTone = StatusTone;
 
+/** The same four tones as `stateTone`: a deploy still moving is `attention`, a cancelled one `warning` (SHP-T-13.2). */
 export function outcomeTone(state: DeployTargetState): BadgeTone {
   switch (state) {
     case 'succeeded':
@@ -223,6 +224,8 @@ export function outcomeTone(state: DeployTargetState): BadgeTone {
     case 'refused':
     case 'rolled_back':
       return 'danger';
+    case 'cancelled':
+      return 'warning';
     default:
       return 'attention';
   }

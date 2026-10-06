@@ -191,7 +191,7 @@ test.describe('as an admin, baseline world', () => {
     await page.goto('/');
     await page.getByRole('button', { name: 'Review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
-    await expect(dialog.getByText('Checking gates…')).toBeVisible();
+    await expect(dialog.getByText(/Starting the checks · \d+s/)).toBeVisible();
     await expect(dialog.locator('.d3-spn')).toBeAttached();
     await expect(dialog.getByRole('button', { name: 'Confirm' })).toBeDisabled();
     await page.unrouteAll({ behavior: 'ignoreErrors' });

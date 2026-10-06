@@ -37,6 +37,7 @@ const SUMMARY: { label: string; kinds: StatusKind[] }[] = [
   { label: 'ready to ship', kinds: ['ready'] },
   { label: 'need attention', kinds: ['approval', 'drift', 'ci-failed'] },
   { label: 'in progress', kinds: ['deploying', 'ci-running'] },
+  { label: 'frozen', kinds: ['frozen'] },
   { label: 'nothing to ship', kinds: ['up-to-date', 'no-images'] },
 ];
 
@@ -62,6 +63,10 @@ const GLOSSARY: { term: string; meaning: string }[] = [
   {
     term: 'Drift',
     meaning: 'What is running on the host is not what Shipyard deployed. Resolve it on the app page before the next deploy.',
+  },
+  {
+    term: 'Frozen',
+    meaning: 'Someone froze the app, so every new deploy is refused until it is unfrozen on the app page. Rollbacks and restores still work.',
   },
   { term: 'Deploying', meaning: 'A deploy is running: backup, pull, swap, health check, then a soak before it counts as done.' },
   { term: 'Up to date', meaning: 'Live is the newest commit on the default branch.' },

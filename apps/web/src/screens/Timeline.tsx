@@ -227,10 +227,10 @@ export function Timeline() {
                   : item.requesterLabel
               }
               meta={
-                <>
+                <span className="shp-row-meta">
                   <Badge tone={outcomeTone(item.state)}>{outcomeLabel(item.state)}</Badge>
                   <span>{formatRelativeTime(item.createdAt)}</span>
-                </>
+                </span>
               }
             />
           ))}

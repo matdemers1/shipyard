@@ -7,6 +7,8 @@ import { getCommitsTo } from '../lib/changelog';
 import {
   approveDeploy,
   commitsToShip,
+  DRY_RUN_DEADLINE_SECONDS,
+  dryRunTimeout,
   getApp,
   hasContractMigration,
   pollDeployStatus,
@@ -25,7 +27,7 @@ import {
 export type SheetAction =
   | { kind: 'deploy'; app: string; sha: string }
   | { kind: 'rollback'; app: string; sha: string; toDeployId: string }
-  | { kind: 'approve'; app: string; sha: string; deployId: string };
+  | { kind: 'approve'; app: string; sha: string; deployId: string; requester: string };
 
 export interface DryRunSheetProps {
   open: boolean;
@@ -56,6 +58,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
   const [soakSeconds, setSoakSeconds] = useState<number | null>(null);
   const [commits, setCommits] = useState<CommitsResponse | null | 'loading'>('loading');
   const [confirmPhase, setConfirmPhase] = useState<ConfirmPhase>({ kind: 'idle' });
+  const [elapsed, setElapsed] = useState(0);
   const stopped = useRef(false);
 
   useEffect(() => {
@@ -66,9 +69,21 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
     setPhase({ kind: 'starting' });
     setSoakSeconds(null);
     setCommits('loading');
+    setElapsed(0);
 
     const controller = new AbortController();
     const currentAction = action;
+    const startedAt = Date.now();
+    const tick = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    // A dry run that never finishes — a stale agent, or a server that does not answer — stops here
+    // with the reason, instead of spinning with Confirm disabled (SHP-DA-014).
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, DRY_RUN_DEADLINE_SECONDS * 1000);
 
     void getApp(action.app)
       .then((app) => {
@@ -98,6 +113,8 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
           const status = await pollDeployStatus(accepted.deployId, waitSeconds, controller.signal);
           if (isStopped()) return;
           if (isTerminal(status.state)) {
+            clearTimeout(deadline);
+            clearInterval(tick);
             setPhase({ kind: 'ready', deployId: accepted.deployId, status });
             return;
           }
@@ -106,6 +123,13 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
         }
       } catch (error) {
         if (isStopped()) return;
+        clearTimeout(deadline);
+        clearInterval(tick);
+        if (timedOut) {
+          const reason = await dryRunTimeout();
+          if (!isStopped()) setPhase({ kind: 'error', error: reason });
+          return;
+        }
         if (error instanceof DOMException && error.name === 'AbortError') return;
         setPhase({ kind: 'error', error: error instanceof RefusalError ? error : (error as RefusalError) });
       }
@@ -114,6 +138,8 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
 
     return () => {
       stopped.current = true;
+      clearTimeout(deadline);
+      clearInterval(tick);
       controller.abort();
     };
   }, [open, action]);
@@ -189,7 +215,14 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
         <DescriptionItem term="Target SHA">
           <code>{action.sha}</code>
         </DescriptionItem>
-        <DescriptionItem term="Requested by">{me?.displayName ?? me?.email ?? 'you'}</DescriptionItem>
+        {action.kind === 'approve' ? (
+          <>
+            <DescriptionItem term="Requested by">{action.requester}</DescriptionItem>
+            <DescriptionItem term="Approving as">{me?.displayName ?? me?.email ?? 'you'}</DescriptionItem>
+          </>
+        ) : (
+          <DescriptionItem term="Requested by">{me?.displayName ?? me?.email ?? 'you'}</DescriptionItem>
+        )}
         <DescriptionItem term="Soak duration" numeric>
           {soakSeconds === null ? '—' : `${String(soakSeconds)}s`}
         </DescriptionItem>
@@ -203,7 +236,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
 
       {phase.kind === 'starting' || phase.kind === 'polling' ? (
         <p>
-          <Spinner size="sm" /> Checking gates…
+          <Spinner size="sm" /> {checkingWords(phase)} · {String(elapsed)}s
         </p>
       ) : null}
 
@@ -263,6 +296,15 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
       ) : null}
     </Modal>
   );
+}
+
+/** What the sheet is waiting on, so a slow agent reads differently from a busy one. */
+function checkingWords(phase: DryRunPhase): string {
+  if (phase.kind === 'starting') return 'Starting the checks';
+  if (phase.kind === 'polling' && (phase.status === null || phase.status.state === 'queued')) {
+    return 'Waiting for the agent to pick this up';
+  }
+  return 'The agent is running the checks';
 }
 
 function commitsLive(commits: CommitsResponse | null | 'loading'): string | null {

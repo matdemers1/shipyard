@@ -191,7 +191,9 @@ export function DriftBanner({ app, eventId, detectedAt, services, pending = null
       title={`${app} is running something other than its recorded release`}
       actions={
         canAct ? (
-          <>
+          // Its own wrapping row: the alert's action slot does not wrap, and at 390 px the two
+          // buttons ran off the right edge (SHP-DA-018).
+          <div className="shp-alert-actions">
             <AdoptLiveButton
               app={app}
               driftEventId={eventId}
@@ -201,7 +203,7 @@ export function DriftBanner({ app, eventId, detectedAt, services, pending = null
               }}
             />
             <RedeployButton app={app} driftEventId={eventId} onStarted={onResolved} />
-          </>
+          </div>
         ) : undefined
       }
     >

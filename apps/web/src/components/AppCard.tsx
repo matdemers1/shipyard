@@ -49,7 +49,7 @@ export function AppCard({ app, status, canDeploy, onShip, approval }: AppCardPro
         variant="primary"
         size="sm"
         onClick={() => {
-          onShip({ kind: 'approve', app: app.name, sha: approval.sha, deployId: approval.deployId });
+          onShip({ kind: 'approve', app: app.name, sha: approval.sha, deployId: approval.deployId, requester: approval.requester.label });
         }}
       >
         Review approval · {sha7(approval.sha)}

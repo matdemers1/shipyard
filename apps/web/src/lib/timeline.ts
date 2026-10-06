@@ -1,4 +1,5 @@
 import { request } from './api';
+import { stateWords } from './appstatus';
 
 /**
  * The console's read side of the deploy history: the timeline (S8, SHP-REQ-062) and a single
@@ -29,7 +30,7 @@ export type DeployTargetState =
 export type TimelineOutcome = 'succeeded' | 'failed' | 'rolled_back' | 'refused' | 'cancelled' | 'active';
 
 export const OUTCOME_OPTIONS: readonly { value: TimelineOutcome; label: string }[] = [
-  { value: 'active', label: 'Active' },
+  { value: 'active', label: 'In progress' },
   { value: 'succeeded', label: 'Succeeded' },
   { value: 'failed', label: 'Failed' },
   { value: 'rolled_back', label: 'Rolled back' },
@@ -207,7 +208,8 @@ export function outcomeLabel(state: DeployTargetState): string {
     case 'cancelled':
       return 'Cancelled';
     default:
-      return 'Active';
+      // Not finished yet: say which step, not one "Active" for queued, held and soaking alike (SHP-DA-013).
+      return stateWords(state);
   }
 }
 

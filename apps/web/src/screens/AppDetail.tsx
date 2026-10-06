@@ -173,7 +173,7 @@ export function AppDetail() {
   const history = detail.targets;
   const recentBuilds = load.builds ?? [];
   const showBuilds = builtByShipyard(detail.manifest) || recentBuilds.length > 0;
-  const status = appStatus({ ...detail, commits: load.commits, approval: load.approval });
+  const status = appStatus({ ...detail, commits: load.commits, approval: load.approval, frozen: activeFreeze !== null });
   const summary = summarizeCommits(load.commits);
   // Newest first: the one at the top is the one you would ship.
   const waiting = [...(load.commits?.commits ?? [])].reverse();
@@ -241,7 +241,13 @@ export function AppDetail() {
                 size="sm"
                 onClick={() => {
                   if (load.approval === undefined) return;
-                  setSheet({ kind: 'approve', app: detail.name, sha: load.approval.sha, deployId: load.approval.deployId });
+                  setSheet({
+                    kind: 'approve',
+                    app: detail.name,
+                    sha: load.approval.sha,
+                    deployId: load.approval.deployId,
+                    requester: load.approval.requester.label,
+                  });
                 }}
               >
                 Review and approve

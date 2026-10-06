@@ -55,7 +55,7 @@ export function ApprovalsBanner({ approvals, canDeny = true, onReview, onDenied 
                   variant="secondary"
                   size="sm"
                   onClick={() => {
-                    onReview({ kind: 'approve', app: approval.app, sha: approval.sha, deployId: approval.deployId });
+                    onReview({ kind: 'approve', app: approval.app, sha: approval.sha, deployId: approval.deployId, requester: approval.requester.label });
                   }}
                 >
                   Review

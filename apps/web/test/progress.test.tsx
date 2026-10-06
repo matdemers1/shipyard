@@ -3,10 +3,14 @@ import type { DeployStatus } from '@shipyard/schema';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { POLL_MS, retryDelay, type DeployStep, type EventSourceLike } from '../src/lib/progress';
-import { DeployProgressView } from '../src/screens/DeployProgress';
-import { mockFetch } from './fetch';
+import { DeployView } from '../src/screens/Deploy';
+import { mockFetch, type Call, type Reply } from './fetch';
 
-/** Live deploy progress (SHP-T-3.4, SHP-REQ-058): dropping the stream keeps progress moving. */
+/**
+ * Live deploy progress (SHP-T-3.4, SHP-REQ-058): dropping the stream keeps progress moving. Since
+ * SHP-T-13.11 the stream drives the one deploy page, which reads the app's soak, the Foreman posts
+ * and the CI run beside it; the assertions on the stream count only the deploy's own reads.
+ */
 
 const ID = '11111111-2222-4333-8444-555555555555';
 const SHA = 'abcdef1234567890abcdef1234567890abcdef12';
@@ -78,22 +82,44 @@ const factory = (url: string): EventSourceLike => new FakeEventSource(url);
 function renderScreen(eventSource: typeof factory | null = factory) {
   return render(
     <MemoryRouter>
-      <DeployProgressView id={ID} options={{ eventSource }} />
+      <DeployView id={ID} options={{ eventSource }} />
     </MemoryRouter>,
   );
+}
+
+/** What the page reads beside the stream: the app (for its soak), the Foreman posts, the CI run. */
+function besideTheStream(app = 'web'): Record<string, Reply> {
+  return {
+    [`GET /api/apps/${app}`]: {
+      status: 200,
+      body: { soakSeconds: 60, defaultBranch: 'main', liveSha: null, targets: [], manifest: {} },
+    },
+    [`GET /api/deploys/${ID}/foreman`]: { status: 200, body: { posts: [], stuck: false } },
+    [`GET /api/apps/${app}/commits/${SHA}/run`]: { status: 200, body: { run: null, jobs: [] } },
+  };
+}
+
+/** The stream's own reads: the status and the steps, not what the page reads beside them. */
+function streamCalls(calls: Call[]): Call[] {
+  return calls.filter((c) => c.path === `/api/deploys/${ID}` || c.path === `/api/deploys/${ID}/steps`);
+}
+
+/** A planned step's row, by the agent's name for it. */
+function row(key: string): HTMLElement {
+  const list = screen.getByRole('list', { name: 'Deploy steps' });
+  const found = list.querySelector<HTMLElement>(`[data-step="${key}"]`);
+  if (found === null) throw new Error(`no row for ${key}`);
+  return found;
+}
+
+function verdict(name: string | RegExp): HTMLElement {
+  return screen.getByRole('heading', { level: 2, name });
 }
 
 async function advance(ms: number): Promise<void> {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
   });
-}
-
-function stepNames(): string[] {
-  const list = screen.getByRole('list', { name: 'Deploy steps' });
-  return within(list)
-    .getAllByRole('listitem')
-    .map((li) => li.querySelector('strong')?.textContent ?? '');
 }
 
 beforeEach(() => {
@@ -108,6 +134,7 @@ afterEach(() => {
 describe('useDeployProgress: SSE with a polling fallback', () => {
   it('keeps progress moving when the stream drops, reconnects, and ends on success with digests and schema', async () => {
     const calls = mockFetch({
+      ...besideTheStream(),
       [`GET /api/deploys/${ID}`]: [
         { status: 200, body: status('pulling', { currentStep: 'pull' }) },
         { status: 200, body: status('swapping', { currentStep: 'swap' }) },
@@ -135,9 +162,10 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
       first.emit('steps', { steps: [step('verify', 0, false)] });
     });
     expect(screen.getByRole('status')).toHaveTextContent('Live');
-    expect(stepNames()).toEqual(['verify']);
-    expect(screen.getByText('Verifying')).toBeInTheDocument();
-    expect(calls).toHaveLength(0);
+    expect(verdict('Verifying')).toBeInTheDocument();
+    // Every planned step is listed before it runs.
+    expect(row('pull')).toHaveAttribute('data-state', 'waiting');
+    expect(streamCalls(calls)).toHaveLength(0);
 
     // The stream drops: the hook polls at once and says so.
     act(() => {
@@ -146,20 +174,24 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
     expect(first.closed).toBe(true);
     expect(screen.getByRole('status')).toHaveTextContent('Polling (reconnecting)');
     await advance(0);
-    expect(stepNames()).toEqual(['verify', 'pull']);
-    expect(screen.getByText('Pulling')).toBeInTheDocument();
-    expect(calls.map((c) => c.path)).toEqual([`/api/deploys/${ID}`, `/api/deploys/${ID}/steps`]);
+    expect(row('pull')).toHaveAttribute('data-state', 'running');
+    expect(verdict('Pulling')).toBeInTheDocument();
+    expect(streamCalls(calls).map((c) => c.path)).toEqual([`/api/deploys/${ID}`, `/api/deploys/${ID}/steps`]);
 
     // It tries the stream again after the first backoff; that attempt has not opened yet...
     await advance(retryDelay(0));
     expect(FakeEventSource.instances).toHaveLength(2);
     // ...so the next poll, three seconds after the first, still moves progress on.
     await advance(POLL_MS - retryDelay(0));
-    expect(calls).toHaveLength(4);
-    expect(stepNames()).toEqual(['verify', 'pull', 'swap']);
-    expect(screen.getByText('Swapping')).toBeInTheDocument();
-    const current = screen.getAllByRole('listitem').find((li) => li.getAttribute('aria-current') === 'step');
-    expect(current).toHaveTextContent('swap');
+    expect(streamCalls(calls)).toHaveLength(4);
+    expect(row('pull')).toHaveAttribute('data-state', 'done');
+    expect(row('swap')).toHaveAttribute('data-state', 'running');
+    expect(verdict('Swapping')).toBeInTheDocument();
+    const current = within(screen.getByRole('list', { name: 'Deploy steps' }))
+      .getAllByRole('listitem')
+      .filter((li) => li.getAttribute('aria-current') === 'step');
+    expect(current).toHaveLength(1);
+    expect(current[0]).toHaveTextContent('Swap');
 
     // The reconnect opens: live again, polling stops.
     const second = FakeEventSource.instances[1];
@@ -169,7 +201,7 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
     });
     expect(screen.getByRole('status')).toHaveTextContent('Live');
     await advance(POLL_MS * 3);
-    expect(calls).toHaveLength(4);
+    expect(streamCalls(calls)).toHaveLength(4);
 
     // Success: every image's SHA and digest, and the schema revision.
     act(() => {
@@ -187,23 +219,25 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
     });
     expect(second.closed).toBe(true);
     expect(screen.getByRole('status')).toHaveTextContent('Finished');
-    expect(screen.getByText('Deployed')).toBeInTheDocument();
+    expect(verdict(`Deployed · ${SHA.slice(0, 7)} is live`)).toBeInTheDocument();
     expect(screen.getByText(DIGEST)).toBeInTheDocument();
     expect(screen.getAllByText(SHA).length).toBeGreaterThan(0);
     expect(screen.getByText('0007_add_invites')).toBeInTheDocument();
-    expect(stepNames()).toEqual(['verify', 'pull', 'swap', 'check', 'soak']);
-    expect(screen.getByRole('link', { name: 'Deploy record' })).toHaveAttribute('href', `/deploys/${ID}`);
+    expect(row('soak')).toHaveAttribute('data-state', 'done');
+    // The record is this page: nothing links away to another view of the same deploy.
+    expect(screen.queryByRole('link', { name: 'Deploy record' })).not.toBeInTheDocument();
 
     // Nothing reconnects or polls after the end: one last read of the steps, then silence.
     await advance(60_000);
     expect(FakeEventSource.instances).toHaveLength(2);
-    expect(calls).toHaveLength(5);
-    expect(calls[4]?.path).toBe(`/api/deploys/${ID}/steps`);
-    expect(stepNames()).toEqual(['verify', 'pull', 'swap', 'check', 'soak']);
+    expect(streamCalls(calls)).toHaveLength(5);
+    expect(streamCalls(calls)[4]?.path).toBe(`/api/deploys/${ID}/steps`);
+    expect(row('check')).toHaveAttribute('data-state', 'done');
   });
 
   it('backs off between failed reconnects while polling every three seconds', async () => {
     const calls = mockFetch({
+      ...besideTheStream(),
       [`GET /api/deploys/${ID}`]: { status: 200, body: status('soaking') },
       [`GET /api/deploys/${ID}/steps`]: { status: 200, body: { steps: [step('soak', 0, false)] } },
     });
@@ -227,6 +261,7 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
 
   it('polls from the start without EventSource, and shows a failure with its message and fix', async () => {
     mockFetch({
+      ...besideTheStream(),
       [`GET /api/deploys/${ID}`]: [
         { status: 200, body: status('checking') },
         {
@@ -250,19 +285,23 @@ describe('useDeployProgress: SSE with a polling fallback', () => {
     renderScreen(null);
     await advance(0);
     expect(screen.getByRole('status')).toHaveTextContent('Polling (reconnecting)');
-    expect(stepNames()).toEqual(['check']);
+    expect(row('check')).toHaveAttribute('data-state', 'running');
     await advance(POLL_MS);
-    expect(screen.getAllByText('Rolled back').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText('web answered 500 on /health.')).toBeInTheDocument();
-    expect(screen.getByText('Fix the release and deploy again.')).toBeInTheDocument();
-    expect(screen.getByText('Failed (exit 1)')).toBeInTheDocument();
-    const items = screen.getAllByRole('listitem');
-    expect(items[1]).toHaveTextContent('Rollback');
-    expect(screen.getByLabelText('Output of check')).toHaveTextContent('HTTP 500');
+    // The verdict leads with the outcome, then the refusal's message and fix verbatim.
+    const banner = screen.getByRole('region', { name: /^Rolled back/ });
+    expect(within(banner).getByText('web answered 500 on /health.')).toBeInTheDocument();
+    expect(within(banner).getByText('Fix the release and deploy again.')).toBeInTheDocument();
+    expect(row('check')).toHaveAttribute('data-state', 'failed');
+    expect(row('check')).toHaveTextContent('exit 1');
+    // Roll back is a real step with its own timer, after the one that failed.
+    expect(row('rollback')).toHaveTextContent('Roll back');
+    expect(row('rollback')).toHaveTextContent('2s');
+    expect(screen.getByLabelText('Output of Check')).toHaveTextContent('HTTP 500');
   });
 
   it("shows a group deploy's members in order, with the stopped member's group_stopped reason (SHP-T-5.11)", async () => {
     mockFetch({
+      ...besideTheStream('bravo'),
       [`GET /api/deploys/${ID}`]: {
         status: 200,
         body: status('failed', {

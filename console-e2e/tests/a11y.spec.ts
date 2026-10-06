@@ -184,14 +184,25 @@ const SCREENS: Screen[] = [
       await dialog(p, new RegExp(`^Deny ${fx.apps.approval}`));
     },
   },
-  // S4 Deploy progress — live, and finished.
+  // S4 Deploy — the one page (SHP-T-13.11), reached through the old live address, which redirects.
   {
     name: 'S4 deploy progress, soaking',
     as: 'admin',
     path: (fx) => `/deploys/${fx.deploys.inProgress}/live`,
     ready: async (p) => {
       await expect(p.getByRole('heading', { level: 1 })).toBeVisible();
-      await expect(p.getByText(/requested by/)).toBeVisible();
+      await expect(p.getByText('Requested by')).toBeVisible();
+      await expect(p.getByRole('region', { name: /^Soaking/ })).toBeVisible();
+    },
+  },
+  {
+    name: 'S4 deploy progress, soaking at phone width',
+    as: 'admin',
+    phone: true,
+    path: (fx) => `/deploys/${fx.deploys.inProgress}`,
+    ready: async (p) => {
+      await expect(p.getByRole('heading', { level: 1 })).toBeVisible();
+      await expect(p.getByRole('list', { name: 'Deploy steps' }).locator('[aria-current="step"]')).toBeInViewport();
     },
   },
   {
@@ -200,7 +211,8 @@ const SCREENS: Screen[] = [
     path: (fx) => `/deploys/${fx.deploys.rolledBack}/live`,
     ready: async (p) => {
       await expect(p.getByRole('heading', { level: 1 })).toBeVisible();
-      await expect(p.getByText(/requested by/)).toBeVisible();
+      await expect(p.getByText('Requested by')).toBeVisible();
+      await expect(p.getByRole('region', { name: /^Rolled back/ })).toBeVisible();
     },
   },
   {
@@ -288,14 +300,15 @@ const SCREENS: Screen[] = [
       await dialog(p, `Redeploy ${fx.apps.drifted}'s recorded release`);
     },
   },
-  // S6 Deploy record.
+  // S6 Deploy record — the same one page once a deploy has ended (SHP-T-13.11).
   ...(['succeeded', 'rolledBack', 'refused', 'awaitingApproval'] as const).map(
     (which): Screen => ({
       name: `S6 deploy record, ${which}`,
       as: 'admin',
       path: (fx) => `/deploys/${fx.deploys[which]}`,
       ready: async (p) => {
-        await expect(p.getByRole('heading', { level: 1 })).toContainText('·');
+        await expect(p.getByRole('heading', { level: 1 })).toHaveText(/^(Deploy|Roll back|Restore) /);
+        await expect(p.getByRole('group', { name: 'Next actions' })).toBeVisible();
       },
     }),
   ),

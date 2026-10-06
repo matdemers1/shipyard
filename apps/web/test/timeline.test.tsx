@@ -7,7 +7,7 @@ import { meReply, mockFetch } from './fetch';
 import type { TimelinePage } from '../src/lib/timeline';
 import { stateWords } from '../src/lib/words';
 
-/** SHP-T-3.7: the timeline (S8, SHP-REQ-062) and the deploy record (S6). */
+/** SHP-T-3.7: the timeline (S8, SHP-REQ-062). */
 
 function renderAt(path: string) {
   window.history.replaceState(null, '', path);
@@ -147,134 +147,7 @@ describe('Timeline (S8)', () => {
   });
 });
 
-describe('Deploy record (S6)', () => {
-  const STATUS = {
-    deployId: 'd-1',
-    kind: 'deploy',
-    app: 'web',
-    sha: 'a'.repeat(40),
-    dryRun: false,
-    state: 'failed',
-    currentStep: null,
-    requester: { label: 'Alice', repo: 'org/web', branch: 'main' },
-    images: [{ service: 'web', sha: 'a'.repeat(40), digest: 'sha256:deadbeef', migration: null }],
-    schemaRevision: null,
-    refusal: null,
-    gates: [
-      { gate: 'G5', pass: true, reason: 'CI green' },
-      { gate: 'G7', pass: false, reason: 'not ahead of live' },
-    ],
-    createdAt: '2026-01-01T00:00:00.000Z',
-    endedAt: '2026-01-01T00:01:00.000Z',
-  };
-
-  it('renders gates, images and the journal', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/deploys/d-1': { status: 200, body: STATUS },
-      'GET /api/deploys/d-1/steps': {
-        status: 200,
-        body: { steps: [{ name: 'pull', argv: ['docker', 'pull', 'x'], startedAt: STATUS.createdAt, endedAt: STATUS.endedAt, exitCode: 0, output: 'ok' }] },
-      },
-      'GET /api/deploys/d-1/foreman': { status: 200, body: { posts: [], stuck: false } },
-    });
-    renderAt('/deploys/d-1');
-    expect(await screen.findByRole('heading', { level: 1, name: /web/ })).toBeInTheDocument();
-    expect(screen.getByText('G5')).toBeInTheDocument();
-    expect(screen.getByText('Pass')).toBeInTheDocument();
-    expect(screen.getByText('G7')).toBeInTheDocument();
-    expect(screen.getByText('Fail')).toBeInTheDocument();
-    expect(screen.getByText(/sha256:deadbeef/)).toBeInTheDocument();
-    expect(screen.getByText('pull')).toBeInTheDocument();
-    expect(screen.getByText('docker pull x')).toBeInTheDocument();
-    expect(screen.getByText('No Foreman mapping')).toBeInTheDocument();
-  });
-
-  it('renders a refusal', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/deploys/d-1': {
-        status: 200,
-        body: { ...STATUS, state: 'refused', refusal: { code: 'app_frozen', gate: 'G2', message: 'The app is frozen.', fix: 'Unfreeze it and retry.' } },
-      },
-      'GET /api/deploys/d-1/steps': { status: 200, body: { steps: [] } },
-      'GET /api/deploys/d-1/foreman': { status: 200, body: { posts: [], stuck: false } },
-    });
-    renderAt('/deploys/d-1');
-    expect(await screen.findByText('The app is frozen.')).toBeInTheDocument();
-    expect(screen.getByText('Unfreeze it and retry.')).toBeInTheDocument();
-  });
-
-  it('shows the outbox-failing badge when a Foreman post is stuck', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/deploys/d-1': { status: 200, body: { ...STATUS, state: 'succeeded' } },
-      'GET /api/deploys/d-1/steps': { status: 200, body: { steps: [] } },
-      'GET /api/deploys/d-1/foreman': {
-        status: 200,
-        body: {
-          posts: [
-            { service: 'web', idempotencyKey: 'd-1:web', delivered: false, attempts: 3, lastError: 'HTTP 503', nextAt: '2026-01-01T02:00:00.000Z' },
-          ],
-          stuck: true,
-        },
-      },
-    });
-    renderAt('/deploys/d-1');
-    expect(await screen.findByText('Outbox failing')).toBeInTheDocument();
-    expect(screen.getByText('Pending')).toBeInTheDocument();
-    expect(screen.getByText(/HTTP 503/)).toBeInTheDocument();
-  });
-
-  it('lists a group deploy\'s members in order, with the stopped member\'s group_stopped reason (SHP-T-5.11)', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/deploys/d-1': {
-        status: 200,
-        body: {
-          ...STATUS,
-          app: 'bravo',
-          state: 'failed',
-          refusal: { code: 'health_failed', gate: 'none', message: 'bravo answered 500 on /health.', fix: 'Fix the release and deploy again.' },
-          group: {
-            name: 'trio',
-            members: [
-              { app: 'alpha', state: 'succeeded', refusal: null, canary: true, position: 0, targetId: 't1' },
-              {
-                app: 'bravo',
-                state: 'failed',
-                refusal: { code: 'health_failed', gate: 'none', message: 'bravo answered 500 on /health.', fix: 'Fix the release and deploy again.' },
-                canary: false,
-                position: 1,
-                targetId: 't2',
-              },
-              {
-                app: 'charlie',
-                state: 'cancelled',
-                refusal: { code: 'group_stopped', gate: 'none', message: 'The group deploy stopped at bravo (failed); this member was not touched.', fix: 'x' },
-                canary: false,
-                position: 2,
-                targetId: 't3',
-              },
-            ],
-          },
-        },
-      },
-      'GET /api/deploys/d-1/steps': { status: 200, body: { steps: [] } },
-      'GET /api/deploys/d-1/foreman': { status: 200, body: { posts: [], stuck: false } },
-    });
-    renderAt('/deploys/d-1');
-    const section = await screen.findByText('trio — deployed in order, canary first');
-    expect(section).toBeInTheDocument();
-    const group = screen.getByText('alpha').closest('dl');
-    expect(group).not.toBeNull();
-    if (group === null) throw new Error('no group list');
-    const rows = within(group).getAllByRole('term');
-    expect(rows.map((r) => r.textContent)).toEqual(['alpha', 'bravo', 'charlie']);
-    expect(within(group).getByText('Canary')).toBeInTheDocument();
-    expect(within(group).getByText(/The group deploy stopped at bravo/)).toBeInTheDocument();
-  });
-});
+// The deploy record's tests moved with it to the one deploy page: test/deploy.test.tsx (SHP-T-13.11).
 
 describe('stateWords (SHP-DA-013)', () => {
   it('names each unfinished state instead of one "Active"', () => {

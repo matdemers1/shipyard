@@ -12,8 +12,7 @@ import { BuildDetail } from './screens/BuildDetail';
 import { Builds } from './screens/Builds';
 import { Commit } from './screens/Commit';
 import { Connect } from './screens/Connect';
-import { DeployProgress } from './screens/DeployProgress';
-import { DeployRecord } from './screens/DeployRecord';
+import { Deploy, DeployLiveRedirect } from './screens/Deploy';
 import { Home } from './screens/Home';
 import { NotFound } from './screens/NotFound';
 import { Restore } from './screens/Restore';
@@ -164,8 +163,9 @@ export function AppRoutes() {
         <Route path="apps/:app" element={<AppDetail />} />
         <Route path="apps/:app/restore" element={<Restore />} />
         <Route path="apps/:app/commits/:sha" element={<Commit />} />
-        <Route path="deploys/:id" element={<DeployRecord />} />
-        <Route path="deploys/:id/live" element={<DeployProgress />} />
+        {/* One deploy page that streams and then is the record (SHP-T-13.11); the old live address redirects to it. */}
+        <Route path="deploys/:id" element={<Deploy />} />
+        <Route path="deploys/:id/live" element={<DeployLiveRedirect />} />
         <Route path="rollouts/:id" element={<RolloutProgress />} />
         <Route path="builds" element={<Builds />} />
         <Route path="builds/:id" element={<BuildDetail />} />

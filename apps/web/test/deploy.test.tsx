@@ -76,6 +76,7 @@ function appDetail(app: string, extra: Record<string, unknown> = {}): Reply {
     body: {
       soakSeconds: 60,
       defaultBranch: 'main',
+      repo: 'matdemers1/foreman',
       liveSha: BEFORE,
       targets: [
         { id: 't0', deployId: 'older', kind: 'deploy', sha: BEFORE, dryRun: false, requester: 'x', state: 'succeeded', currentStep: null, createdAt: at(-3600), startedAt: at(-3600), endedAt: at(-3500) },
@@ -168,7 +169,8 @@ describe('one page for a deploy (SHP-T-13.11)', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Deploy foreman-board 3b7c9e1' })).toBeInTheDocument();
 
     // Facts: what was live before, the requester and the manifest's soak.
-    expect(screen.getByText('fd13023 → 3b7c9e1')).toBeInTheDocument();
+    // The SHA itself is a link, so the chain spans elements: read the Release fact whole.
+    expect(screen.getByText('Release').nextElementSibling).toHaveTextContent(/^fd13023 → 3b7c9e1$/);
     expect(screen.getByText('Matthew (console)')).toBeInTheDocument();
     expect(screen.getByText('Soak from manifest').nextElementSibling).toHaveTextContent('60s');
 
@@ -255,7 +257,8 @@ describe('one page for a deploy (SHP-T-13.11)', () => {
     expect(within(verdict).getByText('Data unchanged.')).toBeInTheDocument();
     expect(within(verdict).getByText('Soak failed — worker restarted 3 times in 40s (exit 137 — out of memory).')).toBeInTheDocument();
     expect(within(verdict).getByText('Read the worker log; the previous images are running again.')).toBeInTheDocument();
-    expect(screen.getByText('fd13023 → 3b7c9e1 → fd13023')).toBeInTheDocument();
+    // The SHA itself is a link, so the chain spans elements: read the Release fact whole.
+    expect(screen.getByText('Release').nextElementSibling).toHaveTextContent(/^fd13023 → 3b7c9e1 → fd13023$/);
     expect(screen.getByText('none · database never changed')).toBeInTheDocument();
 
     expect(rowFor('soak')).toHaveAttribute('data-state', 'failed');
@@ -406,6 +409,115 @@ describe('one page for a deploy (SHP-T-13.11)', () => {
       expect(rowFor('soak')).toHaveAttribute('data-state', 'done');
     });
     expect(screen.getByRole('list', { name: 'Deploy steps' }).querySelector('[aria-current="step"]')).toBeNull();
+  });
+});
+
+describe('each kind runs its own steps, and the page says so (SHP-T-13.11 verifier gaps)', () => {
+  it('/deploys/:id/live keeps the query and the hash when it redirects', async () => {
+    routes({ status: status('succeeded', { endedAt: at(120) }), steps: [] });
+    renderAt(`/deploys/${ID}/live?from=home#deploy-step-soak`);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Deploy foreman-board 3b7c9e1' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe(`/deploys/${ID}`);
+    expect(window.location.search).toBe('?from=home');
+    expect(window.location.hash).toBe('#deploy-step-soak');
+  });
+
+  it("links the deployed SHA to its commit on GitHub when the app's repository is known", async () => {
+    routes({ status: status('succeeded', { endedAt: at(120) }), steps: [] });
+    renderView();
+    expect(await screen.findByRole('link', { name: 'Commit 3b7c9e1 on GitHub' })).toHaveAttribute(
+      'href',
+      `https://github.com/matdemers1/foreman/commit/${SHA}`,
+    );
+  });
+
+  it('a running restore: Restore right after Back up, no Migrate, its own verdict, and the data is changing', async () => {
+    routes({
+      status: status('migrating', { kind: 'restore', currentStep: 'restore' }),
+      steps: [step('verify', 0, 1), step('backup', 1, 20, { output: 'safety dump written' }), step('restore', 21, null)],
+    });
+    renderView({ now: T0 + 30_000 });
+    const verdict = await banner('Restoring · putting the data back');
+    expect(within(verdict).getByText(/Putting foreman-board's data back from a backup, then running 3b7c9e1/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Migrating|Deployed/ })).not.toBeInTheDocument();
+    expect(Object.keys(rowStates())).toEqual(['backup', 'restore', 'pull', 'swap', 'check', 'soak']);
+    expect(rowStates()).toMatchObject({ backup: 'done', restore: 'running', pull: 'waiting' });
+    expect(rowFor('restore')).toHaveAttribute('aria-current', 'step');
+    expect(screen.getByRole('heading', { level: 1, name: 'Restore foreman-board' })).toBeInTheDocument();
+    expect(screen.getByText('Data').nextElementSibling).toHaveTextContent('restoring now · the database is changing');
+    // A restore is not a commit's road to live: no Push/CI lane.
+    expect(screen.queryByRole('list', { name: 'Pipeline' })).not.toBeInTheDocument();
+  });
+
+  it('a succeeded restore says the data was restored and the database changed', async () => {
+    routes({
+      status: status('succeeded', { kind: 'restore', endedAt: at(200) }),
+      steps: [
+        step('verify', 0, 1),
+        step('backup', 1, 20),
+        step('restore', 21, 30),
+        step('pull', 51, 5),
+        step('swap', 56, 4),
+        step('check', 60, 3),
+        step('soak', 63, 60),
+      ],
+    });
+    renderView();
+    const verdict = await banner('Restored · foreman-board is running 3b7c9e1 on the restored data');
+    expect(within(verdict).getByText(/writes made after it was taken are gone/)).toBeInTheDocument();
+    expect(screen.queryByText(/Deployed/)).not.toBeInTheDocument();
+    expect(screen.getByText('Data').nextElementSibling).toHaveTextContent('restored from a backup · the database changed');
+    expect(screen.queryByText(/database never changed/)).not.toBeInTheDocument();
+    expect(Object.keys(rowStates())).toEqual(['backup', 'restore', 'pull', 'swap', 'check', 'soak']);
+  });
+
+  it('a failed restore after the restore command ran says the data may have changed, with no Deploy again', async () => {
+    routes({
+      status: status('failed', {
+        kind: 'restore',
+        refusal: { code: 'step_failed', gate: 'none', message: 'compose up exited 1.', fix: 'Read the step output.' },
+        endedAt: at(90),
+      }),
+      steps: [step('backup', 1, 20), step('restore', 21, 30), step('pull', 51, 5), step('swap', 56, 4, { exitCode: 1, output: 'up failed' })],
+    });
+    renderView({ canAct: true, onDeployAgain: vi.fn() });
+    const verdict = await banner('Restore failed at Swap · exit 1');
+    expect(within(verdict).getByText(/the data may have changed/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deploy again' })).not.toBeInTheDocument();
+  });
+
+  it('a rolled-back deploy that migrated never claims Data unchanged', async () => {
+    routes({
+      status: status('rolled_back', { endedAt: at(90) }),
+      steps: [step('backup', 1, 5), step('migrate', 6, 4), step('pull', 10, 2), step('swap', 12, 2), step('check', 14, 2, { exitCode: 1 })],
+    });
+    renderView();
+    const verdict = await banner(/^Rolled back/);
+    expect(within(verdict).queryByText('Data unchanged.')).not.toBeInTheDocument();
+    expect(within(verdict).getByText(/The migration that ran stays in the database/)).toBeInTheDocument();
+    // No journaled rollback step, but the deploy did roll back: the row says so, never Skipped.
+    expect(rowFor('rollback')).toHaveAttribute('data-state', 'done');
+  });
+
+  it('a rollback runs images only: Pull, Swap, Check, Soak, and says it is live', async () => {
+    routes({
+      status: status('succeeded', { kind: 'rollback', endedAt: at(100) }),
+      steps: [step('verify', 0, 1), step('pull', 1, 5), step('swap', 6, 4), step('check', 10, 3), step('soak', 13, 60)],
+    });
+    renderView();
+    const verdict = await banner('Rolled back to 3b7c9e1 · it is live');
+    expect(within(verdict).getByText(/swaps the images only; the data is not touched/)).toBeInTheDocument();
+    expect(rowStates()).toEqual({ pull: 'done', swap: 'done', check: 'done', soak: 'done' });
+    expect(screen.getByRole('heading', { level: 1, name: 'Roll back foreman-board to 3b7c9e1' })).toBeInTheDocument();
+  });
+
+  it("clamps a soak that outlives the manifest's soak, in the banner and the row", async () => {
+    routes({ status: status('soaking'), steps: SOAKING_STEPS });
+    // The soak step started at 54 s; 100 s later it is still open against a 60 s soak.
+    renderView({ now: T0 + (54 + 100) * 1000 });
+    expect(await banner('Soaking · 60s of 60s')).toBeInTheDocument();
+    expect(rowFor('soak')).toHaveTextContent('60s of 60s');
+    expect(rowFor('soak')).not.toHaveTextContent('100s');
   });
 });
 

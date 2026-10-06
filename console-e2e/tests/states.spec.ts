@@ -472,7 +472,10 @@ test.describe('as an admin, a changed world', () => {
     // Confirming a restore follows it live, at the address that is also its record (SHP-T-13.11).
     await page.goto(`/deploys/${deployId}/live`);
     await expect(page).toHaveURL(new RegExp(`/deploys/${deployId}$`));
-    await expect(verdict(page, /^Failed/)).toContainText('The restore step exited 1.');
+    // A restore has its own verdict (SHP-T-13.11): it names the failed step and that the data may have changed.
+    const banner = verdict(page, /^Restore failed at Restore/);
+    await expect(banner).toContainText('The restore step exited 1.');
+    await expect(banner).toContainText('the data may have changed');
     const restore = stepCard(page, 'restore');
     await expect(restore).toHaveAttribute('data-state', 'failed');
     await expect(restore).toContainText('exit 1');

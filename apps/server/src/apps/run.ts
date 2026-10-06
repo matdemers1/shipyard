@@ -2,14 +2,12 @@ import { Router } from 'express';
 import { refusal } from '@shipyard/schema';
 import {
   RefusalError as SequenceRefusalError,
-  createGitHubAdapter,
-  type GitHubPort,
   type WorkflowJob,
   type WorkflowRun,
 } from '@shipyard/sequence/github';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
-import { liveGitHub, resolveGitHubToken } from '../github/token.js';
+import { liveGitHub } from '../github/token.js';
 import { buildSourceOf, parseWorkflow, pushRunFor, readerOrRefuse, scopeOf, setBounded, type CommitsRouterOptions } from './commits.js';
 
 /**
@@ -105,24 +103,9 @@ function fresh<V>(entry: Cached<V> | undefined, now: number): V | undefined {
   return entry.expiresAt === null || entry.expiresAt > now ? entry.value : undefined;
 }
 
-/**
- * The production port: the commits route's, plus `runJobs`, which `liveGitHub` does not forward.
- * The token is read per call (env, then Settings), as `liveGitHub` does; a call here is a person
- * opening a page, so one extra settings read is affordable.
- */
-function liveRunGitHub(deps: ServiceDeps): GitHubPort {
-  return {
-    ...liveGitHub(deps),
-    runJobs: async (repo, runId) => {
-      const { token } = await resolveGitHubToken(deps);
-      return createGitHubAdapter(token === null ? {} : { token }).runJobs(repo, runId);
-    },
-  };
-}
-
 export function runRouter(deps: ServiceDeps, options: CommitsRouterOptions = {}): Router {
   const { db } = deps;
-  const github = options.github ?? liveRunGitHub(deps);
+  const github = options.github ?? liveGitHub(deps);
   const router = Router();
   // Which run a commit means: a run list per workflow+SHA, kept briefly so a refresh is free.
   const lookups = new Map<string, Cached<WorkflowRun | null>>();

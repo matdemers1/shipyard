@@ -367,7 +367,18 @@ export function createGitHubAdapter(options: GitHubAdapterOptions = {}): GitHubP
       // One page of 100 is every job a Shipyard repo's workflow has; the console shows lanes, not an audit log.
       const url = `${baseUrl}/repos/${encodeRepoPath(repo)}/actions/runs/${String(runId)}/jobs?per_page=100`;
       const res = await request(url);
-      if (res.status === 404) return [];
+      // The run was found a moment ago, so a 404 here is a token without Actions read on this repo
+      // (or a run deleted since). Saying "no jobs" would be cached as the run's final answer; refuse
+      // instead, so nothing is cached and the console says what to fix (SHP-ADR-007).
+      if (res.status === 404) {
+        throw new RefusalError(
+          refusal(
+            'github_unreachable',
+            `GitHub would not list the jobs of run ${String(runId)} in ${repo}.`,
+            "Give the server's GitHub token Actions: read on this repository, then reload.",
+          ),
+        );
+      }
 
       const body = await parseJson(res);
       if (!isRecord(body) || !Array.isArray(body.jobs)) {

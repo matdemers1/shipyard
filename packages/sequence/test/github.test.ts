@@ -223,9 +223,11 @@ describe('runJobs (SHP-T-13.4, SHP-REQ-157)', () => {
     ]);
   });
 
-  it('returns an empty list for a run GitHub does not know (404)', async () => {
+  it('refuses github_unreachable when GitHub will not list a run\'s jobs (404), so no empty answer is cached', async () => {
     const adapter = createGitHubAdapter({ fetch: jsonFetch({ message: 'Not Found' }, 404) });
-    expect(await adapter.runJobs(REPO, 7)).toEqual([]);
+    const err = await expectRefusal(adapter.runJobs(REPO, 7));
+    expect(err.refusal.code).toBe('github_unreachable');
+    expect(err.refusal.fix).toContain('Actions: read');
   });
 
   it.each([

@@ -792,5 +792,7 @@ function ImagesSection({
 function verifiedWords(v: ReturnType<typeof imageVerification>, service: string): string {
   const digest = v.digests[service];
   if (digest !== undefined) return `Verified · ${digest.slice(0, 19)}`;
-  return v.at === null ? 'Verified' : `Verified on dry run ${when(v.at)}`;
+  // Say what verified it — a deploy, the live release or a dry run — never assume it was a dry run.
+  const by = v.by ?? 'Verified';
+  return v.at === null ? by : `${by} · ${when(v.at)}`;
 }

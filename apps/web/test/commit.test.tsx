@@ -284,8 +284,34 @@ describe('images (SHP-REQ-158)', () => {
     renderAt(`/apps/bindery/commits/${sha('c')}`);
     await screen.findByRole('heading', { level: 1, name: 'Scanner ingest retries' }, LANE_TIMEOUT);
     const images = screen.getByRole('list', { name: 'Images' });
-    expect(within(images).getAllByText(/^Verified on dry run /)).toHaveLength(2);
+    expect(within(images).getAllByText(/^Verified by a dry run · /)).toHaveLength(2);
     expect(within(images).queryByText(/sha256:/)).not.toBeInTheDocument();
+  });
+
+  it('says a real deploy verified the images, never a dry run, when it kept no digest to show', async () => {
+    const deployedOnly = detail({
+      targets: [
+        {
+          id: 't1',
+          deployId: 'd1',
+          kind: 'deploy',
+          sha: sha('c'),
+          dryRun: false,
+          requester: 'matt',
+          state: 'succeeded',
+          currentStep: null,
+          createdAt: at(10),
+          startedAt: at(10),
+          endedAt: at(60),
+        },
+      ],
+    });
+    routes('deployer', {}, deployedOnly);
+    renderAt(`/apps/bindery/commits/${sha('c')}`);
+    await screen.findByRole('heading', { level: 1, name: 'Scanner ingest retries' }, LANE_TIMEOUT);
+    const images = screen.getByRole('list', { name: 'Images' });
+    expect(within(images).getAllByText(/^Verified by a deploy · /)).toHaveLength(2);
+    expect(within(images).queryByText(/dry run/)).not.toBeInTheDocument();
   });
 
   it('decides verification from the live release, a dry run, or a deploy past its verify step', () => {

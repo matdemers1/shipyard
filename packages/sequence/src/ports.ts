@@ -28,6 +28,28 @@ export interface WorkflowRun {
   conclusion: string | null;
   event: string;
   headBranch: string | null;
+  /**
+   * The run's page on github.com, its start, and — only once `status` is `completed` — its end
+   * (SHP-T-13.4, SHP-ADR-007). Optional so existing object-literal fakes need not set them; the
+   * adapter always sets them, `null` when GitHub did not say. They come from the run list the
+   * commits poll already fetches, so they cost no extra GitHub call.
+   */
+  url?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+/** One job of a workflow run, as GitHub's jobs endpoint reports it (SHP-T-13.4, SHP-REQ-157). */
+export interface WorkflowJob {
+  id: number;
+  name: string;
+  /** `queued`, `in_progress`, `completed`, … */
+  status: string;
+  /** `success`, `failure`, `cancelled`, `skipped`, … or null until the job completes. */
+  conclusion: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  url: string | null;
 }
 
 export type CompareStatus = 'ahead' | 'behind' | 'identical' | 'diverged';
@@ -60,6 +82,15 @@ export interface GitHubPort {
    * `github_unreachable` when the configured port lacks it.
    */
   tarball?(repo: string, sha: string): Promise<ReadableStream<Uint8Array>>;
+  /**
+   * `GET /repos/{repo}/actions/runs/{runId}/jobs` (SHP-T-13.4, SHP-REQ-157): the jobs of one
+   * workflow run, in GitHub's order. Called only when a person opens a commit page, never from a
+   * poll (SHP-REQ-168). A 404 returns an empty list.
+   *
+   * Optional for the same reason as `tarball`: a caller that needs it — the run route — refuses
+   * with `github_unreachable` when the configured port lacks it.
+   */
+  runJobs?(repo: string, runId: number): Promise<WorkflowJob[]>;
 }
 
 // ─── Registry (SHP-T-1.3) ────────────────────────────────────────────────────

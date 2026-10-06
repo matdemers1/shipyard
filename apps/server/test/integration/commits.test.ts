@@ -2,9 +2,9 @@ import { generateKeyPairSync, randomBytes, randomUUID, sign, type KeyObject } fr
 import express, { type Express } from 'express';
 import pino from 'pino';
 import request from 'supertest';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fingerprintOf, signingString, type AgentReport } from '@shipyard/schema';
-import type { GitHubPort } from '@shipyard/sequence/github';
+import type { GitHubPort, WorkflowJob } from '@shipyard/sequence/github';
 import { agentRouter } from '../../src/agent/index.js';
 import { appsRouter } from '../../src/apps/index.js';
 import { commitsRouter } from '../../src/apps/commits.js';
@@ -68,7 +68,15 @@ class FakeGitHub implements GitHubPort {
   compareResult: Awaited<ReturnType<GitHubPort['compare']>> = null;
   runsByHeadSha = new Map<string, Parameters<GitHubPort['workflowRuns']> extends never ? never : Awaited<ReturnType<GitHubPort['workflowRuns']>>>();
   compareError: Error | null = null;
-  calls = { compare: 0, workflowRuns: 0 };
+  jobsByRunId = new Map<number, WorkflowJob[]>();
+  jobsError: Error | null = null;
+  calls = { compare: 0, workflowRuns: 0, runJobs: 0 };
+
+  runJobs(_repo: string, runId: number): Promise<WorkflowJob[]> {
+    this.calls.runJobs += 1;
+    if (this.jobsError !== null) return Promise.reject(this.jobsError);
+    return Promise.resolve(this.jobsByRunId.get(runId) ?? []);
+  }
 
   compare(_repo: string, _base: string, _head: string): ReturnType<GitHubPort['compare']> {
     this.calls.compare += 1;
@@ -84,7 +92,22 @@ class FakeGitHub implements GitHubPort {
 }
 
 function run(id: number, headSha: string, conclusion: string | null, status = 'completed'): Awaited<ReturnType<GitHubPort['workflowRuns']>>[number] {
-  return { id, headSha, path: '.github/workflows/ci.yml', status, conclusion, event: 'push', headBranch: 'main' };
+  return {
+    id,
+    headSha,
+    path: '.github/workflows/ci.yml',
+    status,
+    conclusion,
+    event: 'push',
+    headBranch: 'main',
+    url: `https://github.com/matdemers1/web/actions/runs/${String(id)}`,
+    startedAt: '2026-10-05T10:00:00Z',
+    completedAt: status === 'completed' ? '2026-10-05T10:04:30Z' : null,
+  };
+}
+
+function job(id: number, name: string, status: string, conclusion: string | null, started: string | null, completed: string | null): WorkflowJob {
+  return { id, name, status, conclusion, startedAt: started, completedAt: completed, url: `https://github.com/matdemers1/web/actions/runs/1/job/${String(id)}` };
 }
 
 let app: Express;
@@ -366,5 +389,231 @@ describe('GET /api/apps/:app/commits for a build: shipyard app (SHP-T-3.11)', ()
       commits: [{ sha: SHA_MID, ci: 'none' }, { sha: SHA_HEAD, ci: 'none' }],
     });
     expect((res.body as { commits: Record<string, unknown>[] }).commits[0]).not.toHaveProperty('buildId');
+  });
+});
+
+describe('commits response carries the run (SHP-T-13.4, SHP-ADR-007)', () => {
+  it('has run {id,url,startedAt,completedAt,conclusion} per commit, null where no push run exists', async () => {
+    await recordRelease('web', SHA_LIVE);
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 3,
+      behindBy: 0,
+      commits: [
+        { sha: SHA_MID, message: 'mid' },
+        { sha: SHA_HEAD, message: 'head' },
+        { sha: 'd'.repeat(40), message: 'no run yet' },
+      ],
+    };
+    github.runsByHeadSha.set(SHA_MID, [run(11, SHA_MID, 'success')]);
+    github.runsByHeadSha.set(SHA_HEAD, [run(12, SHA_HEAD, null, 'in_progress')]);
+
+    const { cookie } = await signIn();
+    const res = await request(app).get('/api/apps/web/commits').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    const commits = (res.body as { commits: Record<string, unknown>[] }).commits;
+    expect(commits[0]).toMatchObject({
+      sha: SHA_MID,
+      ci: 'success',
+      run: {
+        id: 11,
+        url: 'https://github.com/matdemers1/web/actions/runs/11',
+        startedAt: '2026-10-05T10:00:00Z',
+        completedAt: '2026-10-05T10:04:30Z',
+        conclusion: 'success',
+      },
+    });
+    // The key set is exactly the five the contract names, and the old fields are still there.
+    expect(Object.keys(commits[0]?.['run'] as object).sort()).toEqual(['completedAt', 'conclusion', 'id', 'startedAt', 'url']);
+    expect(Object.keys(commits[0] ?? {}).sort()).toEqual(['ci', 'message', 'run', 'sha', 'taskIds']);
+    expect(commits[1]).toMatchObject({ ci: 'pending', run: { id: 12, completedAt: null, conclusion: null } });
+    expect(commits[2]).toMatchObject({ ci: 'none', run: null });
+  });
+
+  it('a build: shipyard app has run null on every commit', async () => {
+    await reportApps([
+      {
+        manifest: { ...manifest('built'), build: { source: 'shipyard', releaseTargets: { web: 'release' } } },
+        manifestSha256: 'b'.repeat(64),
+        running: { web: `sha256:${'d'.repeat(64)}` },
+      },
+    ]);
+    await recordRelease('built', SHA_LIVE);
+    github.compareResult = { status: 'ahead', aheadBy: 1, behindBy: 0, commits: [{ sha: SHA_MID, message: 'mid' }] };
+    const { cookie } = await signIn();
+    const res = await request(app).get('/api/apps/built/commits').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ buildSource: 'shipyard', commits: [{ sha: SHA_MID, run: null }] });
+  });
+
+  it('the poll never fetches jobs, and spends the same GitHub calls per refresh as before: one compare, one workflowRuns per commit', async () => {
+    await recordRelease('web', SHA_LIVE);
+    github.compareResult = {
+      status: 'ahead',
+      aheadBy: 2,
+      behindBy: 0,
+      commits: [
+        { sha: SHA_MID, message: 'one' },
+        { sha: SHA_HEAD, message: 'two' },
+      ],
+    };
+    github.runsByHeadSha.set(SHA_MID, [run(11, SHA_MID, 'success')]);
+    github.runsByHeadSha.set(SHA_HEAD, [run(12, SHA_HEAD, 'failure')]);
+    const { cookie } = await signIn();
+    for (let i = 0; i < 3; i++) {
+      const res = await request(app).get('/api/apps/web/commits').set('Cookie', cookie);
+      expect(res.status).toBe(200);
+    }
+    // Three polls inside the 60 s cache: the first costs 1 compare + 2 runs lookups, the rest cost nothing.
+    expect(github.calls).toEqual({ compare: 1, workflowRuns: 2, runJobs: 0 });
+  });
+});
+
+describe('GET /api/apps/:app/commits/:sha/run (SHP-T-13.4, SHP-REQ-157, SHP-REQ-168)', () => {
+  const jobs = [
+    job(101, 'lint', 'completed', 'success', '2026-10-05T10:00:05Z', '2026-10-05T10:00:50Z'),
+    job(102, 'test', 'completed', 'failure', '2026-10-05T10:00:05Z', '2026-10-05T10:03:05Z'),
+    job(103, 'images', 'completed', 'skipped', null, null),
+    job(104, 'e2e', 'completed', 'cancelled', '2026-10-05T10:00:06Z', '2026-10-05T10:00:09Z'),
+    job(105, 'docs', 'in_progress', null, '2026-10-05T10:00:07Z', null),
+    job(106, 'deploy', 'queued', null, null, null),
+  ];
+
+  it('returns the jobs from GitHub once, then from cache: runJobs is called exactly once for a completed run', async () => {
+    github.runsByHeadSha.set(SHA_MID, [run(11, SHA_MID, 'failure')]);
+    github.jobsByRunId.set(11, jobs);
+    const { cookie } = await signIn();
+
+    const first = await request(app).get(`/api/apps/web/commits/${SHA_MID}/run`).set('Cookie', cookie);
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({
+      run: {
+        id: 11,
+        url: 'https://github.com/matdemers1/web/actions/runs/11',
+        status: 'completed',
+        conclusion: 'failure',
+        startedAt: '2026-10-05T10:00:00Z',
+        completedAt: '2026-10-05T10:04:30Z',
+      },
+      jobs: [
+        { id: 101, name: 'lint', state: 'success', startedAt: '2026-10-05T10:00:05Z', completedAt: '2026-10-05T10:00:50Z', durationMs: 45_000, url: jobs[0]?.url },
+        { id: 102, name: 'test', state: 'failure', startedAt: '2026-10-05T10:00:05Z', completedAt: '2026-10-05T10:03:05Z', durationMs: 180_000, url: jobs[1]?.url },
+        { id: 103, name: 'images', state: 'skipped', startedAt: null, completedAt: null, durationMs: null, url: jobs[2]?.url },
+        { id: 104, name: 'e2e', state: 'cancelled', startedAt: '2026-10-05T10:00:06Z', completedAt: '2026-10-05T10:00:09Z', durationMs: 3000, url: jobs[3]?.url },
+        { id: 105, name: 'docs', state: 'running', startedAt: '2026-10-05T10:00:07Z', completedAt: null, durationMs: null, url: jobs[4]?.url },
+        { id: 106, name: 'deploy', state: 'queued', startedAt: null, completedAt: null, durationMs: null, url: jobs[5]?.url },
+      ],
+    });
+    expect(github.calls.runJobs).toBe(1);
+
+    const second = await request(app).get(`/api/apps/web/commits/${SHA_MID}/run`).set('Cookie', cookie);
+    expect(second.body).toEqual(first.body);
+    expect(github.calls.runJobs).toBe(1);
+  });
+
+  it('an in-progress run is cached only briefly: the jobs are asked for again once the short TTL passes', async () => {
+    github.runsByHeadSha.set(SHA_HEAD, [run(12, SHA_HEAD, null, 'in_progress')]);
+    github.jobsByRunId.set(12, [job(201, 'test', 'in_progress', null, '2026-10-05T10:00:05Z', null)]);
+    const { cookie } = await signIn();
+    const spy = vi.spyOn(Date, 'now');
+    try {
+      const t0 = 1_800_000_000_000;
+      spy.mockReturnValue(t0);
+      await request(app).get(`/api/apps/web/commits/${SHA_HEAD}/run`).set('Cookie', cookie);
+      spy.mockReturnValue(t0 + 5_000);
+      await request(app).get(`/api/apps/web/commits/${SHA_HEAD}/run`).set('Cookie', cookie);
+      expect(github.calls.runJobs).toBe(1);
+      spy.mockReturnValue(t0 + 20_000);
+      await request(app).get(`/api/apps/web/commits/${SHA_HEAD}/run`).set('Cookie', cookie);
+      expect(github.calls.runJobs).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('opening the run page never disturbs the commits poll, and the poll never calls runJobs', async () => {
+    await recordRelease('web', SHA_LIVE);
+    github.compareResult = { status: 'ahead', aheadBy: 1, behindBy: 0, commits: [{ sha: SHA_MID, message: 'one' }] };
+    github.runsByHeadSha.set(SHA_MID, [run(11, SHA_MID, 'success')]);
+    const { cookie } = await signIn();
+    await request(app).get('/api/apps/web/commits').set('Cookie', cookie);
+    expect(github.calls.runJobs).toBe(0);
+    await request(app).get(`/api/apps/web/commits/${SHA_MID}/run`).set('Cookie', cookie);
+    expect(github.calls.runJobs).toBe(1);
+  });
+
+  it('answers run null and no jobs for a commit with no push run, without asking for jobs', async () => {
+    const { cookie } = await signIn();
+    const res = await request(app).get(`/api/apps/web/commits/${SHA_MID}/run`).set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ run: null, jobs: [] });
+    expect(github.calls.runJobs).toBe(0);
+  });
+
+  it('refuses a malformed sha (not 40 lowercase hex) without calling GitHub', async () => {
+    const { cookie } = await signIn();
+    for (const bad of ['not-a-sha', 'abc123', SHA_MID.toUpperCase(), `${SHA_MID}0`]) {
+      const res = await request(app).get(`/api/apps/web/commits/${bad}/run`).set('Cookie', cookie);
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ error: { code: 'invalid_request', gate: 'none' } });
+    }
+    expect(github.calls).toEqual({ compare: 0, workflowRuns: 0, runJobs: 0 });
+  });
+
+  it('404s an unknown app, and an app outside the token scope', async () => {
+    const { userId, cookie } = await signIn();
+    const res = await request(app).get(`/api/apps/nope/commits/${SHA_MID}/run`).set('Cookie', cookie);
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ error: { code: 'not_found' } });
+
+    await db.app.create({
+      data: {
+        name: 'other',
+        agentId: (await db.agent.findFirstOrThrow()).id,
+        manifestYaml: JSON.stringify(manifest('other')),
+        manifestSha256: 'z'.repeat(64),
+        repo: 'matdemers1/other',
+        defaultBranch: 'main',
+      },
+    });
+    const token = await tokenFor(userId, ['web']);
+    const scoped = await request(app).get(`/api/apps/other/commits/${SHA_MID}/run`).set('Authorization', `Bearer ${token}`);
+    expect(scoped.status).toBe(404);
+  });
+
+  it('refuses an anonymous request', async () => {
+    const res = await request(app).get(`/api/apps/web/commits/${SHA_MID}/run`);
+    expect(res.status).toBe(401);
+  });
+
+  it('refuses invalid_request for a build: shipyard app, which has no workflow run', async () => {
+    await reportApps([
+      {
+        manifest: { ...manifest('built'), build: { source: 'shipyard', releaseTargets: { web: 'release' } } },
+        manifestSha256: 'b'.repeat(64),
+        running: { web: `sha256:${'d'.repeat(64)}` },
+      },
+    ]);
+    const { cookie } = await signIn();
+    const res = await request(app).get(`/api/apps/built/commits/${SHA_MID}/run`).set('Cookie', cookie);
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: { code: 'invalid_request', gate: 'none' } });
+    expect(github.calls).toEqual({ compare: 0, workflowRuns: 0, runJobs: 0 });
+  });
+
+  it('fails closed with github_unreachable (503) when GitHub cannot be reached, and caches nothing from the failure', async () => {
+    const { RefusalError } = await import('@shipyard/sequence/github');
+    github.runsByHeadSha.set(SHA_MID, [run(11, SHA_MID, 'success')]);
+    github.jobsByRunId.set(11, [job(101, 'lint', 'completed', 'success', '2026-10-05T10:00:05Z', '2026-10-05T10:00:50Z')]);
+    github.jobsError = new RefusalError({ code: 'github_unreachable', gate: 'none', message: 'GitHub is unreachable', fix: 'Retry.' });
+    const { cookie } = await signIn();
+    const down = await request(app).get(`/api/apps/web/commits/${SHA_MID}/run`).set('Cookie', cookie);
+    expect(down.status).toBe(503);
+    expect(down.body).toMatchObject({ error: { code: 'github_unreachable', gate: 'none' } });
+
+    github.jobsError = null;
+    const up = await request(app).get(`/api/apps/web/commits/${SHA_MID}/run`).set('Cookie', cookie);
+    expect(up.status).toBe(200);
+    expect(up.body).toMatchObject({ jobs: [{ id: 101, state: 'success' }] });
   });
 });

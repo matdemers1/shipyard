@@ -2,6 +2,24 @@
    token — the usage gate refuses a hex, a shadow or an invented name. Kept in a layer so a
    component's own rules are never overridden by accident. */
 @layer shipyard {
+  /* Buttons in an Alert's action slot, allowed to wrap: the slot itself is a single non-wrapping
+     row, which pushed two long labels off a 390 px screen (SHP-DA-018). */
+  .shp-alert-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8);
+    min-width: 0;
+  }
+
+  /* A list row's state badge and its time on one line: "Waiting for approval" is long enough to
+     push the time underneath it otherwise. */
+  .shp-row-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-8);
+    white-space: nowrap;
+  }
+
   /* Who is signed in and the theme toggle, above every page. At 375 px a long address truncates
      rather than pushing the page sideways. */
   .shp-topline {

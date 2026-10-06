@@ -31,6 +31,21 @@ function input(overrides: Partial<StatusInput> = {}): StatusInput {
 }
 
 describe('appStatus', () => {
+  it('reads frozen over ready, offers no ship, and still names what would ship', () => {
+    const s = appStatus(input({ frozen: true, commits: commits([commit('a', 'success')], { ahead: 1 }) }));
+    expect(s).toMatchObject({ kind: 'frozen', label: 'Frozen', tone: 'neutral', shipSha: null });
+    expect(s.detail).toMatch(new RegExp(`^${sha('a').slice(0, 7)} is ready to ship once it is unfrozen`));
+  });
+
+  it('lets a deploy already running read as deploying while frozen', () => {
+    const s = appStatus(input({ frozen: true, active: { holder: 'Ada', state: 'soaking', currentStep: 'soak' } }));
+    expect(s.kind).toBe('deploying');
+  });
+
+  it('is not frozen when the server does not say so', () => {
+    expect(appStatus(input({ commits: commits([commit('a', 'success')]) })).kind).toBe('ready');
+  });
+
   it('is up to date with nothing ahead', () => {
     expect(appStatus(input())).toMatchObject({ kind: 'up-to-date', shipSha: null });
   });

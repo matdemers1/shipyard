@@ -15,6 +15,7 @@ export type StatusKind =
   | 'deploying'
   | 'approval'
   | 'drift'
+  | 'frozen'
   | 'ready'
   | 'ci-running'
   | 'ci-failed'
@@ -64,6 +65,8 @@ export interface StatusInput {
   drift: unknown;
   active: { holder: string; state: string; currentStep: string | null } | null;
   approval: { sha: string; requester: { label: string } } | undefined;
+  /** A freeze holds now (SHP-REQ-077); absent from a server older than SHP-T-12.2. */
+  frozen?: boolean;
 }
 
 export function sha7(sha: string | null): string {
@@ -223,6 +226,21 @@ export function appStatus(input: StatusInput): AppStatus {
     };
   }
 
+  // A freeze refuses every new deploy (G2), so it wins over "ready": offering Ship here would only
+  // lead to a refusal. A deploy already running finishes, so `active` stays above it.
+  if (input.frozen === true) {
+    const ship = commits?.newestGreen ?? null;
+    const waiting = ship !== null && ship !== liveSha && entries.some((c) => c.sha === ship);
+    return {
+      kind: 'frozen',
+      tone: 'neutral',
+      label: 'Frozen',
+      headline: 'Frozen — new deploys are refused',
+      detail: `${waiting ? `${sha7(ship)} is ready to ship once it is unfrozen. ` : ''}Rollbacks and restores still work while it is frozen.`,
+      shipSha: null,
+    };
+  }
+
   if (input.repo === null) {
     return {
       kind: 'no-repo',
@@ -331,6 +349,7 @@ export function statusRank(kind: StatusKind): number {
     'ready',
     'ci-failed',
     'ci-running',
+    'frozen',
     'no-images',
     'github-unavailable',
     'never-deployed',

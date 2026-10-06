@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { App } from '../src/App';
 import type { Call } from './fetch';
 import { meReply, mockFetch } from './fetch';
-import type { TimelinePage } from '../src/lib/timeline';
+import { outcomeLabel, type TimelinePage } from '../src/lib/timeline';
 
 /** SHP-T-3.7: the timeline (S8, SHP-REQ-062) and the deploy record (S6). */
 
@@ -272,5 +272,14 @@ describe('Deploy record (S6)', () => {
     expect(rows.map((r) => r.textContent)).toEqual(['alpha', 'bravo', 'charlie']);
     expect(within(group).getByText('Canary')).toBeInTheDocument();
     expect(within(group).getByText(/The group deploy stopped at bravo/)).toBeInTheDocument();
+  });
+});
+
+describe('outcomeLabel (SHP-DA-013)', () => {
+  it('names each unfinished state instead of one "Active"', () => {
+    expect(outcomeLabel('queued')).toBe('Queued');
+    expect(outcomeLabel('awaiting_approval')).toBe('Waiting for approval');
+    expect(outcomeLabel('soaking')).toBe('Soaking');
+    expect(outcomeLabel('rolled_back')).toBe('Rolled back');
   });
 });

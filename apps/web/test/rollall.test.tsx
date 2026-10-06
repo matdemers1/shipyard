@@ -217,8 +217,9 @@ describe('Roll all on Home', () => {
     mockFetch({ ...homeRoutes(), 'GET /api/apps/web/commits': upToDate(), 'GET /api/apps/api/commits': upToDate() });
     window.history.replaceState(null, '', '/');
     render(<App />);
-    // shipyard and the frozen app are still ready to ship; the frozen one cannot be rolled.
-    expect(await screen.findAllByRole('button', { name: `Ship ${SHA_GREEN.slice(0, 7)}` })).toHaveLength(2);
+    // Only shipyard is ready: the frozen app reads Frozen and offers no Ship (SHP-DA-011).
+    expect(await screen.findAllByRole('button', { name: `Ship ${SHA_GREEN.slice(0, 7)}` })).toHaveLength(1);
+    expect(screen.getAllByText('Frozen').length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: /^Roll all/ })).not.toBeInTheDocument();
   });
 

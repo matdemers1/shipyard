@@ -1,6 +1,7 @@
 import type { DeployAccepted, DeployRequest, DeployStatus } from '@shipyard/schema';
 import { request, RefusalError } from './api';
 import type { SheetAction } from '../components/DryRunSheet';
+import { ageFrom, type AgentRow } from './home';
 
 /**
  * The dry-run sheet's data layer (SHP-T-3.3, SHP-REQ-057, SHP-D-068): the request that starts a
@@ -10,6 +11,52 @@ import type { SheetAction } from '../components/DryRunSheet';
 
 /** How long the sheet waits on one long poll before it reads again and re-polls. */
 export const POLL_WAIT_SECONDS = 10;
+
+/**
+ * How long the sheet waits for a dry run to finish before it stops and says why (SHP-DA-014). The
+ * agent normally answers within seconds; a stale agent never does, and the sheet must not spin on
+ * forever with Confirm disabled and no reason.
+ */
+export const DRY_RUN_DEADLINE_SECONDS = 90;
+
+/**
+ * Why a dry run did not finish in time, as a refusal with a next step. The agent's heartbeat
+ * decides which: not taking work at all, or slow this time. Nothing was changed either way — a dry
+ * run never touches the host.
+ */
+export async function dryRunTimeout(now: number = Date.now()): Promise<RefusalError> {
+  let agents: AgentRow[] | null;
+  try {
+    agents = await request<AgentRow[]>('/api/agent');
+  } catch {
+    agents = null;
+  }
+  const working = agents?.find((a) => a.confirmed && !a.stale);
+  if (agents !== null && working === undefined) {
+    const last = agents.find((a) => a.confirmed)?.lastHeartbeatAt ?? null;
+    return new RefusalError(
+      {
+        code: 'agent_offline',
+        gate: 'none',
+        message: 'The agent is not taking work',
+        fix:
+          last === null
+            ? 'No confirmed agent has checked in, so nothing can run the checks. Nothing was changed. Check the Agent page, then try again.'
+            : `It last checked in ${ageFrom(last, now)}. Nothing was changed. Check the agent on the host (the Agent page shows its heartbeat), then try again.`,
+      },
+      503,
+    );
+  }
+  return new RefusalError(
+    {
+      code: 'agent_offline',
+      gate: 'none',
+      message: `The checks did not finish within ${String(DRY_RUN_DEADLINE_SECONDS)}s`,
+      fix: 'Nothing was changed. Close this and try again; if it keeps happening, check the Agent page.',
+    },
+    503,
+  );
+}
 
 /** The DeployRequest for a dry run of `action` — same kind, app and SHA the real action would use. */
 export function dryRunRequestFor(action: SheetAction): DeployRequest {

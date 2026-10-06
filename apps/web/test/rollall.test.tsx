@@ -192,6 +192,7 @@ describe('Roll all on Home', () => {
     expect(items[0]).toHaveTextContent('Succeeded');
     expect(items[1]).toHaveTextContent('Soaking');
     expect(items[2]).toHaveTextContent('Waiting its turn');
+    expect(screen.getByText(/Shipyard goes last/)).toBeInTheDocument();
     expect(within(items[1] as HTMLElement).getByRole('link', { name: '2. web' })).toHaveAttribute('href', '/deploys/d-web/live');
     expect(screen.getByText(/1 of 3 done/)).toBeInTheDocument();
   });
@@ -287,5 +288,31 @@ describe('Rollout screen', () => {
       </MemoryRouter>,
     );
     expect(await screen.findByText('All 2 apps rolled')).toBeInTheDocument();
+  });
+
+  it('the first app waits for the agent, the rest wait their turn', async () => {
+    mockFetch({
+      'GET /api/rollouts/r4': {
+        status: 200,
+        body: {
+          rolloutId: 'r4',
+          requesterLabel: 'Matt (console)',
+          createdAt: new Date().toISOString(),
+          state: 'locked',
+          members: [member('api', 0, 'locked'), member('web', 1, 'locked')],
+        },
+      },
+    });
+    render(
+      <MemoryRouter>
+        <RolloutProgressView id="r4" />
+      </MemoryRouter>,
+    );
+    const list = await screen.findByRole('list', { name: 'Apps in this rollout, in order' });
+    const items = within(list).getAllByRole('listitem');
+    expect(items[0]).toHaveTextContent('Waiting for the agent');
+    expect(items[1]).toHaveTextContent('Waiting its turn');
+    // No Shipyard in this rollout, so nothing says it goes last.
+    expect(screen.queryByText(/Shipyard goes last/)).not.toBeInTheDocument();
   });
 });

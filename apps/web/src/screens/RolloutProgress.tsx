@@ -21,8 +21,9 @@ function memberTone(member: Member): 'neutral' | 'attention' | 'danger' {
 }
 
 /** Running, done, or waiting its turn — in words a person uses. */
-function memberWords(member: Member): string {
-  if (member.state === 'locked') return 'Waiting its turn';
+function memberWords(member: Member, turnHasCome: boolean): string {
+  // Locked from the start: the first app whose turn has come waits for the agent, the rest for it.
+  if (member.state === 'locked') return turnHasCome ? 'Waiting for the agent' : 'Waiting its turn';
   if (member.state === 'cancelled' && member.refusal?.code === 'rollout_stopped') return 'Not started';
   return stateWords(member.state);
 }
@@ -84,12 +85,20 @@ export function RolloutProgressView({ id, retryMs }: { id: string; retryMs?: num
           description={status === null ? undefined : `${String(done)} of ${String(status.members.length)} done · requested by ${status.requesterLabel}`}
         />
         {status !== null && finished ? <Outcome status={status} /> : null}
-        <Section title="Apps" description="In order: each one soaks before the next starts. Shipyard goes last." surface="plain">
+        <Section
+          title="Apps"
+          description={
+            status?.members.some((m) => m.self) === true
+              ? 'In order: each one soaks before the next starts. Shipyard goes last.'
+              : 'In order: each one soaks before the next starts.'
+          }
+          surface="plain"
+        >
           {status === null ? (
             <Skeleton variant="text" lines={3} />
           ) : (
             <DataList aria-label="Apps in this rollout, in order">
-              {status.members.map((member) => (
+              {status.members.map((member, i) => (
                 <DataListRow
                   key={member.deployId}
                   title={
@@ -107,7 +116,12 @@ export function RolloutProgressView({ id, retryMs }: { id: string; retryMs?: num
                   meta={
                     <Cluster gap="4">
                       {member.self ? <Badge tone="neutral">Shipyard</Badge> : null}
-                      <Badge tone={memberTone(member)}>{memberWords(member)}</Badge>
+                      <Badge tone={memberTone(member)}>
+                        {memberWords(
+                          member,
+                          status.members.slice(0, i).every((m) => m.state === 'succeeded'),
+                        )}
+                      </Badge>
                     </Cluster>
                   }
                 />

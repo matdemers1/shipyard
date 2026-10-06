@@ -10,6 +10,7 @@ import { Agent } from './screens/Agent';
 import { AppDetail } from './screens/AppDetail';
 import { BuildDetail } from './screens/BuildDetail';
 import { Builds } from './screens/Builds';
+import { Commit } from './screens/Commit';
 import { Connect } from './screens/Connect';
 import { DeployProgress } from './screens/DeployProgress';
 import { DeployRecord } from './screens/DeployRecord';
@@ -162,6 +163,7 @@ export function AppRoutes() {
         <Route index element={<Home />} />
         <Route path="apps/:app" element={<AppDetail />} />
         <Route path="apps/:app/restore" element={<Restore />} />
+        <Route path="apps/:app/commits/:sha" element={<Commit />} />
         <Route path="deploys/:id" element={<DeployRecord />} />
         <Route path="deploys/:id/live" element={<DeployProgress />} />
         <Route path="rollouts/:id" element={<RolloutProgress />} />

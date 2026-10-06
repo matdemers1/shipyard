@@ -22,10 +22,12 @@ import { AppCard } from '../components/AppCard';
 import { ApprovalsBanner } from '../components/ApprovalsBanner';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { GroupDeploySheet } from '../components/GroupDeploySheet';
+import { RollAllSheet } from '../components/RollAllSheet';
 import { appStatus, statusRank, type AppStatus, type StatusKind } from '../lib/appstatus';
 import { useCan, useIsAdmin } from '../lib/auth';
 import { fetchGroups } from '../lib/groups';
 import { useHomeData, type HomeApp, type PendingApproval } from '../lib/home';
+import { MIN_ROLL_ALL, rolloutCandidates } from '../lib/rollouts';
 
 /** How to add an app: a manifest on the agent's host (docs/runbooks/onboard-app.md). */
 const ONBOARD_RUNBOOK_URL = 'https://github.com/matdemers1/shipyard/blob/main/docs/runbooks/onboard-app.md';
@@ -63,6 +65,11 @@ const GLOSSARY: { term: string; meaning: string }[] = [
   },
   { term: 'Deploying', meaning: 'A deploy is running: backup, pull, swap, health check, then a soak before it counts as done.' },
   { term: 'Up to date', meaning: 'Live is the newest commit on the default branch.' },
+  {
+    term: 'Roll all',
+    meaning:
+      'Ships every app that is ready, one at a time: each deploys and soaks before the next starts, any failure stops the rest, and Shipyard itself always goes last.',
+  },
 ];
 
 interface Row {
@@ -85,6 +92,7 @@ export function Home() {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [selectedGroup, setSelectedGroup] = useState<GroupSummary | null>(null);
   const [groupSheetOpen, setGroupSheetOpen] = useState(false);
+  const [rollAllOpen, setRollAllOpen] = useState(false);
 
   const rows = useMemo<Row[]>(
     () =>
@@ -96,6 +104,7 @@ export function Home() {
         .sort((a, b) => statusRank(a.status.kind) - statusRank(b.status.kind) || a.app.name.localeCompare(b.app.name)),
     [apps, approvals],
   );
+  const rollAll = useMemo(() => rolloutCandidates(rows), [rows]);
 
   const openSheet = (next: SheetAction) => {
     setAction(next);
@@ -224,7 +233,26 @@ export function Home() {
         {status === 'ready' ? <ApprovalsBanner approvals={approvals} canDeny={canDeploy} onReview={openSheet} onDenied={refresh} /> : null}
 
         {status === 'ready' && rows.length > 0 ? (
-          <Section title="Apps" surface="plain">
+          <Section
+            title="Apps"
+            surface="plain"
+            {...(canDeploy && rollAll.length >= MIN_ROLL_ALL
+              ? {
+                  actions: (
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={() => {
+                        setRollAllOpen(true);
+                      }}
+                    >
+                      {`Roll all ${String(rollAll.length)}`}
+                    </Button>
+                  ),
+                }
+              : {})}
+          >
             <Grid as="ul" minItemWidth="sm">
               {rows.map((row) => (
                 <AppCard
@@ -301,6 +329,16 @@ export function Home() {
           onStarted={(deployId) => {
             setGroupSheetOpen(false);
             void navigate(`/deploys/${deployId}/live`);
+          }}
+        />
+
+        <RollAllSheet
+          open={rollAllOpen}
+          onOpenChange={setRollAllOpen}
+          items={rollAll}
+          onStarted={(rolloutId) => {
+            setRollAllOpen(false);
+            void navigate(`/rollouts/${rolloutId}`);
           }}
         />
 

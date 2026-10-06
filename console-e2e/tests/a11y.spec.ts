@@ -138,6 +138,43 @@ const SCREENS: Screen[] = [
     },
   },
   {
+    name: 'S3 roll all sheet',
+    as: 'admin',
+    path: () => '/',
+    ready: (p) => h1(p, 'Home'),
+    act: async (p, fx) => {
+      // The seeded world has one ready app that is not frozen, so Roll all is not offered there.
+      // Show the frozen one as unfrozen and answer the plan with a canned order, Shipyard last.
+      await p.route(
+        (url) => url.pathname === '/api/apps',
+        async (route) => {
+          const res = await route.fetch();
+          const body = (await res.json()) as { apps: { name: string; frozen?: boolean }[] };
+          const apps = body.apps.map((a) => (a.name === fx.apps.frozen ? { ...a, frozen: false } : a));
+          await route.fulfill({ response: res, json: { ...body, apps } });
+        },
+      );
+      await p.route(
+        (url) => url.pathname === '/api/rollouts/plan',
+        (route) =>
+          route.fulfill({
+            status: 200,
+            json: {
+              members: [
+                { app: fx.apps.history, sha: '2'.repeat(40), liveSha: 'f'.repeat(40), self: false },
+                { app: 'shipyard', sha: '3'.repeat(40), liveSha: 'e'.repeat(40), self: true },
+              ],
+            },
+          }),
+      );
+      await p.reload();
+      await h1(p, 'Home');
+      await p.getByRole('button', { name: /^Roll all \d+$/ }).click();
+      await dialog(p, /^Roll all/);
+      await expect(p.getByRole('list', { name: 'Apps to roll, in order' })).toBeVisible();
+    },
+  },
+  {
     name: 'S2 deny-approval confirm',
     as: 'admin',
     path: () => '/',
@@ -164,6 +201,25 @@ const SCREENS: Screen[] = [
     ready: async (p) => {
       await expect(p.getByRole('heading', { level: 1 })).toBeVisible();
       await expect(p.getByText(/requested by/)).toBeVisible();
+    },
+  },
+  {
+    name: 'Rollout, stopped at a rolled-back app',
+    as: 'admin',
+    path: (fx) => `/rollouts/${fx.rollouts.stopped}`,
+    ready: async (p) => {
+      await h1(p, 'Roll all');
+      await expect(p.getByText(/^The rollout stopped at/)).toBeVisible();
+    },
+  },
+  {
+    name: 'Rollout at phone width',
+    as: 'viewer',
+    phone: true,
+    path: (fx) => `/rollouts/${fx.rollouts.stopped}`,
+    ready: async (p) => {
+      await h1(p, 'Roll all');
+      await expect(p.getByRole('list', { name: 'Apps in this rollout, in order' })).toBeVisible();
     },
   },
   // S5 App detail — every variant.

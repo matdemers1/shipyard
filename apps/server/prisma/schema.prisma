@@ -274,6 +274,10 @@ model Deploy {
 
   /// A group deploy names its group (SHP-D-047).
   groupName      String?        @map("group_name")
+  /// A rollout member names its rollout and its 0-based place in it (SHP-REQ-151).
+  rolloutId       String?        @map("rollout_id") @db.Uuid
+  rolloutPosition Int?           @map("rollout_position")
+  rollout         Rollout?       @relation(fields: [rolloutId], references: [id])
   requesterUser  User?          @relation("DeployRequesterUser", fields: [requesterUserId], references: [id])
   requesterToken ApiToken?      @relation("DeployRequesterToken", fields: [requesterTokenId], references: [id])
   targets        DeployTarget[]
@@ -281,7 +285,21 @@ model Deploy {
   schedule       Schedule?
   autoDeployOf   Build?         @relation("BuildAutoDeploy")
 
+  @@index([rolloutId])
   @@map("deploy")
+}
+
+/// "Roll all" (SHP-T-12.1): several single-app deploys, each at its own SHA, shipped one at a time
+/// in `rollout_position` order with Shipyard's own app last (SHP-REQ-151, SHP-REQ-152). The members
+/// are ordinary deploys; this row only ties them together for dispatch, stop-on-failure and status.
+model Rollout {
+  id             String   @id @default(uuid()) @db.Uuid
+  requesterLabel String   @map("requester_label")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  deploys Deploy[]
+
+  @@map("rollout")
 }
 
 model DeployTarget {

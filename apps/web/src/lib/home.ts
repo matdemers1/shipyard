@@ -43,6 +43,8 @@ export interface AppRow {
   reportedAt: string | null;
   drift: { id: string; detectedAt: string } | null;
   approvalPolicy: string | null;
+  /** A freeze holds now; absent from a server older than SHP-T-12.2. */
+  frozen?: boolean;
   active: { targetId: string; deployId: string; state: string; holder: string; currentStep: string | null } | null;
 }
 

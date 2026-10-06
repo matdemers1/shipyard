@@ -5,6 +5,7 @@ import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { activeFreeze, liveSchemaRevision, mountDrift, rollbackTargets } from './detail.js';
 import { recordedRelease } from './drift.js';
+import { activeFreezeRow } from '../freeze/service.js';
 
 export { assertDeployable, detectDrift, differingServices, recordedRelease } from './drift.js';
 
@@ -48,11 +49,13 @@ interface AppSummary {
   canary: boolean;
   group: string | null;
   manifestSha256: string;
+  /** A freeze holds now (SHP-REQ-077): Home leaves the app out of Roll all (SHP-REQ-154). */
+  frozen: boolean;
   active: { targetId: string; deployId: string; state: string; holder: string; currentStep: string | null } | null;
 }
 
 async function summarise(db: Db, app: AppRow): Promise<AppSummary> {
-  const [release, drift, active] = await Promise.all([
+  const [release, drift, active, freeze] = await Promise.all([
     recordedRelease(db, app.id),
     db.driftEvent.findFirst({
       where: { appId: app.id, resolvedAt: null },
@@ -63,6 +66,7 @@ async function summarise(db: Db, app: AppRow): Promise<AppSummary> {
       where: { appId: app.id, state: { in: [...ACTIVE_STATES] } },
       select: { id: true, deployId: true, state: true, currentStep: true, deploy: { select: { requesterLabel: true } } },
     }),
+    activeFreezeRow(db, app.id),
   ]);
   return {
     name: app.name,
@@ -82,6 +86,7 @@ async function summarise(db: Db, app: AppRow): Promise<AppSummary> {
     canary: app.canary,
     group: app.groupName,
     manifestSha256: app.manifestSha256,
+    frozen: freeze !== null,
     active:
       active === null
         ? null

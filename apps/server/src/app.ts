@@ -25,6 +25,7 @@ import { healthRouter } from './routes/health.js';
 import { wellKnownRouter } from './routes/wellknown.js';
 import { freezeRouter } from './freeze/index.js';
 import { groupsRouter } from './groups/index.js';
+import { rolloutsRouter } from './rollouts/index.js';
 import { schedulesRouter } from './schedules/index.js';
 import { restoreRouter } from './restore/index.js';
 import { systemRouter } from './system/index.js';
@@ -123,6 +124,7 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/apps', freezeRouter(serviceDeps));
   app.use('/api/apps', restoreRouter(serviceDeps));
   app.use('/api/groups', groupsRouter(serviceDeps));
+  app.use('/api/rollouts', rolloutsRouter(serviceDeps));
   app.use('/api/schedules', schedulesRouter(serviceDeps));
   app.use('/api/system', systemRouter(serviceDeps));
   app.use('/api/apps', appsRouter(serviceDeps));

@@ -213,11 +213,11 @@ describe('Settings is admin-only in the console', () => {
     expect(within(nav).getByRole('link', { name: 'Settings' })).toBeInTheDocument();
   });
 
-  it.each(['deployer', 'operator', 'viewer'] as const)('hides Settings from a %s, and refuses the typed address', async (role) => {
+  // Settings is one destination for every role since SHP-ADR-006; its admin-only sections gate
+  // themselves, so a typed address to one is still refused.
+  it.each(['deployer', 'operator', 'viewer'] as const)('refuses a %s the admin-only Integrations section', async (role) => {
     mockFetch({ 'GET /api/auth/me': meReply(role) });
-    renderAt('/settings');
+    renderAt('/settings/integrations');
     expect(await screen.findByText('This page needs the admin role')).toBeInTheDocument();
-    const nav = screen.getByRole('navigation', { name: 'Main' });
-    expect(within(nav).queryByRole('link', { name: 'Settings' })).not.toBeInTheDocument();
   });
 });

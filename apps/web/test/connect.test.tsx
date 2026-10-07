@@ -70,7 +70,10 @@ describe('Connect page', () => {
       'GET /api/auth/me': meReply('deployer'),
       'GET /api/auth/methods': { status: 200, body: { password: true, d3auth: false } },
       'GET /api/apps': APPS,
+      // /connect now lands on Settings › Claude & tokens, where the token list reads once on mount
+      // before Connect's own reads (SHP-T-13.5's interim section; SHP-T-13.6 replaces it).
       'GET /api/tokens': [
+        { status: 200, body: [] },
         { status: 200, body: [] },
         { status: 200, body: [tokenRow()] },
         { status: 200, body: [tokenRow({ lastUsedAt: new Date().toISOString(), lastUsedIp: '10.0.0.9' })] },

@@ -21,18 +21,20 @@ import { DEPLOY_ALL_READY, checkName, stateWords } from '../../lib/words';
 
 // ── Filters, in the URL ──────────────────────────────────────────────────
 
-/** The kind chips. `refusal` is a deploy outcome, not a stored kind; `restore` has no chip but still reads from an address. */
+/** The kind chips. `refusal` is a deploy outcome, not a stored kind. */
 export type ActivityKind = 'deploy' | 'rollback' | 'refusal' | 'build' | 'schedule' | 'restore';
 
 export const KIND_CHIPS: readonly { value: ActivityKind; label: string }[] = [
   { value: 'deploy', label: 'Deploys' },
   { value: 'rollback', label: 'Rollbacks' },
+  // The old timeline's Kind select offered restores; keep a way to them (SHP-T-13.13 verification).
+  { value: 'restore', label: 'Restores' },
   { value: 'refusal', label: 'Refusals' },
   { value: 'build', label: 'Builds' },
   { value: 'schedule', label: 'Schedules' },
 ];
 
-const KIND_VALUES: readonly string[] = [...KIND_CHIPS.map((k) => k.value), 'restore'];
+const KIND_VALUES: readonly string[] = KIND_CHIPS.map((k) => k.value);
 
 export interface ActivityFilters {
   app?: string;
@@ -153,12 +155,16 @@ interface RolloutTag {
 
 function rolloutTag(item: TimelineItem): RolloutTag | null {
   const m = ROLLOUT_SUFFIX.exec(item.requesterLabel);
+  const rolloutId = item.rolloutId ?? null;
+  // The server names the rollout and each member's place in it; the label is the fallback for an
+  // older server (SHP-T-13.13 verification). Positions here are 1-based, as the label writes them.
+  if (rolloutId !== null) {
+    const position = item.rolloutPosition !== null && item.rolloutPosition !== undefined ? item.rolloutPosition + 1 : Number(m?.[2] ?? 0);
+    return { key: rolloutId, base: m?.[1] ?? item.requesterLabel, position, total: Number(m?.[3] ?? 0), rolloutId };
+  }
   if (m === null) return null;
   const base = m[1] ?? '';
-  const position = Number(m[2]);
-  const total = Number(m[3]);
-  const rolloutId = item.rolloutId ?? null;
-  return { key: rolloutId ?? `${base}|${String(total)}`, base, position, total, rolloutId };
+  return { key: `${base}|${m[3] ?? ''}`, base, position: Number(m[2]), total: Number(m[3]), rolloutId: null };
 }
 
 /** Members of one rollout are minutes apart; two rollouts by the same person are never this close. */
@@ -188,7 +194,10 @@ export function groupRollouts(entries: readonly FeedEntry[]): FeedEntry[] {
     }
     const group = open.get(tag.key);
     const oldest = group?.members[group.members.length - 1];
-    const near = oldest !== undefined && Date.parse(oldest.item.createdAt) - Date.parse(entry.item.createdAt) < ROLLOUT_WINDOW_MS;
+    // A rollout id is exact; only label-matched members need the time window to tell two apart.
+    const near =
+      oldest !== undefined &&
+      (tag.rolloutId !== null || Date.parse(oldest.item.createdAt) - Date.parse(entry.item.createdAt) < ROLLOUT_WINDOW_MS);
     if (group !== undefined && near && !group.members.some((m) => m.position === tag.position)) {
       group.members.push({ item: entry.item, position: tag.position });
       continue;
@@ -206,7 +215,10 @@ export function groupRollouts(entries: readonly FeedEntry[]): FeedEntry[] {
     out.push(fresh);
   }
   for (const entry of out) {
-    if (entry.type === 'rollout') entry.members.sort((a, b) => a.position - b.position);
+    if (entry.type !== 'rollout') continue;
+    entry.members.sort((a, b) => a.position - b.position);
+    // Without a label the total is unknown: at least as many as the members seen.
+    entry.total = Math.max(entry.total, entry.members.length);
   }
   return out;
 }

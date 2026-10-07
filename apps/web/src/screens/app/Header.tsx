@@ -89,7 +89,9 @@ function Primary({ detail, status, freeze, approval, heldSha, onSheet }: Omit<He
     return (
       <Button
         type="button"
-        variant="primary"
+        // While frozen, Unfreeze is the page's one primary; approving a frozen app's deploy would be
+        // refused by the freeze check anyway, so Review steps down (SHP-T-13.12 verification).
+        variant={freeze === null ? 'primary' : 'secondary'}
         onClick={() => {
           onSheet({ kind: 'approve', app: detail.name, sha: approval.sha, deployId: approval.deployId, requester: approval.requester.label });
         }}

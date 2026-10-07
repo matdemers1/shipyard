@@ -164,7 +164,7 @@ test.describe('as an admin, baseline world', () => {
   test("S2 error: the server can't reach its database", async ({ page }) => {
     await page.route(isPath('/api/apps'), (route) => json(route, 500, INTERNAL_ERROR));
     await page.goto('/');
-    await h1(page, 'Home');
+    await h1(page, 'Apps');
     const alert = alertBox(page, 'An unexpected error occurred.');
     await expect(alert).toBeVisible();
     await expect(alert).toContainText('lost its database');

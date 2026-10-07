@@ -72,7 +72,7 @@ const SCREENS: Screen[] = [
     as: 'admin',
     path: () => '/',
     ready: async (p, fx) => {
-      await h1(p, 'Home');
+      await h1(p, 'Apps');
       await expect(card(p, fx.apps.history).getByRole('button', { name: /^Deploy [0-9a-f]{7}$/ })).toBeVisible();
     },
   },
@@ -81,7 +81,7 @@ const SCREENS: Screen[] = [
     as: 'viewer',
     path: () => '/',
     ready: async (p, fx) => {
-      await h1(p, 'Home');
+      await h1(p, 'Apps');
       await expect(card(p, fx.apps.history)).toBeVisible();
     },
   },
@@ -89,7 +89,7 @@ const SCREENS: Screen[] = [
     name: 'S2 home, account menu open',
     as: 'admin',
     path: () => '/',
-    ready: (p) => h1(p, 'Home'),
+    ready: (p) => h1(p, 'Apps'),
     act: async (p) => {
       await p.getByRole('button', { name: new RegExp(USERS.admin.displayName) }).click();
       await expect(p.getByRole('menuitem', { name: 'Account' })).toBeVisible();
@@ -100,7 +100,7 @@ const SCREENS: Screen[] = [
     as: 'admin',
     phone: true,
     path: () => '/',
-    ready: (p) => h1(p, 'Home'),
+    ready: (p) => h1(p, 'Apps'),
     act: async (p) => {
       // On a phone the bottom tab bar is the navigation (SHP-ADR-006, @d3cloud/ui TabBar).
       await expect(p.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /^Settings/ })).toBeVisible();
@@ -111,7 +111,7 @@ const SCREENS: Screen[] = [
     name: 'S3 dry-run sheet, deploy',
     as: 'admin',
     path: () => '/',
-    ready: (p) => h1(p, 'Home'),
+    ready: (p) => h1(p, 'Apps'),
     act: async (p, fx) => {
       await card(p, fx.apps.history).getByRole('button', { name: /^Deploy [0-9a-f]{7}$/ }).click();
       await dialog(p, `Deploy ${fx.apps.history}`);
@@ -121,7 +121,7 @@ const SCREENS: Screen[] = [
     name: 'S3 dry-run sheet, approval review',
     as: 'admin',
     path: () => '/',
-    ready: (p) => h1(p, 'Home'),
+    ready: (p) => h1(p, 'Apps'),
     act: async (p, fx) => {
       await p.getByRole('button', { name: 'Review', exact: true }).click();
       await dialog(p, `Approve deploy of ${fx.apps.approval}`);
@@ -131,7 +131,7 @@ const SCREENS: Screen[] = [
     name: 'S3 group deploy sheet',
     as: 'admin',
     path: () => '/',
-    ready: (p) => h1(p, 'Home'),
+    ready: (p) => h1(p, 'Apps'),
     act: async (p, fx) => {
       await p.getByRole('button', { name: 'Deploy group' }).click();
       await expect(p.getByRole('dialog')).toContainText(fx.group);
@@ -141,7 +141,7 @@ const SCREENS: Screen[] = [
     name: 'S3 roll all sheet',
     as: 'admin',
     path: () => '/',
-    ready: (p) => h1(p, 'Home'),
+    ready: (p) => h1(p, 'Apps'),
     act: async (p, fx) => {
       // The seeded world has one ready app that is not frozen, so Roll all is not offered there.
       // Show the frozen one as unfrozen and answer the plan with a canned order, Shipyard last.
@@ -168,7 +168,7 @@ const SCREENS: Screen[] = [
           }),
       );
       await p.reload();
-      await h1(p, 'Home');
+      await h1(p, 'Apps');
       await p.getByRole('button', { name: /^Deploy all ready \(\d+\)$/ }).click();
       await dialog(p, /^Deploy all ready/);
       await expect(p.getByRole('list', { name: 'Apps to deploy, in order' })).toBeVisible();
@@ -178,7 +178,7 @@ const SCREENS: Screen[] = [
     name: 'S2 deny-approval confirm',
     as: 'admin',
     path: () => '/',
-    ready: (p) => h1(p, 'Home'),
+    ready: (p) => h1(p, 'Apps'),
     act: async (p, fx) => {
       await p.getByRole('button', { name: 'Deny' }).click();
       await dialog(p, new RegExp(`^Deny ${fx.apps.approval}`));
@@ -733,7 +733,7 @@ test.describe('the check itself', () => {
 
   test('a serious violation on a screen fails it', async ({ page }) => {
     await page.goto('/');
-    await h1(page, 'Home');
+    await h1(page, 'Apps');
     await page.evaluate(() => {
       const button = document.createElement('button');
       button.id = 'console-e2e-unnamed';

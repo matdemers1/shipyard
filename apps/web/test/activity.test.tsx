@@ -411,4 +411,17 @@ describe('Activity model', () => {
     expect(formatDuration(352_000)).toBe('5m 52s');
     expect(formatDuration(3_720_000)).toBe('1h 2m');
   });
+
+  it('groups a rollout by the id and positions the server sends, even without the label suffix', () => {
+    const at = (min: number) => new Date(Date.UTC(2026, 9, 6, 12, min)).toISOString();
+    const member = (id: string, pos: number, min: number) =>
+      ({ type: 'deploy', key: id, at: at(min), item: { deployId: id, kind: 'deploy', app: `app${String(pos)}`, sha: 'a'.repeat(40), dryRun: false, state: 'succeeded', requesterLabel: 'Matt (console)', createdAt: at(min), endedAt: at(min + 1), refusalCode: null, rolloutId: 'r1', rolloutPosition: pos } }) as const;
+    const grouped = groupRollouts([member('d2', 1, 10), member('d1', 0, 5)] as never);
+    expect(grouped).toHaveLength(1);
+    const only = grouped[0] as { type: string; members: { position: number }[]; total: number; rolloutId: string | null };
+    expect(only.type).toBe('rollout');
+    expect(only.rolloutId).toBe('r1');
+    expect(only.members.map((m) => m.position)).toEqual([1, 2]);
+    expect(only.total).toBe(2);
+  });
 });

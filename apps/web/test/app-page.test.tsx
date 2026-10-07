@@ -178,6 +178,37 @@ describe('the header (SHP-REQ-163, SHP-D-094)', () => {
     expect(primaries.filter((b) => b.textContent.startsWith('Deploy'))).toEqual([]);
     for (const button of screen.getAllByRole('button', { name: /^Deploy / })) expect(button).toBeDisabled();
     expect(screen.getByText(/^Frozen until .* — release week · by matt@example\.com$/)).toBeInTheDocument();
+    // Unfreeze is the one primary while frozen (SHP-D-094).
+    const after = await headerActions();
+    expect(after.primaries.map((b) => b.textContent)).toEqual(['Unfreeze']);
+  });
+
+  it('keeps Unfreeze the only primary when a deploy also waits on approval while frozen', async () => {
+    routes('deployer', {
+      'GET /api/apps/bindery/freeze': { status: 200, body: { freeze: frozen } },
+      'GET /api/approvals': {
+        status: 200,
+        body: [
+          {
+            deployId: 'd-ap',
+            kind: 'deploy',
+            app: 'bindery',
+            sha: sha('b'),
+            requester: { label: 'claude: bindery fix', repo: null, branch: null },
+            requestedAt: '2026-10-06T00:00:00.000Z',
+            expiresAt: '2026-10-06T01:00:00.000Z',
+          },
+        ],
+      },
+    });
+    renderAt('/apps/bindery');
+    const { group } = await headerActions();
+    await waitFor(() => {
+      expect(within(group).getByRole('button', { name: 'Unfreeze' })).toBeInTheDocument();
+      expect(within(group).getByRole('button', { name: /^Review / })).toBeInTheDocument();
+    });
+    const after = await headerActions();
+    expect(after.primaries.map((b) => b.textContent)).toEqual(['Unfreeze']);
   });
 
   it('makes Review the primary while a deploy waits on approval', async () => {

@@ -1,4 +1,6 @@
 import { request } from './api';
+import type { CommitEntry, CommitsInfo } from './home';
+import { formatSpan } from '../components/pipeline/stages';
 
 /**
  * App detail (S5) and drift resolution: the shapes the server answers with, and the calls.
@@ -41,6 +43,11 @@ export interface HistoryTarget {
   createdAt: string;
   startedAt: string | null;
   endedAt: string | null;
+  /**
+   * Why a refused deploy was refused, in one line. Optional because the app response does not carry
+   * it yet: the Deploys tab shows it when it arrives, and says to open the deploy until then.
+   */
+  refusal?: { message: string } | null;
 }
 
 /** The app's active freeze (SHP-T-5.1, SHP-REQ-077), or null when it is not frozen. */
@@ -199,4 +206,107 @@ export function age(iso: string | null, now: number = Date.now()): string {
 
 export function when(iso: string | null): string {
   return iso === null ? '—' : new Date(iso).toLocaleString();
+}
+
+// ── The app page's derived facts (SHP-T-13.12) ──────────────────────────
+//
+// Pure functions of what the page already fetched, so the page's parts never work a fact out two
+// ways and a test can pin each one without rendering.
+
+function manifestObject(manifest: unknown): Record<string, unknown> | null {
+  return typeof manifest === 'object' && manifest !== null ? (manifest as Record<string, unknown>) : null;
+}
+
+/** Whether the manifest has Shipyard build this app's images (`build.source: shipyard`). */
+export function builtByShipyard(manifest: unknown): boolean {
+  const build = manifestObject(manifest)?.build;
+  return typeof build === 'object' && build !== null && (build as { source?: unknown }).source === 'shipyard';
+}
+
+/** The image workflow the manifest names (`workflow: ci.yml`), or null when it names none. */
+export function manifestWorkflow(manifest: unknown): string | null {
+  const workflow = manifestObject(manifest)?.workflow;
+  return typeof workflow === 'string' && workflow !== '' ? workflow : null;
+}
+
+/** The repository on GitHub, for a link; null when the app names none. */
+export function repoUrl(repo: string | null): string | null {
+  return repo === null ? null : `https://github.com/${repo}`;
+}
+
+/**
+ * The workflow's page on GitHub when the manifest names a workflow file, else the repository's
+ * Actions page — a workflow named by its display name has no address of its own.
+ */
+export function workflowUrl(repo: string | null, workflow: string | null): string | null {
+  if (repo === null) return null;
+  if (workflow !== null && /\.ya?ml$/.test(workflow)) return `https://github.com/${repo}/actions/workflows/${encodeURIComponent(workflow)}`;
+  return `https://github.com/${repo}/actions`;
+}
+
+/** Who asked for the release that is live, read from the history; null when it is not in it. */
+export function liveRequester(detail: Pick<AppDetail, 'liveDeployId' | 'targets'>): string | null {
+  if (detail.liveDeployId === null) return null;
+  return detail.targets.find((t) => t.deployId === detail.liveDeployId)?.requester ?? null;
+}
+
+/** Waiting commits as the page lists them: newest first, so the top one is the one you would deploy. */
+export function newestFirst(commits: CommitsInfo | null): CommitEntry[] {
+  return [...(commits?.commits ?? [])].reverse();
+}
+
+/**
+ * The commit the "Next up" card follows: the newest one with images, when it is ahead of live; or,
+ * with none ready, the newest commit waiting, so a running CI shows its lane too. Null with nothing
+ * waiting.
+ */
+export function nextUpCommit(commits: CommitsInfo | null, liveSha: string | null): CommitEntry | null {
+  const entries = commits?.commits ?? [];
+  const green = commits?.newestGreen ?? null;
+  const ready = green !== null && green !== liveSha ? entries.find((c) => c.sha === green) : undefined;
+  return ready ?? entries.at(-1) ?? null;
+}
+
+/**
+ * The commits whose own CI failed that deploying `sha` takes along anyway: everything between live
+ * and it rides with it, and a person deploying it should see that before they press the button.
+ */
+export function failedRidingAlong(commits: CommitsInfo | null, sha: string): CommitEntry[] {
+  const entries = commits?.commits ?? [];
+  const index = entries.findIndex((c) => c.sha === sha);
+  return index <= 0 ? [] : entries.slice(0, index).filter((c) => c.ci === 'failure');
+}
+
+/** "Deploying 2cd9c27 also deploys 409abcd, whose CI failed." — the rider warning, in the vocabulary. */
+export function ridingAlongWarning(sha: string, riders: readonly CommitEntry[]): string | null {
+  if (riders.length === 0) return null;
+  const names = riders.map((c) => sha7(c.sha)).join(', ');
+  return `Deploying ${sha7(sha)} also deploys ${names}, whose CI failed.`;
+}
+
+/**
+ * A rollback target on a history row: only the releases the server's ledger mirror offers
+ * (SHP-D-080) — a successful deploy in the history that is not in that list gets no button.
+ */
+export function rollbackFor(target: Pick<HistoryTarget, 'id' | 'deployId'>, offered: readonly Release[]): Release | undefined {
+  return offered.find((r) => r.targetId === target.id || r.deployId === target.deployId);
+}
+
+/** The offered rollback targets the history's last twenty rows do not show, so none is lost. */
+export function rollbacksOutsideHistory(history: readonly HistoryTarget[], offered: readonly Release[]): Release[] {
+  return offered.filter((r) => !history.some((t) => t.id === r.targetId || t.deployId === r.deployId));
+}
+
+/** "34s", "2m 05s", "1h 02m" between two instants; null while either is missing. */
+export function took(startedAt: string | null, endedAt: string | null): string | null {
+  if (startedAt === null || endedAt === null) return null;
+  const ms = Date.parse(endedAt) - Date.parse(startedAt);
+  if (Number.isNaN(ms)) return null;
+  return formatSpan(ms);
+}
+
+/** What a history row is: "Deploy f8b48f2", "Rollback f8b48f2", "Dry run f8b48f2". */
+export function historyTitle(t: Pick<HistoryTarget, 'dryRun' | 'kind' | 'sha'>): string {
+  const what = t.dryRun ? 'Dry run' : t.kind === 'rollback' ? 'Rollback' : t.kind === 'restore' ? 'Restore' : 'Deploy';
+  return `${what} ${sha7(t.sha)}`;
 }

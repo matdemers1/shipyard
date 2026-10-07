@@ -10,7 +10,8 @@ import { meReply, mockFetch, type Reply } from './fetch';
  * App detail (SHP-T-3.5): only the server's ledger-eligible rollback targets get a button
  * (SHP-REQ-063); adopt-live cannot be submitted without a reason and names the drift event it
  * reviewed (SHP-REQ-066); a requested redeploy shows as pending; a viewer sees no actions
- * (SHP-REQ-105).
+ * (SHP-REQ-105). Since SHP-T-13.12 the page is organised by job: the rollback buttons sit inline in
+ * the Deploys tab, the releases that need a restore in Backups, the manifest in Config.
  */
 
 // The sheet is another task's; here it only has to be opened with the right action.
@@ -88,6 +89,23 @@ const openDrift: DriftState = {
   resolved: [],
 };
 
+function target(c: string, overrides: Partial<AppDetail['targets'][number]> = {}): AppDetail['targets'][number] {
+  return {
+    id: `t-${c}`,
+    deployId: `d-${c}`,
+    kind: 'deploy',
+    sha: sha(c),
+    dryRun: false,
+    requester: 'matt (console)',
+    state: 'succeeded',
+    currentStep: null,
+    createdAt: '2026-09-20T00:00:00.000Z',
+    startedAt: '2026-09-20T00:00:00.000Z',
+    endedAt: '2026-09-20T00:02:05.000Z',
+    ...overrides,
+  };
+}
+
 function renderAt(path: string) {
   window.history.replaceState(null, '', path);
   return render(<App />);
@@ -104,24 +122,51 @@ function routes(role: 'deployer' | 'viewer', body: AppDetail, drift: DriftState,
 }
 
 describe('rollback targets', () => {
-  it('renders a rollback button for each server rollback target and none for anything else', async () => {
-    routes('deployer', detail(), noDrift);
+  // The history holds the live release, the two the ledger offers and one that was refused.
+  const history = [
+    detail().targets[0] as AppDetail['targets'][number],
+    target('7'),
+    target('6'),
+    target('5', { state: 'refused', startedAt: null, endedAt: null }),
+  ];
+
+  it('puts Roll back inline on each history row the server offers, and on no other', async () => {
+    routes('deployer', detail({ targets: history }), noDrift);
     const user = userEvent.setup();
     renderAt('/apps/web');
     // The skeleton has the same heading; wait for the loaded page's buttons themselves.
     // The first render of the file is the slow one (a cold import under a busy suite).
     const buttons = await screen.findAllByRole('button', { name: /^Roll back to/ }, { timeout: 4000 });
     expect(buttons.map((b) => b.textContent)).toEqual(['Roll back to 7777777', 'Roll back to 6666666']);
-    // Not the live release, not the one behind a contract migration.
-    expect(screen.queryByRole('button', { name: 'Roll back to 9999999' })).not.toBeInTheDocument();
+    const rows = within(screen.getByRole('list', { name: 'Deploys' })).getAllByRole('listitem');
+    expect(within(rows[1] as HTMLElement).getByRole('button', { name: 'Roll back to 7777777' })).toBeInTheDocument();
+    // Not the live release, not a refused one, not the one behind a contract migration.
+    expect(within(rows[0] as HTMLElement).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(rows[3] as HTMLElement).queryByRole('button')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Roll back to 2222222' })).not.toBeInTheDocument();
-    const restore = screen.getByRole('list', { name: 'Releases that need a restore' });
-    expect(within(restore).getByText(/contract migration/)).toBeInTheDocument();
-    expect(within(restore).queryByRole('button')).not.toBeInTheDocument();
+    // Every offered target is on a row, so there is no separate list of older ones.
+    expect(screen.queryByRole('list', { name: 'Earlier releases to roll back to' })).not.toBeInTheDocument();
 
     await user.click(buttons[0] as HTMLElement);
     expect(await screen.findByRole('dialog', { name: `sheet rollback ${sha('7')}` })).toBeInTheDocument();
     expect(opened.at(-1)).toEqual({ kind: 'rollback', app: 'web', sha: sha('7'), toDeployId: 'd-7' });
+  });
+
+  it('lists an offered target older than the history beneath it, so none is lost', async () => {
+    routes('deployer', detail(), noDrift);
+    renderAt('/apps/web');
+    const older = await screen.findByRole('list', { name: 'Earlier releases to roll back to' }, { timeout: 4000 });
+    expect(within(older).getAllByRole('button').map((b) => b.textContent)).toEqual(['Roll back to 7777777', 'Roll back to 6666666']);
+  });
+
+  it('keeps the releases that need a restore in Backups, with no button', async () => {
+    routes('deployer', detail(), noDrift);
+    const user = userEvent.setup();
+    renderAt('/apps/web');
+    await user.click(await screen.findByRole('tab', { name: 'Backups' }, { timeout: 4000 }));
+    const restore = screen.getByRole('list', { name: 'Releases that need a restore' });
+    expect(within(restore).getByText(/contract migration/)).toBeInTheDocument();
+    expect(within(restore).queryByRole('button')).not.toBeInTheDocument();
   });
 
   it('says there is nothing to roll back to when the server offers no target', async () => {
@@ -190,7 +235,7 @@ describe('status and waiting commits (SHP-T-3.10)', () => {
     const list = screen.getByRole('list', { name: 'Commits waiting to deploy' });
     expect(within(list).getByRole('link', { name: 'bbbbbbb' })).toHaveAttribute('href', `/apps/web/commits/${sha('b')}`);
     expect(within(list).getByRole('link', { name: 'ccccccc' })).toHaveAttribute('href', `/apps/web/commits/${sha('c')}`);
-    expect(screen.getByRole('link', { name: 'Open commit bbbbbbb' })).toHaveAttribute('href', `/apps/web/commits/${sha('b')}`);
+    expect(screen.getByRole('link', { name: 'Open commit page →' })).toHaveAttribute('href', `/apps/web/commits/${sha('b')}`);
   });
 
   it('shows a viewer the status and the commits but no deploy button', async () => {
@@ -294,12 +339,15 @@ describe('drift banner', () => {
 describe('viewer', () => {
   it('sees the drift, the targets and the manifest, and no actions', async () => {
     routes('viewer', detail(), openDrift);
+    const user = userEvent.setup();
     renderAt('/apps/web');
     expect(await screen.findByText('web is running something other than its recorded release')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: "Adopt what's running" })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Redeploy recorded release' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Roll back to/ })).not.toBeInTheDocument();
-    expect(within(screen.getByRole('list', { name: 'Rollback targets' })).getByText('7777777')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Freeze' })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('list', { name: 'Earlier releases to roll back to' })).getByText('7777777')).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'Config' }));
     expect(screen.getByRole('textbox', { name: 'Manifest' })).toHaveValue(
       JSON.stringify(detail().manifest, null, 2),
     );

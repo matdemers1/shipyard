@@ -21,7 +21,8 @@ import { RefusalError, unreachableRefusal } from '../lib/api';
 import { settings as settingsApi } from '../lib/settings';
 
 /**
- * Settings → Alert email (SHP-T-6.9, SHP-REQ-093): the mail relay the stale-agent and failed
+ * Settings › Integrations › Alert email (SHP-T-6.9, SHP-REQ-093), a compact card whose form opens
+ * in place on Edit: the mail relay the stale-agent and failed
  * backup/drill alerts go through, and who receives them. Admin-only like the rest of Settings. The
  * relay token is write-only: the screen only ever learns whether one is stored. MAIL_RELAY_URL /
  * MAIL_RELAY_TOKEN / ALERT_TO in server.env win, and then this section is read-only.
@@ -278,6 +279,7 @@ export function AlertEmailSettings() {
   const [m, setM] = useState<MailSettings | null>(null);
   const [refusal, setRefusal] = useState<RefusalError | null>(null);
   const [done, setDone] = useState<Done | null>(null);
+  const [open, setOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -292,10 +294,29 @@ export function AlertEmailSettings() {
     void load();
   }, [load]);
 
+  const verb = m === null ? 'Edit' : m.source === 'env' ? 'View' : m.source === 'none' ? 'Set up' : 'Edit';
+
   return (
     <Section
       title="Alert email"
       description="Optional. Shipyard emails when the agent has been silent for more than five minutes, or a nightly backup or restore drill fails. On the D3 host the relay is D3 Auth's mail-relay Worker: its URL and secret are in that Worker's settings."
+      actions={
+        m === null ? undefined : (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            aria-expanded={open}
+            aria-controls="shp-alert-email-form"
+            aria-label={`${verb} alert email`}
+            onClick={() => {
+              setOpen(!open);
+            }}
+          >
+            {verb}
+          </Button>
+        )
+      }
     >
       <Stack gap="16">
         {refusal === null ? null : (
@@ -317,21 +338,25 @@ export function AlertEmailSettings() {
               </Alert>
             ) : null}
             <Status m={m} />
-            {m.source === 'env' ? (
-              <EnvReadOnly m={m} />
-            ) : (
-              // Keyed by the saved state, so a save or turn-off resets the fields to what is stored.
-              <MailForm
-                key={`${m.source}:${m.updatedAt ?? ''}`}
-                m={m}
-                onDone={(next, what) => {
-                  setM(next);
-                  setDone(what);
-                }}
-              />
-            )}
+            {open ? (
+              <div id="shp-alert-email-form">
+                {m.source === 'env' ? (
+                  <EnvReadOnly m={m} />
+                ) : (
+                  // Keyed by the saved state, so a save or turn-off resets the fields to what is stored.
+                  <MailForm
+                    key={`${m.source}:${m.updatedAt ?? ''}`}
+                    m={m}
+                    onDone={(next, what) => {
+                      setM(next);
+                      setDone(what);
+                    }}
+                  />
+                )}
+              </div>
+            ) : null}
             <SendTest key={`test:${m.source}:${m.updatedAt ?? ''}`} m={m} />
-            {m.updatedAt === null ? null : <p>Alert email last changed {shortDate(m.updatedAt)}.</p>}
+            {m.updatedAt === null ? null : <p className="shp-status__detail">Alert email last changed {shortDate(m.updatedAt)}.</p>}
           </>
         )}
       </Stack>

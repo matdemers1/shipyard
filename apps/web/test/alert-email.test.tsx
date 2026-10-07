@@ -5,23 +5,28 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { D3AuthSettings, MailSettings } from '@shipyard/schema';
 import { AuthProvider } from '../src/lib/auth';
-import { Settings } from '../src/screens/Settings';
+import { AlertEmailSettings } from '../src/screens/AlertEmailSettings';
 import { meReply, mockFetch, type Reply } from './fetch';
 
-/** Settings → Alert email (SHP-T-6.9, SHP-REQ-093). */
+/** Settings › Integrations › Alert email (SHP-T-6.9, SHP-REQ-093): a compact card whose form opens in place. */
 
-function wrap() {
-  return render(
+async function wrap() {
+  render(
     <ThemeProvider storageKey="test.theme" defaultPreference="light">
       <TooltipProvider>
         <MemoryRouter initialEntries={['/settings']}>
           <AuthProvider>
-            <Settings />
+            <AlertEmailSettings />
           </AuthProvider>
         </MemoryRouter>
       </TooltipProvider>
     </ThemeProvider>,
   );
+  // The card shows its status line first; Set up, Edit or View opens the form (or server.env's values) in place.
+  const toggle = await screen.findByRole('button', { name: /^(Set up|Edit|View) alert email$/ });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await userEvent.setup().click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
 }
 
 const D3AUTH_OFF: D3AuthSettings = {
@@ -87,7 +92,7 @@ const form = () => screen.getByRole('form', { name: 'Alert email' });
 describe('Settings → Alert email', () => {
   it('shows it off, says what triggers alerts and where the relay comes from, and cannot test yet', async () => {
     mockFetch(routes(mail()));
-    wrap();
+    await wrap();
     expect(await screen.findByText('Alerts off')).toBeInTheDocument();
     expect(screen.getByText(/silent for more than five minutes, or a nightly backup or restore drill fails/)).toBeInTheDocument();
     expect(screen.getByText(/relay is D3 Auth's mail-relay Worker: its URL and secret are in that Worker's settings/)).toBeInTheDocument();
@@ -98,7 +103,7 @@ describe('Settings → Alert email', () => {
 
   it('saves the relay, token and recipient, then forgets the token', async () => {
     const calls = mockFetch(routes(mail(), { 'PUT /api/settings/mail': { status: 200, body: ON } }));
-    wrap();
+    await wrap();
     await screen.findByText('Alerts off');
     const user = userEvent.setup();
     await user.type(within(form()).getByRole('textbox', { name: /^Relay URL/ }), 'https://relay.example.com/send');
@@ -120,7 +125,7 @@ describe('Settings → Alert email', () => {
 
   it('keeps a stored token when the field is left blank', async () => {
     const calls = mockFetch(routes(ON, { 'PUT /api/settings/mail': { status: 200, body: ON } }));
-    wrap();
+    await wrap();
     expect(await screen.findByRole('textbox', { name: /^Relay URL/ })).toHaveValue('https://relay.example.com/send');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Save alert email' }));
     await screen.findByText('Alert email saved');
@@ -136,7 +141,7 @@ describe('Settings → Alert email', () => {
         ],
       }),
     );
-    wrap();
+    await wrap();
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Send test email' }));
     expect(await screen.findByText('The relay accepted the test message')).toBeInTheDocument();
@@ -150,7 +155,7 @@ describe('Settings → Alert email', () => {
 
   it('turns it off after a confirmation', async () => {
     const calls = mockFetch(routes(ON, { 'DELETE /api/settings/mail': { status: 200, body: mail() } }));
-    wrap();
+    await wrap();
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Turn off alert email' }));
     const dialog = await screen.findByRole('dialog', { name: 'Turn off alert email?' });
@@ -162,7 +167,7 @@ describe('Settings → Alert email', () => {
 
   it('shows server.env settings read-only, and still offers a test', async () => {
     mockFetch(routes({ ...ON, source: 'env', updatedAt: null }));
-    wrap();
+    await wrap();
     expect(await screen.findByText(/MAIL_RELAY_URL, MAIL_RELAY_TOKEN and ALERT_TO in server.env win/)).toBeInTheDocument();
     expect(screen.getByText('https://relay.example.com/send')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save alert email' })).not.toBeInTheDocument();
@@ -172,7 +177,7 @@ describe('Settings → Alert email', () => {
 
   it('says why a saved relay cannot send', async () => {
     mockFetch(routes({ ...ON, active: false, problem: 'The stored relay token cannot be read: SESSION_SECRET is unset in server.env.' }));
-    wrap();
+    await wrap();
     expect(await screen.findByText('Configured, but alert email cannot send')).toBeInTheDocument();
     expect(screen.getByText(/SESSION_SECRET is unset in server\.env\.$/)).toBeInTheDocument();
   });
@@ -193,7 +198,7 @@ describe('Settings → Alert email', () => {
         },
       }),
     );
-    wrap();
+    await wrap();
     const user = userEvent.setup();
     const url = await screen.findByRole('textbox', { name: /^Relay URL/ });
     await user.clear(url);

@@ -9,8 +9,6 @@ import {
   FormField,
   Input,
   Modal,
-  Page,
-  PageHeader,
   PasswordInput,
   Section,
   Spinner,
@@ -22,16 +20,13 @@ import { useCallback, useEffect, useState, type SyntheticEvent } from 'react';
 import { copyText, shortDate } from '../lib/admin';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { downloadManifest, settings as settingsApi } from '../lib/settings';
-import { AlertEmailSettings } from './AlertEmailSettings';
-import { BuildSettingsSection } from './BuildSettings';
-import { GitHubSettingsSection } from './GitHubSettings';
 
 /**
- * Settings (SHP-T-6.8, SHP-REQ-110): configure Sign in with D3 Auth without editing server files.
- * Admin-only — the nav shows it only to an admin, the route refuses anyone else, and so does the
- * server. The client secret is write-only: the screen only ever learns whether one is stored.
- * Password + authenticator sign-in is unaffected by anything here (SHP-REQ-001). Alert email
- * (SHP-T-6.9) is its own section, in AlertEmailSettings.tsx.
+ * Settings › Integrations › Sign in with D3 Auth (SHP-T-6.8, SHP-REQ-110): configure it without
+ * editing server files. Admin-only — the Integrations section refuses anyone else, and so does the
+ * server. A compact card: what is set now, and the form only when Edit opens it in place. The
+ * client secret is write-only: the screen only ever learns whether one is stored. Password +
+ * authenticator sign-in is unaffected by anything here (SHP-REQ-001).
  */
 
 function asRefusal(error: unknown): RefusalError {
@@ -324,10 +319,17 @@ function Registration({ s }: { s: D3AuthSettings }) {
   );
 }
 
-export function Settings() {
+/** The card's one action: what it does depends on where the settings come from. */
+function editVerb(s: D3AuthSettings): string {
+  if (s.source === 'env') return 'View';
+  return s.source === 'none' ? 'Set up' : 'Edit';
+}
+
+export function D3AuthCard() {
   const [s, setS] = useState<D3AuthSettings | null>(null);
   const [refusal, setRefusal] = useState<RefusalError | null>(null);
   const [done, setDone] = useState<Done | null>(null);
+  const [open, setOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -342,36 +344,53 @@ export function Settings() {
     void load();
   }, [load]);
 
+  const verb = s === null ? 'Edit' : editVerb(s);
+
   return (
-    <Page width="narrow">
-      <Stack gap="24">
-        <PageHeader title="Settings" description="Server-wide settings, for admins." />
+    <Section
+      title="Sign in with D3 Auth"
+      description="Optional. Password and authenticator sign-in always works, whatever is set here."
+      actions={
+        s === null ? undefined : (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            aria-expanded={open}
+            aria-controls="shp-d3auth-form"
+            aria-label={`${verb} Sign in with D3 Auth`}
+            onClick={() => {
+              setOpen(!open);
+            }}
+          >
+            {verb}
+          </Button>
+        )
+      }
+    >
+      <Stack gap="16">
         {refusal === null ? null : (
           <Alert tone="danger" title={refusal.message} dynamic>
             {refusal.fix}
           </Alert>
         )}
-        {s === null && refusal === null ? <Spinner label="Loading settings" /> : null}
+        {s === null && refusal === null ? <Spinner label="Loading Sign in with D3 Auth" /> : null}
         {s === null ? null : (
           <>
-            <Section
-              title="Sign in with D3 Auth"
-              description="Optional. Password and authenticator sign-in always works, whatever is set here."
-            >
-              <Stack gap="16">
-                {done === 'saved' ? (
-                  <Alert tone="success" title="Saved" dynamic>
-                    {s.available
-                      ? 'Sign in with D3 Auth is on — no restart needed.'
-                      : 'The D3 Auth button stays off until the issuer answers.'}
-                  </Alert>
-                ) : null}
-                {done === 'off' ? (
-                  <Alert tone="success" title="Turned off" dynamic>
-                    The sign-in page offers password and authenticator only.
-                  </Alert>
-                ) : null}
-                <Status s={s} />
+            {done === 'saved' ? (
+              <Alert tone="success" title="Saved" dynamic>
+                {s.available ? 'Sign in with D3 Auth is on — no restart needed.' : 'The D3 Auth button stays off until the issuer answers.'}
+              </Alert>
+            ) : null}
+            {done === 'off' ? (
+              <Alert tone="success" title="Turned off" dynamic>
+                The sign-in page offers password and authenticator only.
+              </Alert>
+            ) : null}
+            <Status s={s} />
+            {s.updatedAt === null ? null : <p className="shp-status__detail">Last changed {shortDate(s.updatedAt)}.</p>}
+            {open ? (
+              <Stack gap="24" id="shp-d3auth-form">
                 {s.source === 'env' ? (
                   <EnvReadOnly s={s} />
                 ) : (
@@ -385,18 +404,14 @@ export function Settings() {
                     }}
                   />
                 )}
-                {s.updatedAt === null ? null : <p>Last changed {shortDate(s.updatedAt)}.</p>}
+                <Section surface="plain" headingLevel={3} title="Register Shipyard in D3 Auth" description="What D3 Auth needs to know about this server.">
+                  <Registration s={s} />
+                </Section>
               </Stack>
-            </Section>
-            <Section title="Register Shipyard in D3 Auth" description="What D3 Auth needs to know about this server.">
-              <Registration s={s} />
-            </Section>
-            <GitHubSettingsSection />
-            <AlertEmailSettings />
-            <BuildSettingsSection />
+            ) : null}
           </>
         )}
       </Stack>
-    </Page>
+    </Section>
   );
 }

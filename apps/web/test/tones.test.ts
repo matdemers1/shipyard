@@ -62,11 +62,11 @@ describe('tones (SHP-T-13.2)', () => {
     }
     expect(tones).toEqual({
       deploying: 'attention',
-      approval: 'attention',
+      approval: 'warning',
       ready: 'attention',
-      drift: 'danger',
+      drift: 'warning',
       'ci-failed': 'danger',
-      frozen: 'warning',
+      frozen: 'neutral',
       'github-unavailable': 'warning',
       'ci-running': 'neutral',
       'no-images': 'neutral',

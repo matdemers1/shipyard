@@ -4,12 +4,11 @@ import { CircleX, GitCompareArrows, KeyRound, ServerCrash, UserCheck } from 'luc
 import { useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { RefusalError, request } from '../lib/api';
-import { appDetail } from '../lib/appdetail';
 import { newestWithRun, sha7 } from '../lib/appstatus';
 import type { HomeApp, PendingApproval } from '../lib/home';
 import type { NeedsYouItem } from '../lib/needsyou';
 import { STATUS_WORDS, VERBS, approveVerb } from '../lib/words';
-import { AdoptLiveButton } from './DriftBanner';
+import { AdoptLiveButton, RedeployButton } from './DriftBanner';
 import type { SheetAction } from './DryRunSheet';
 import { agoShort } from './pipeline/stages';
 
@@ -52,67 +51,6 @@ export interface NeedsYouProps {
   now?: number;
 }
 
-/**
- * Redeploys the recorded release over drift, behind a confirm. DriftBanner keeps its own copy of
- * this button private; this one says the same thing with the row's shorter label.
- */
-function RedeployLiveButton({ app, driftEventId, onStarted }: { app: string; driftEventId: string; onStarted: (deployId: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<RefusalError | null>(null);
-
-  const close = (): void => {
-    setOpen(false);
-    setProblem(null);
-  };
-
-  async function confirm(): Promise<void> {
-    setBusy(true);
-    setProblem(null);
-    try {
-      const accepted = await appDetail.redeploy(app, driftEventId);
-      close();
-      onStarted(accepted.deployId);
-    } catch (error) {
-      setProblem(error instanceof RefusalError ? error : null);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Modal
-      open={open}
-      onOpenChange={(next) => {
-        if (next) setOpen(true);
-        else close();
-      }}
-      trigger={
-        <Button type="button" variant="secondary" size="sm">
-          Redeploy live
-        </Button>
-      }
-      title={`Redeploy ${app}'s recorded release`}
-      description="Starts a rollback to the recorded release, replacing what is running now. The drift is resolved when the agent next reports the recorded release running; until then, and if the rollback fails, it stays open and other deploys are refused."
-      footer={
-        <>
-          <Button type="button" variant="secondary" onClick={close}>
-            Cancel
-          </Button>
-          <Button type="button" variant="primary" loading={busy} onClick={() => void confirm()}>
-            Redeploy recorded release
-          </Button>
-        </>
-      }
-    >
-      {problem !== null ? (
-        <Alert tone="danger" title={problem.message} dynamic>
-          {problem.fix}
-        </Alert>
-      ) : null}
-    </Modal>
-  );
-}
 
 function SettingsLink({ children }: { children: string }) {
   return (
@@ -219,7 +157,7 @@ export function NeedsYou({
                 description={`Records what is running as ${item.app}'s release, so deploys are allowed again. Nothing on the host changes.`}
                 onAdopted={onChanged}
               />
-              <RedeployLiveButton app={item.app} driftEventId={item.driftId} onStarted={onDeployStarted} />
+              <RedeployButton app={item.app} driftEventId={item.driftId} onStarted={onDeployStarted} label="Redeploy live" size="sm" />
             </>
           ) : null,
         };

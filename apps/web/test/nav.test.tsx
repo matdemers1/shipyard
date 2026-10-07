@@ -196,11 +196,19 @@ describe('retired routes', () => {
     expect(await screen.findByText('There is no page at this address')).toBeInTheDocument();
   });
 
-  it('still refuses a viewer on a section that needs the deployer role', async () => {
+  it('still keeps the users list from a viewer, who gets their own account there instead', async () => {
     mockFetch({ 'GET /api/auth/me': meReply('viewer') });
     renderAt('/users');
-    expect(await screen.findByText('This page needs the deployer role')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Your account' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Users' })).not.toBeInTheDocument();
     expect(window.location.pathname).toBe('/settings/people');
+  });
+
+  it('still refuses a viewer on a section that needs the deployer role', async () => {
+    mockFetch({ 'GET /api/auth/me': meReply('viewer') });
+    renderAt('/system');
+    expect(await screen.findByText('This page needs the deployer role')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/settings/host');
   });
 
   it('opens Settings on People for a viewer, whose account is there, not on a refusal', async () => {

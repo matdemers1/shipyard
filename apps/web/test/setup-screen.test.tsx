@@ -84,7 +84,7 @@ describe('first-run setup', () => {
     expect(code).toHaveAttribute('autocomplete', 'one-time-code');
     await user.type(code, '123456');
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Apps' })).toBeInTheDocument();
     expect(calls.find((c) => c.path === '/api/setup/start')?.body).toEqual({
       email: 'first@example.com',
       displayName: 'First Admin',

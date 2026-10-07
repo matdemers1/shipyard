@@ -103,14 +103,19 @@ export function AdoptLiveButton({ app, driftEventId, description, onAdopted }: A
   );
 }
 
-function RedeployButton({
+/** Redeploys the recorded release over drift, behind a confirm. Needs you shows it with a shorter label. */
+export function RedeployButton({
   app,
   driftEventId,
   onStarted,
+  label = 'Redeploy recorded release',
+  size,
 }: {
   app: string;
   driftEventId: string;
   onStarted: (deployId: string) => void;
+  label?: string;
+  size?: 'sm' | 'md';
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -143,8 +148,8 @@ function RedeployButton({
         else close();
       }}
       trigger={
-        <Button type="button" variant="secondary">
-          Redeploy recorded release
+        <Button type="button" variant="secondary" {...(size === undefined ? {} : { size })}>
+          {label}
         </Button>
       }
       title={`Redeploy ${app}'s recorded release`}

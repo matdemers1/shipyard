@@ -34,7 +34,7 @@ function input(overrides: Partial<StatusInput> = {}): StatusInput {
 describe('appStatus', () => {
   it('reads frozen over ready, offers no deploy, and still names what would deploy', () => {
     const s = appStatus(input({ frozen: true, commits: commits([commit('a', 'success')], { ahead: 1 }) }));
-    expect(s).toMatchObject({ kind: 'frozen', label: 'Frozen', tone: 'warning', shipSha: null });
+    expect(s).toMatchObject({ kind: 'frozen', label: 'Frozen', tone: 'neutral', shipSha: null });
     expect(s.detail).toMatch(new RegExp(`^${sha('a').slice(0, 7)} is ready to deploy once it is unfrozen`));
   });
 

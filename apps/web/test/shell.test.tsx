@@ -43,10 +43,11 @@ describe('role-aware navigation', () => {
     });
   });
 
-  it('refuses a viewer who types the tokens address', async () => {
+  it('shows a viewer who types the tokens address the connect steps but no token list', async () => {
     mockFetch({ 'GET /api/auth/me': meReply('viewer') });
     renderAt('/tokens');
-    expect(await screen.findByText('This page needs the deployer role')).toBeInTheDocument();
+    expect(await screen.findByText('A deployer makes the token')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /^Tokens/ })).not.toBeInTheDocument();
   });
 
   it('useCan() is false when nobody is signed in', async () => {
@@ -91,7 +92,8 @@ describe('session', () => {
     });
     const user = userEvent.setup();
     renderAt('/account');
-    await screen.findByRole('heading', { level: 1, name: 'Account' });
+    await screen.findByRole('heading', { level: 1, name: 'People' });
+    await screen.findByRole('heading', { name: 'Your account' });
     expect(screen.getByText('deployer')).toBeInTheDocument();
     expect(screen.getByText('https://auth.d3cloud.io')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Sign out' }));

@@ -1,4 +1,5 @@
 import { Alert, Button, FormField, Input, Modal, Stack, Textarea } from '@d3cloud/ui';
+import { Snowflake } from 'lucide-react';
 import { useState, type SyntheticEvent } from 'react';
 import { RefusalError } from '../lib/api';
 import { FREEZE_REASON_MAX, freeze, freezeReasonIsValid } from '../lib/appdetail';
@@ -73,7 +74,8 @@ export function FreezeSheet({ app, onFrozen }: FreezeSheetProps) {
         else close();
       }}
       trigger={
-        <Button type="button" variant="danger">
+        // A one-tap secondary, not a filled red button that outranks Deploy (SHP-D-094, SHP-DA-006).
+        <Button type="button" variant="secondary" icon={<Snowflake />}>
           {VERBS.freeze}
         </Button>
       }
@@ -152,7 +154,8 @@ export function UnfreezeButton({ app, onCleared }: UnfreezeButtonProps) {
         else close();
       }}
       trigger={
-        <Button type="button" variant="secondary">
+        // While frozen, unfreezing is the page's one primary action (SHP-D-094).
+        <Button type="button" variant="primary" icon={<Snowflake />}>
           {VERBS.unfreeze}
         </Button>
       }

@@ -34,7 +34,7 @@ describe('sign-in', () => {
     expect(code).toHaveAttribute('inputmode', 'numeric');
     await user.type(code, '123456');
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Apps' })).toBeInTheDocument();
     expect(calls.find((c) => c.path === '/api/auth/login')?.body).toEqual({
       email: 'matt@example.com',
       password: 'hunter2hunter2',
@@ -56,7 +56,7 @@ describe('sign-in', () => {
     renderAt('/timeline');
     await fillPassword(user);
     await user.type(await screen.findByLabelText('Authenticator code'), '654321');
-    expect(await screen.findByRole('heading', { level: 1, name: 'Timeline' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Activity' })).toBeInTheDocument();
   });
 
   it('shows the refusal message and its fix for wrong credentials, and stays on sign-in', async () => {
@@ -168,7 +168,7 @@ describe('sign-in', () => {
     renderAt('/');
     await fillPassword(user);
     await user.type(await screen.findByLabelText('Authenticator code'), '123456');
-    expect(await screen.findByRole('heading', { level: 1, name: 'Home' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Apps' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Sign in with D3 Auth' })).not.toBeInTheDocument();
   });
 

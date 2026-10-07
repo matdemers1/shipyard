@@ -179,6 +179,6 @@ describe('Home when GitHub is not answering', () => {
     window.history.replaceState(null, '', '/');
     render(<App />);
     expect(await screen.findByText("Shipyard can't see new commits on GitHub", {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Check GitHub access' })).toHaveAttribute('href', '/settings#github');
+    expect(screen.getByRole('link', { name: 'Check GitHub access' })).toHaveAttribute('href', '/settings/integrations#github');
   });
 });

@@ -177,7 +177,7 @@ export function Home() {
               ? {
                   actions: (
                     <Link asChild>
-                      <RouterLink to="/settings#github">Check GitHub access</RouterLink>
+                      <RouterLink to="/settings/integrations#github">Check GitHub access</RouterLink>
                     </Link>
                   ),
                 }

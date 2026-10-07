@@ -190,7 +190,9 @@ export function appStatus(input: StatusInput): AppStatus {
   if (approval !== undefined) {
     return {
       kind: 'approval',
-      tone: 'attention',
+      // Approval and drift wait on a person, so they share the warning tone the board gives them;
+      // attention stays for ready and in flight, danger for what failed (SHP-P-13 design, D-086).
+      tone: 'warning',
       label: STATUS_WORDS.waitingForApproval,
       headline: `Waiting for approval to deploy ${sha7(approval.sha)}`,
       detail: `${approval.requester.label} asked to deploy it. A deployer has to review and approve before anything changes.`,
@@ -201,7 +203,7 @@ export function appStatus(input: StatusInput): AppStatus {
   if (input.drift !== null && input.drift !== undefined) {
     return {
       kind: 'drift',
-      tone: 'danger',
+      tone: 'warning',
       label: STATUS_WORDS.drift,
       headline: 'Running something Shipyard did not deploy',
       detail:
@@ -217,7 +219,8 @@ export function appStatus(input: StatusInput): AppStatus {
     const waiting = ship !== null && ship !== liveSha && entries.some((c) => c.sha === ship);
     return {
       kind: 'frozen',
-      tone: 'warning',
+      // Frozen is a deliberate hold, not a problem: neutral, with the snowflake beside it.
+      tone: 'neutral',
       label: STATUS_WORDS.frozen,
       headline: 'Frozen — new deploys are refused',
       detail: `${waiting ? `${sha7(ship)} is ready to deploy once it is unfrozen. ` : ''}Rollbacks and restores still work while it is frozen.`,

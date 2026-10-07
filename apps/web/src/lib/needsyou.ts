@@ -83,6 +83,10 @@ export function hostWarnings(status: SystemStatus | null): string[] {
   if (agent !== null && agent.patWarning === 'expiring') lines.push('The GitHub token expires soon');
   if (agent !== null && agent.unstartedTargets > 0) lines.push('The agent is not starting the work it is given');
   if (status.outbox.unsentOverHour > 0) lines.push('Deploys are waiting to reach Foreman');
+  // A failed self-backup or restore drill turns its Host row red, so it lights the footer and the
+  // Host dot too (SHP-T-13.6 verification note). "Never run" stays a row-only hint.
+  if (status.backups.lastBackup !== null && !status.backups.lastBackup.ok) lines.push("Shipyard's nightly backup failed");
+  if (status.backups.lastDrill !== null && !status.backups.lastDrill.ok) lines.push('The restore drill failed');
   return lines;
 }
 

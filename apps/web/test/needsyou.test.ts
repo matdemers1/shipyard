@@ -59,6 +59,7 @@ function status(agent: Partial<NonNullable<SystemStatus['agent']>> | null, unsen
             ...agent,
           },
     outbox: { unsent: unsentOverHour, unsentOverHour, oldestUnsentAt: null, lastError: null },
+    backups: { lastBackup: null, lastDrill: null },
   } as SystemStatus;
 }
 
@@ -119,6 +120,16 @@ describe('hostWarnings', () => {
     const lines = hostWarnings(status({ stale: true, patWarning: 'expired', unstartedTargets: 2 }, 3));
     expect(lines).toHaveLength(4);
     expect(lines[0]).toBe('The agent has stopped reporting');
+  });
+
+  it('counts a failed nightly backup or restore drill, but not one that never ran', () => {
+    const failed = { at: new Date().toISOString(), ok: false, file: null, error: 'pg_dump exited 1' };
+    const base = status({});
+    expect(hostWarnings({ ...base, backups: { lastBackup: failed, lastDrill: failed } } as SystemStatus)).toEqual([
+      "Shipyard's nightly backup failed",
+      'The restore drill failed',
+    ]);
+    expect(hostWarnings(base)).toEqual([]);
   });
 });
 

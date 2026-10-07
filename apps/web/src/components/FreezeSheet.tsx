@@ -1,7 +1,9 @@
-import { Alert, Button, FormField, Input, Modal, Stack, Textarea } from '@d3cloud/ui';
-import { useState, type SyntheticEvent } from 'react';
+import { Alert, Button, FormActions, FormField, Input, Modal, Stack, Textarea } from '@d3cloud/ui';
+import { Snowflake } from 'lucide-react';
+import { useId, useState, type SyntheticEvent } from 'react';
 import { RefusalError } from '../lib/api';
 import { FREEZE_REASON_MAX, freeze, freezeReasonIsValid } from '../lib/appdetail';
+import { VERBS } from '../lib/words';
 
 /**
  * Freeze and unfreeze (SHP-T-5.1, SHP-REQ-077, SHP-D-049). Freezing needs a reason, shown in every
@@ -40,6 +42,7 @@ export function FreezeSheet({ app, onFrozen }: FreezeSheetProps) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
   const valid = freezeReasonIsValid(reason);
+  const formId = useId();
 
   const close = (): void => {
     setOpen(false);
@@ -72,14 +75,26 @@ export function FreezeSheet({ app, onFrozen }: FreezeSheetProps) {
         else close();
       }}
       trigger={
-        <Button type="button" variant="danger">
-          Freeze
+        // A one-tap secondary, not a filled red button that outranks Deploy (SHP-D-094, SHP-DA-006).
+        <Button type="button" variant="secondary" icon={<Snowflake />}>
+          {VERBS.freeze}
         </Button>
       }
-      title={`Freeze ${app}`}
+      title={`${VERBS.freeze} ${app}`}
       description="Refuses new deploys until this is cleared. Rollbacks and restores are still allowed."
+      // The action rides the sheet's footer, pinned on a phone while the form scrolls (SHP-REQ-173).
+      footer={
+        <FormActions>
+          <Button type="button" variant="secondary" onClick={close}>
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} variant="danger" disabled={!valid} loading={busy}>
+            {VERBS.freeze} {app}
+          </Button>
+        </FormActions>
+      }
     >
-      <Stack as="form" gap="16" onSubmit={(e) => void submit(e)} noValidate>
+      <Stack as="form" id={formId} gap="16" onSubmit={(e) => void submit(e)} noValidate>
         <FormField
           label="Reason"
           help={`Shown in every deploy refusal while ${app} is frozen. Up to ${String(FREEZE_REASON_MAX)} characters.`}
@@ -103,11 +118,6 @@ export function FreezeSheet({ app, onFrozen }: FreezeSheetProps) {
             }}
           />
         </FormField>
-        <Stack gap="8" align="end">
-          <Button type="submit" variant="danger" disabled={!valid} loading={busy}>
-            Freeze {app}
-          </Button>
-        </Stack>
       </Stack>
     </Modal>
   );
@@ -151,11 +161,12 @@ export function UnfreezeButton({ app, onCleared }: UnfreezeButtonProps) {
         else close();
       }}
       trigger={
-        <Button type="button" variant="secondary">
-          Unfreeze
+        // While frozen, unfreezing is the page's one primary action (SHP-D-094).
+        <Button type="button" variant="primary" icon={<Snowflake />}>
+          {VERBS.unfreeze}
         </Button>
       }
-      title={`Unfreeze ${app}`}
+      title={`${VERBS.unfreeze} ${app}`}
       description="Deploys are allowed again once this is cleared."
       footer={
         <>
@@ -163,7 +174,7 @@ export function UnfreezeButton({ app, onCleared }: UnfreezeButtonProps) {
             Cancel
           </Button>
           <Button type="button" variant="primary" loading={busy} onClick={() => void confirm()}>
-            Unfreeze {app}
+            {VERBS.unfreeze} {app}
           </Button>
         </>
       }

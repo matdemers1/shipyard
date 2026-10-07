@@ -1,6 +1,7 @@
 import type { BuildStage, BuildState, BuildTrigger, Refusal } from '@shipyard/schema';
 import { useEffect, useState } from 'react';
 import { RefusalError, request } from './api';
+import type { StatusTone } from './appstatus';
 
 /**
  * Builds (SHP-T-7.12, SHP-REQ-142, SHP-REQ-143): the shapes `/api/builds` answers with, the calls,
@@ -116,18 +117,13 @@ export function isTerminalBuild(state: BuildState): boolean {
   return TERMINAL_BUILD_STATES.includes(state);
 }
 
-export const BUILD_STATE_LABEL: Record<BuildState, string> = {
-  queued: 'Queued',
-  running: 'Running',
-  succeeded: 'Succeeded',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
-  refused: 'Refused',
-};
-
-/** Tone backs the text, never replaces it (WCAG 1.4.1). */
-export function buildStateTone(state: BuildState): 'neutral' | 'attention' | 'danger' {
+/**
+ * Tone backs the text, never replaces it (WCAG 1.4.1). One of the library's four tones: a running
+ * build is `attention` so its badge is filled in light mode, a cancelled one `warning` (SHP-T-13.2).
+ */
+export function buildStateTone(state: BuildState): StatusTone {
   if (state === 'failed' || state === 'refused') return 'danger';
+  if (state === 'cancelled') return 'warning';
   if (state === 'running') return 'attention';
   return 'neutral';
 }

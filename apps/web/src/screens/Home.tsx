@@ -1,81 +1,23 @@
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  CardBody,
-  CardTitle,
-  Cluster,
-  EmptyState,
-  Grid,
-  Link,
-  Page,
-  PageHeader,
-  Section,
-  Skeleton,
-  Stack,
-} from '@d3cloud/ui';
+import { Alert, Button, Card, EmptyState, Link, Page, PageHeader, Section, Skeleton, Stack } from '@d3cloud/ui';
 import type { GroupSummary } from '@shipyard/schema';
 import { useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
-import { AppCard } from '../components/AppCard';
-import { ApprovalsBanner } from '../components/ApprovalsBanner';
+import { AppRow } from '../components/AppRow';
 import { DryRunSheet, type SheetAction } from '../components/DryRunSheet';
 import { GroupDeploySheet } from '../components/GroupDeploySheet';
+import { NeedsYou } from '../components/NeedsYou';
+import { STAGE_ORDER } from '../components/pipeline';
 import { RollAllSheet } from '../components/RollAllSheet';
-import { appStatus, statusRank, type AppStatus, type StatusKind } from '../lib/appstatus';
+import { appStatus, type AppStatus } from '../lib/appstatus';
 import { useCan, useIsAdmin } from '../lib/auth';
 import { fetchGroups } from '../lib/groups';
 import { useHomeData, type HomeApp, type PendingApproval } from '../lib/home';
+import { needsYouFrom } from '../lib/needsyou';
 import { MIN_ROLL_ALL, rolloutCandidates } from '../lib/rollouts';
+import { deployAllReadyVerb } from '../lib/words';
 
 /** How to add an app: a manifest on the agent's host (docs/runbooks/onboard-app.md). */
 const ONBOARD_RUNBOOK_URL = 'https://github.com/matdemers1/shipyard/blob/main/docs/runbooks/onboard-app.md';
-
-/** The overview line's buckets: what needs you, what is moving, what is fine. */
-const SUMMARY: { label: string; kinds: StatusKind[] }[] = [
-  { label: 'ready to ship', kinds: ['ready'] },
-  { label: 'need attention', kinds: ['approval', 'drift', 'ci-failed'] },
-  { label: 'in progress', kinds: ['deploying', 'ci-running'] },
-  { label: 'frozen', kinds: ['frozen'] },
-  { label: 'nothing to ship', kinds: ['up-to-date', 'no-images'] },
-];
-
-/** What each status means, for the "What do these mean?" disclosure. */
-const GLOSSARY: { term: string; meaning: string }[] = [
-  {
-    term: 'Ready to ship',
-    meaning: 'A commit ahead of live has passed CI and its images are built. Ship deploys it and everything before it.',
-  },
-  {
-    term: 'Nothing to ship',
-    meaning:
-      'There are commits since live, but none has images. GitHub builds images once per push, for the newest commit in it; the others ride along when that one ships.',
-  },
-  { term: 'Building', meaning: 'CI is running on the newest push. When it passes, that commit becomes shippable.' },
-  { term: 'CI failed', meaning: 'The newest push failed CI, so no images were published. Fix it and push again.' },
-  {
-    term: 'Built by Shipyard',
-    meaning:
-      'An app whose manifest says build: shipyard gets its images from Shipyard’s own builds instead of GitHub CI, so its statuses read “Shipyard is building” or “Build failed”, and each commit links to its build.',
-  },
-  { term: 'Needs approval', meaning: 'Someone asked to deploy an app that requires a deployer to approve first.' },
-  {
-    term: 'Drift',
-    meaning: 'What is running on the host is not what Shipyard deployed. Resolve it on the app page before the next deploy.',
-  },
-  {
-    term: 'Frozen',
-    meaning: 'Someone froze the app, so every new deploy is refused until it is unfrozen on the app page. Rollbacks and restores still work.',
-  },
-  { term: 'Deploying', meaning: 'A deploy is running: backup, pull, swap, health check, then a soak before it counts as done.' },
-  { term: 'Up to date', meaning: 'Live is the newest commit on the default branch.' },
-  {
-    term: 'Roll all',
-    meaning:
-      'Ships every app that is ready, one at a time: each deploys and soaks before the next starts, any failure stops the rest, and Shipyard itself always goes last.',
-  },
-];
 
 interface Row {
   app: HomeApp;
@@ -83,13 +25,20 @@ interface Row {
   approval: PendingApproval | undefined;
 }
 
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${String(n)} ${n === 1 ? one : many}`;
+}
+
 /**
- * S2 Home (SHP-D-023, SHP-T-3.10): an overview line, the approvals and stale-agent banners, then
- * one card per app — what needs you first — and the groups.
+ * Apps (SHP-T-13.8, SHP-REQ-155, SHP-D-089): what needs a person first — approvals, drift, CI
+ * failed on the newest push, host warnings — each with its action inline, then every app as one
+ * row in alphabetical order. The order never depends on state, so a refresh never moves a row out
+ * from under a thumb. The data is the shell's shared snapshot: the Needs you rows here and the
+ * nav's Apps badge are `needsYouItems` over the same answer.
  */
 export function Home() {
-  const { status, apps, approvals, noAgent, noApps, agentStale, error, refresh } = useHomeData();
   const canDeploy = useCan();
+  const { status, apps, approvals, system, noAgent, noApps, error, refresh } = useHomeData(canDeploy);
   const isAdmin = useIsAdmin();
   const navigate = useNavigate();
   const [action, setAction] = useState<SheetAction | null>(null);
@@ -106,10 +55,14 @@ export function Home() {
           const approval = approvals.find((a) => a.app === app.name);
           return { app, approval, status: appStatus({ ...app, approval }) };
         })
-        .sort((a, b) => statusRank(a.status.kind) - statusRank(b.status.kind) || a.app.name.localeCompare(b.app.name)),
+        .sort((a, b) => a.app.name.localeCompare(b.app.name)),
     [apps, approvals],
   );
+  const needsYou = useMemo(() => needsYouFrom({ apps, approvals, system }), [apps, approvals, system]);
   const rollAll = useMemo(() => rolloutCandidates(rows), [rows]);
+  const count = (...kinds: AppStatus['kind'][]) => rows.filter((r) => kinds.includes(r.status.kind)).length;
+  const readyCount = count('ready');
+  const upToDateCount = count('up-to-date');
 
   const openSheet = (next: SheetAction) => {
     setAction(next);
@@ -131,28 +84,38 @@ export function Home() {
     };
   }, [status]);
 
-  const openGroupSheet = (group: GroupSummary) => {
-    setSelectedGroup(group);
-    setGroupSheetOpen(true);
-  };
+  const summary =
+    status === 'ready' && rows.length > 0
+      ? [
+          plural(rows.length, 'app'),
+          `${String(readyCount)} ready`,
+          `${String(count('deploying', 'ci-running'))} in flight`,
+          `${String(needsYou.count)} need you`,
+        ].join(' · ')
+      : undefined;
 
   return (
     <Page>
       <Stack gap="16">
-        <PageHeader title="Home" description="Every app on the host: what is live, what is waiting, and what you can ship." />
-
-        {status === 'ready' && rows.length > 0 ? (
-          <ul className="shp-summary" aria-label="Overview">
-            {SUMMARY.map((bucket) => {
-              const n = rows.filter((r) => bucket.kinds.includes(r.status.kind)).length;
-              return n === 0 ? null : (
-                <li key={bucket.label}>
-                  <strong>{n}</strong> {bucket.label}
-                </li>
-              );
-            })}
-          </ul>
-        ) : null}
+        <PageHeader
+          title="Apps"
+          {...(summary === undefined ? {} : { description: summary })}
+          {...(canDeploy && rollAll.length >= MIN_ROLL_ALL
+            ? {
+                actions: (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      setRollAllOpen(true);
+                    }}
+                  >
+                    {deployAllReadyVerb(rollAll.length)}
+                  </Button>
+                ),
+              }
+            : {})}
+        />
 
         {status === 'error' ? (
           <Alert tone="danger" title={error?.message ?? 'Shipyard is not answering.'}>
@@ -163,19 +126,16 @@ export function Home() {
         ) : null}
 
         {status === 'loading' ? (
-          <span role="status" className="shp-visually-hidden">
-            Loading apps
-          </span>
-        ) : null}
-
-        {status === 'loading' ? (
-          <Grid as="ul" minItemWidth="sm" aria-hidden="true">
-            {[0, 1, 2].map((i) => (
-              <li key={i}>
-                <Skeleton variant="block" height={140} />
-              </li>
-            ))}
-          </Grid>
+          <>
+            <span role="status" className="shp-visually-hidden">
+              Loading apps
+            </span>
+            <Stack gap="8" aria-hidden="true">
+              {[0, 1, 2].map((i) => (
+                <Skeleton key={i} variant="block" height={56} />
+              ))}
+            </Stack>
+          </>
         ) : null}
 
         {status === 'ready' && noAgent ? (
@@ -209,12 +169,6 @@ export function Home() {
           </EmptyState>
         ) : null}
 
-        {status === 'ready' && agentStale ? (
-          <Alert tone="warning" title="No agent has reported recently">
-            The agent has not heartbeated in over 5 minutes. Live SHAs and drift here may be out of date.
-          </Alert>
-        ) : null}
-
         {status === 'ready' && rows.some((r) => r.status.kind === 'github-unavailable') ? (
           <Alert
             tone="warning"
@@ -223,7 +177,7 @@ export function Home() {
               ? {
                   actions: (
                     <Link asChild>
-                      <RouterLink to="/settings#github">Check GitHub access</RouterLink>
+                      <RouterLink to="/settings/integrations#github">Check GitHub access</RouterLink>
                     </Link>
                   ),
                 }
@@ -235,96 +189,70 @@ export function Home() {
           </Alert>
         ) : null}
 
-        {status === 'ready' ? <ApprovalsBanner approvals={approvals} canDeny={canDeploy} onReview={openSheet} onDenied={refresh} /> : null}
+        {status === 'ready' && (rows.length > 0 || needsYou.count > 0) ? (
+          <NeedsYou
+            items={needsYou.items}
+            apps={apps}
+            approvals={approvals}
+            system={system}
+            canAct={canDeploy}
+            onReview={openSheet}
+            onChanged={refresh}
+            onDeployStarted={(deployId) => {
+              void navigate(`/deploys/${deployId}`);
+            }}
+            upToDate={upToDateCount}
+            ready={readyCount}
+          />
+        ) : null}
 
         {status === 'ready' && rows.length > 0 ? (
-          <Section
-            title="Apps"
-            surface="plain"
-            {...(canDeploy && rollAll.length >= MIN_ROLL_ALL
-              ? {
-                  actions: (
-                    <Button
-                      type="button"
-                      variant="primary"
-                      size="sm"
-                      onClick={() => {
-                        setRollAllOpen(true);
-                      }}
-                    >
-                      {`Roll all ${String(rollAll.length)}`}
-                    </Button>
-                  ),
-                }
-              : {})}
-          >
-            <Grid as="ul" minItemWidth="sm">
-              {rows.map((row) => (
-                <AppCard
-                  key={row.app.name}
-                  app={row.app}
-                  status={row.status}
-                  canDeploy={canDeploy}
-                  onShip={openSheet}
-                  approval={row.approval}
-                />
-              ))}
-            </Grid>
+          <Section title="All apps" surface="plain">
+            <Card padding="sm">
+              <ul className="shp-app-rows" aria-label="All apps">
+                {rows.map((row) => (
+                  <AppRow
+                    key={row.app.name}
+                    app={row.app}
+                    status={row.status}
+                    approval={row.approval}
+                    groups={groups}
+                    canDeploy={canDeploy}
+                    onAction={openSheet}
+                  />
+                ))}
+              </ul>
+            </Card>
+            <p className="shp-lane-legend">Lane: {STAGE_ORDER.map((s) => s.label).join(' · ')}</p>
           </Section>
         ) : null}
 
         {status === 'ready' && groups.length > 0 ? (
-          <Section
-            title="Groups"
-            surface="plain"
-            description="Apps that deploy together at one SHA. The canary deploys and soaks first; the rest follow with the same images, and any failure stops the group."
-          >
-            <Grid as="ul" minItemWidth="sm">
-              {groups.map((group) => (
-                <Card key={group.name} as="li" padding="md">
-                  <CardBody>
-                    <Stack gap="8">
-                      <CardTitle as="h3">{group.name}</CardTitle>
-                      <Cluster gap="4">
-                        {group.members.map((member) => (
-                          <Badge key={member} tone={member === group.canary ? 'attention' : 'neutral'}>
-                            {member}
-                            {member === group.canary ? ' · canary' : ''}
-                          </Badge>
-                        ))}
-                      </Cluster>
-                      {canDeploy ? (
-                        <Button
-                          type="button"
-                          variant="primary"
-                          size="sm"
-                          onClick={() => {
-                            openGroupSheet(group);
-                          }}
-                        >
-                          Deploy group
-                        </Button>
-                      ) : null}
-                    </Stack>
-                  </CardBody>
-                </Card>
-              ))}
-            </Grid>
-          </Section>
-        ) : null}
-
-        {status === 'ready' && rows.length > 0 ? (
-          <details className="shp-disclosure">
-            <summary>What do these statuses mean?</summary>
-            <dl className="shp-glossary">
-              {GLOSSARY.map((g) => (
-                <div key={g.term}>
-                  <dt>{g.term}</dt>
-                  <dd>{g.meaning}</dd>
-                </div>
-              ))}
-            </dl>
-          </details>
+          // Groups show on their members' rows; this line keeps the group deploy one tap away.
+          <ul className="shp-groups-line" aria-label="Groups">
+            {groups.map((group) => (
+              <li key={group.name}>
+                <span>
+                  <strong>{group.name}</strong> group ·{' '}
+                  {group.members.map((m) => (m === group.canary ? `${m} (canary)` : m)).join(', ')}
+                </span>
+                {canDeploy ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    aria-label={`Deploy group ${group.name}`}
+                    onClick={() => {
+                      setSelectedGroup(group);
+                      setGroupSheetOpen(true);
+                    }}
+                  >
+                    Deploy group
+                  </Button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         ) : null}
 
         <GroupDeploySheet

@@ -6,10 +6,10 @@ import {
   DescriptionItem,
   DescriptionList,
   FormActions,
-  Page,
-  PageHeader,
   Section,
+  SettingsRow,
   Stack,
+  ThemeSwitch,
 } from '@d3cloud/ui';
 import { LogIn, LogOut, Smartphone } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
@@ -18,9 +18,12 @@ import { relativeTime } from '../lib/admin';
 import { canChangeState, useAuth, useMe } from '../lib/auth';
 
 /**
- * S14 Account: who you are, your role, the D3 Auth identity linked to this account, and sign-out.
+ * Settings › People › Your account (S14): who you are, your role, the D3 Auth identity linked to
+ * this account, where you are signed in, the theme, and sign-out. Open to every signed-in role.
  * Linking goes through the same OIDC start route: started while signed in, it links rather than
- * signs in (the server decides; accounts are never matched by email).
+ * signs in (the server decides; accounts are never matched by email). Password and authenticator
+ * are set when the account is made (an invite, or first-run setup); there is no screen that
+ * changes them yet.
  */
 export function Account() {
   const me = useMe();
@@ -47,10 +50,9 @@ export function Account() {
   const linked = me.identities;
 
   return (
-    <Page width="narrow">
-      <Stack gap="24">
-        <PageHeader title="Account" />
-        <Section title="You">
+    <Section surface="plain" title="Your account" description="Yours alone, whatever your role.">
+      <Stack gap="16">
+        <Section headingLevel={3} title="You">
           <DescriptionList>
             <DescriptionItem term="Name">{me.displayName}</DescriptionItem>
             <DescriptionItem term="Email">{me.email}</DescriptionItem>
@@ -61,7 +63,8 @@ export function Account() {
           </DescriptionList>
         </Section>
         <Section
-          title="Sign in with D3 Auth"
+          headingLevel={3}
+          title="Linked D3 Auth identity"
           description={
             linked.length > 0
               ? 'This account can also be signed in to through D3 Auth.'
@@ -95,7 +98,10 @@ export function Account() {
           </Stack>
         </Section>
         <SignedIn />
-        <Section title="Session">
+        <Section headingLevel={3} title="Appearance">
+          <SettingsRow title="Theme" description="This browser only." control={<ThemeSwitch label="Theme" size="sm" />} />
+        </Section>
+        <Section headingLevel={3} title="Session">
           <FormActions align="start">
             <Button
               type="button"
@@ -112,7 +118,7 @@ export function Account() {
           </FormActions>
         </Section>
       </Stack>
-    </Page>
+    </Section>
   );
 }
 
@@ -141,7 +147,7 @@ function SignedIn() {
   useEffect(load, [load]);
 
   return (
-    <Section title="Signed in" description="Everywhere this account is signed in. End any you don’t recognise.">
+    <Section headingLevel={3} title="Signed in" description="Everywhere this account is signed in. End any you don’t recognise.">
       <DataList aria-label="Signed-in sessions" empty="Only here.">
         {(sessions ?? []).map((s) => (
           <DataListRow

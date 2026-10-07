@@ -211,6 +211,14 @@ describe('rollout: one app at a time, each at its own SHA, Shipyard last (SHP-RE
     expect(deploys.map((d) => d.id)).toEqual(deployIds);
     expect(deploys[1]?.requesterLabel).toMatch(/\(console\) · roll all 2\/4$/);
 
+    // The timeline names the rollout and each member's place in it, so Activity can group them (SHP-T-13.13).
+    const timeline = await request(app).get('/api/deploys/timeline').set('Cookie', cookie);
+    const members = (timeline.body as { items: { deployId: string; rolloutId: string | null; rolloutPosition: number | null }[] }).items
+      .filter((i) => deployIds.includes(i.deployId))
+      .map((i) => [i.rolloutId, i.rolloutPosition])
+      .sort((a, b) => Number(a[1]) - Number(b[1]));
+    expect(members).toEqual([[rolloutId, 0], [rolloutId, 1], [rolloutId, 2], [rolloutId, 3]]);
+
     // One member at a time, in order, each with its own SHA — and nothing more while one runs,
     // through every step up to and including its soak.
     for (const [name, sha] of [

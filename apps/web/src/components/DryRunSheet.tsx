@@ -1,20 +1,45 @@
-import { Alert, Badge, Button, DataList, DataListRow, DescriptionItem, DescriptionList, Modal, Spinner } from '@d3cloud/ui';
+import {
+  Alert,
+  Badge,
+  Button,
+  Cluster,
+  DataList,
+  DataListRow,
+  DescriptionItem,
+  DescriptionList,
+  Modal,
+  Section,
+  Spinner,
+  Stack,
+  StatusDot,
+} from '@d3cloud/ui';
 import type { DeployStatus } from '@shipyard/schema';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useCan, useMe } from '../lib/auth';
 import { RefusalError } from '../lib/api';
 import { getCommitsTo } from '../lib/changelog';
+import { shortSha } from '../lib/home';
+import { checkName, deployVerb } from '../lib/words';
+import { PLANNED_BY_KIND } from './pipeline/stages';
 import {
   approveDeploy,
+  askedWords,
+  checksSummary,
+  commitCi,
   commitsToShip,
   DRY_RUN_DEADLINE_SECONDS,
   dryRunTimeout,
+  failedFirst,
   getApp,
   hasContractMigration,
+  newestGreenInstead,
   pollDeployStatus,
+  primaryLabelFor,
   POLL_WAIT_SECONDS,
+  rideAlongWarnings,
   startDryRun,
   startReal,
+  subtitleFor,
   titleFor,
   type CommitsResponse,
 } from '../lib/dryrun';
@@ -51,11 +76,22 @@ function isTerminal(state: DeployStatus['state']): boolean {
 }
 
 /** The dry-run sheet (SHP-T-3.3, SHP-REQ-057, SHP-REQ-050, SHP-D-068). */
-export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunSheetProps) {
+export function DryRunSheet({ open, onOpenChange, action: requested, onStarted }: DryRunSheetProps) {
+  // The sheet can move to another SHA on its own ("Deploy <newest green> instead"), so it holds the
+  // action it is showing. A new action from the caller, or closing the sheet, puts it back.
+  const [action, setAction] = useState<SheetAction | null>(requested);
+  const [seenRequested, setSeenRequested] = useState<SheetAction | null>(requested);
+  if (requested !== seenRequested) {
+    setSeenRequested(requested);
+    setAction(requested);
+  } else if (!open && action !== requested) {
+    setAction(requested);
+  }
   const can = useCan();
   const me = useMe();
   const [phase, setPhase] = useState<DryRunPhase>({ kind: 'starting' });
   const [soakSeconds, setSoakSeconds] = useState<number | null>(null);
+  const [branch, setBranch] = useState<string | null>(null);
   const [commits, setCommits] = useState<CommitsResponse | null | 'loading'>('loading');
   const [confirmPhase, setConfirmPhase] = useState<ConfirmPhase>({ kind: 'idle' });
   const [elapsed, setElapsed] = useState(0);
@@ -68,6 +104,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
 
     setPhase({ kind: 'starting' });
     setSoakSeconds(null);
+    setBranch(null);
     setCommits('loading');
     setElapsed(0);
 
@@ -78,7 +115,7 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
       setElapsed(Math.floor((Date.now() - startedAt) / 1000));
     }, 1000);
     // A dry run that never finishes — a stale agent, or a server that does not answer — stops here
-    // with the reason, instead of spinning with Confirm disabled (SHP-DA-014).
+    // with the reason, instead of spinning with the primary button disabled (SHP-DA-014).
     let timedOut = false;
     const deadline = setTimeout(() => {
       timedOut = true;
@@ -87,10 +124,16 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
 
     void getApp(action.app)
       .then((app) => {
-        if (!stopped.current) setSoakSeconds(app.soakSeconds);
+        if (!stopped.current) {
+          setSoakSeconds(app.soakSeconds);
+          setBranch(app.defaultBranch ?? null);
+        }
       })
       .catch(() => {
-        if (!stopped.current) setSoakSeconds(null);
+        if (!stopped.current) {
+          setSoakSeconds(null);
+          setBranch(null);
+        }
       });
 
     void getCommitsTo(action.app, action.sha)
@@ -152,9 +195,17 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
   const gates = status?.gates ?? [];
   const failedGate = gates.find((g) => !g.pass);
   const ready = phase.kind === 'ready';
+  // The status once the agent has answered; null while it is still working.
+  const answered = phase.kind === 'ready' ? phase.status : null;
+  // The checks are one result, shown when the agent has answered — not row by row as it works.
+  const refused = answered !== null && (answered.refusal !== null || failedGate !== undefined);
   const nothingToShip = status !== null && status.sha === commitsLive(commits) && action.kind !== 'rollback';
   const contractWarning = status !== null && hasContractMigration(status);
-  const shipped = status !== null && commits !== null && commits !== 'loading' ? commitsToShip(commits, status.sha) : [];
+  const shipped = commits !== null && commits !== 'loading' ? commitsToShip(commits, action.sha) : [];
+  const rideAlong = rideAlongWarnings(shipped, action.sha);
+  const greenInstead = newestGreenInstead(commits, action, answered);
+  // An approval runs the same steps as the deploy it releases.
+  const steps = PLANNED_BY_KIND[action.kind === 'rollback' ? 'rollback' : 'deploy'];
 
   const confirmDisabled =
     !can ||
@@ -186,7 +237,13 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
       open={open}
       onOpenChange={onOpenChange}
       title={titleFor(action)}
-      description={`Target: ${action.sha.slice(0, 7)}`}
+      description={
+        // A rollback goes back to an earlier release: there is no list of commits ahead of live to
+        // count, so it says where it goes from and to (SHP-T-13.10 verification).
+        action.kind === 'rollback'
+          ? rollbackSubtitle(commitsLive(commits), action.sha)
+          : subtitleFor(commits, action.sha, shipped.length)
+      }
       size="lg"
       footer={
         <>
@@ -205,98 +262,170 @@ export function DryRunSheet({ open, onOpenChange, action, onStarted }: DryRunShe
               disabled={confirmDisabled}
               onClick={() => void onConfirm()}
             >
-              Confirm
+              {primaryLabelFor(action)}
             </Button>
           ) : null}
         </>
       }
     >
-      <DescriptionList>
-        <DescriptionItem term="Target SHA">
-          <code>{action.sha}</code>
-        </DescriptionItem>
+      <Stack gap="16">
         {action.kind === 'approve' ? (
-          <>
+          <DescriptionList>
             <DescriptionItem term="Requested by">{action.requester}</DescriptionItem>
             <DescriptionItem term="Approving as">{me?.displayName ?? me?.email ?? 'you'}</DescriptionItem>
-          </>
-        ) : (
-          <DescriptionItem term="Requested by">{me?.displayName ?? me?.email ?? 'you'}</DescriptionItem>
-        )}
-        <DescriptionItem term="Soak duration" numeric>
-          {soakSeconds === null ? '—' : `${String(soakSeconds)}s`}
-        </DescriptionItem>
-      </DescriptionList>
+          </DescriptionList>
+        ) : null}
 
-      {phase.kind === 'error' ? (
-        <Alert tone="danger" title={phase.error.message} dynamic>
-          {phase.error.fix}
-        </Alert>
-      ) : null}
+        {commits !== 'loading' && commits !== null
+          ? rideAlong.map((warning) => (
+              <Alert key={warning} tone="warning">
+                {warning}
+              </Alert>
+            ))
+          : null}
 
-      {phase.kind === 'starting' || phase.kind === 'polling' ? (
-        <p>
-          <Spinner size="sm" /> {checkingWords(phase)} · {String(elapsed)}s
-        </p>
-      ) : null}
-
-      {status !== null ? (
-        <>
-          {status.refusal !== null ? (
-            <Alert tone="danger" title={status.refusal.message} dynamic>
-              {status.refusal.fix}
-            </Alert>
-          ) : null}
-
-          {nothingToShip ? <Alert tone="info">Nothing to ship — live is {status.sha.slice(0, 7)}.</Alert> : null}
-
-          {commits === null ? (
-            <Alert tone="info">Commits unavailable.</Alert>
-          ) : commits === 'loading' ? null : (
+        {action.kind === 'rollback' ? null : commits === null ? (
+          <Alert tone="info">Commits unavailable.</Alert>
+        ) : commits === 'loading' ? null : (
+          <Section title="What deploys" surface="plain" headingLevel={3}>
             <DataList empty={<span>No commits to show.</span>}>
-              {shipped.map((c) => (
-                <DataListRow
-                  key={c.sha}
-                  title={c.message}
-                  description={c.sha.slice(0, 7)}
-                  meta={c.taskIds.map((id) => (
-                    <Badge key={id} size="sm">
-                      {id}
-                    </Badge>
-                  ))}
-                />
-              ))}
+              {shipped.map((c) => {
+                const ci = commitCi(c.ci, commits.source);
+                return (
+                  <DataListRow
+                    key={c.sha}
+                    leading={<code style={CODE_STYLE}>{shortSha(c.sha)}</code>}
+                    title={c.message}
+                    meta={
+                      <>
+                        {c.taskIds.map((id) => (
+                          <Badge key={id} size="sm">
+                            {id}
+                          </Badge>
+                        ))}
+                        <StatusDot tone={ci.tone} size="sm">
+                          {ci.words}
+                        </StatusDot>
+                      </>
+                    }
+                  />
+                );
+              })}
             </DataList>
-          )}
+          </Section>
+        )}
 
-          <DataList>
-            {gates.map((g) => (
-              <DataListRow
-                key={g.gate}
-                title={g.gate}
-                description={g.pass ? undefined : g.reason}
-                meta={<Badge tone={g.pass ? 'neutral' : 'danger'}>{g.pass ? 'passed' : 'failed'}</Badge>}
-              />
-            ))}
-          </DataList>
+        {phase.kind === 'error' ? (
+          <Alert tone="danger" title={phase.error.message} dynamic>
+            {phase.error.fix}
+          </Alert>
+        ) : null}
 
-          {contractWarning ? (
-            <Alert tone="warning" title="This release includes a data migration">
-              A release labelled <code>contract</code> is never auto-rolled back — a failed soak needs a confirmed,
-              human-initiated restore.
-            </Alert>
-          ) : null}
+        {phase.kind === 'starting' || phase.kind === 'polling' ? (
+          <p>
+            <Spinner size="sm" /> {checkingWords(phase)} · {String(elapsed)}s
+          </p>
+        ) : null}
 
-          {confirmPhase.kind === 'refused' ? (
-            <Alert tone="danger" title={confirmPhase.error.message} dynamic>
-              {confirmPhase.error.fix}
-            </Alert>
-          ) : null}
-        </>
-      ) : null}
+        {answered !== null ? (
+          <>
+            {answered.refusal !== null ? (
+              <Alert
+                tone="danger"
+                title={answered.refusal.message}
+                dynamic
+                actions={
+                  greenInstead !== null ? (
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setAction({ kind: 'deploy', app: action.app, sha: greenInstead });
+                      }}
+                    >
+                      {`${deployVerb(greenInstead)} instead`}
+                    </Button>
+                  ) : undefined
+                }
+              >
+                {answered.refusal.fix}
+              </Alert>
+            ) : null}
+
+            {nothingToShip ? <Alert tone="info">Nothing to deploy — live is {answered.sha.slice(0, 7)}.</Alert> : null}
+
+            {gates.length > 0 ? (
+              <Section
+                title="Checks"
+                surface="plain"
+                headingLevel={3}
+                description={`${checksSummary(gates) ?? ''} · Asked the agent · ${askedWords(answered.endedAt ?? answered.createdAt)}`}
+              >
+                <DataList>
+                  {failedFirst(gates).map((g) => (
+                    <DataListRow
+                      key={g.gate}
+                      title={checkName(g.gate, { branch })}
+                      description={g.reason}
+                      truncate={false}
+                      meta={
+                        <>
+                          <code style={CODE_STYLE}>{g.gate}</code>
+                          <StatusDot tone={g.pass ? 'neutral' : 'danger'} size="sm">
+                            {g.pass ? 'Passed' : 'Failed'}
+                          </StatusDot>
+                        </>
+                      }
+                    />
+                  ))}
+                </DataList>
+              </Section>
+            ) : null}
+          </>
+        ) : null}
+
+        {!refused ? (
+          <Section title="What happens" surface="plain" headingLevel={3}>
+            <Stack gap="8">
+              <Cluster as="ol" gap="8">
+                {steps.map((step, i) => (
+                  <li key={step.key}>
+                    {i > 0 ? <span aria-hidden="true">→ </span> : null}
+                    {step.key === 'soak' && soakSeconds !== null ? `${step.label} ${String(soakSeconds)}s` : step.label}
+                  </li>
+                ))}
+              </Cluster>
+              <span style={CODE_STYLE}>
+                {action.kind === 'rollback'
+                  ? 'Only the images change. Data is not restored.'
+                  : 'If check or soak fails, Shipyard rolls the images back. Data is not restored automatically.'}
+              </span>
+            </Stack>
+          </Section>
+        ) : null}
+
+        {answered !== null && contractWarning ? (
+          <Alert tone="warning" title="This release includes a data migration">
+            A release labelled <code>contract</code> is never auto-rolled back — a failed soak needs a confirmed,
+            human-initiated restore.
+          </Alert>
+        ) : null}
+
+        {confirmPhase.kind === 'refused' ? (
+          <Alert tone="danger" title={confirmPhase.error.message} dynamic>
+            {confirmPhase.error.fix}
+          </Alert>
+        ) : null}
+      </Stack>
     </Modal>
   );
 }
+
+/** Small, muted and monospace: the gate code and the short SHA, secondary to the words beside them. */
+const CODE_STYLE: CSSProperties = {
+  color: 'var(--color-fg-muted)',
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--text-13)',
+};
 
 /** What the sheet is waiting on, so a slow agent reads differently from a busy one. */
 function checkingWords(phase: DryRunPhase): string {
@@ -305,6 +434,10 @@ function checkingWords(phase: DryRunPhase): string {
     return 'Waiting for the agent to pick this up';
   }
   return 'The agent is running the checks';
+}
+
+function rollbackSubtitle(live: string | null, target: string): string {
+  return `${live === null ? 'Live' : shortSha(live)} → back to ${shortSha(target)}`;
 }
 
 function commitsLive(commits: CommitsResponse | null | 'loading'): string | null {

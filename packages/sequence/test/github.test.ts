@@ -162,6 +162,100 @@ describe('workflowRuns', () => {
   });
 });
 
+describe('workflowRuns run url and timings (SHP-T-13.4, SHP-ADR-007)', () => {
+  it('keeps the run page URL and its start and end from the fields GitHub already returns', async () => {
+    const adapter = createGitHubAdapter({ fetch: fetchFor('workflow-runs-success') });
+    const [run] = await adapter.workflowRuns(REPO, 'ci.yml', SUCCESS_SHA);
+    expect(run).toMatchObject({
+      id: 36070807013,
+      url: 'https://github.com/matdemers1/shipyard/actions/runs/36070807013',
+      startedAt: '2026-09-24T23:03:51Z',
+      completedAt: '2026-09-24T23:08:45Z',
+    });
+  });
+
+  it('has no end time while the run is still going, however recently GitHub touched it', async () => {
+    const adapter = createGitHubAdapter({ fetch: fetchFor('workflow-runs-in-progress') });
+    const [run] = await adapter.workflowRuns(REPO, 'ci.yml', SUCCESS_SHA);
+    expect(run?.status).toBe('in_progress');
+    expect(run?.completedAt).toBeNull();
+  });
+});
+
+function jsonFetch(body: unknown, status = 200): typeof fetch {
+  return vi.fn(() => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })));
+}
+
+describe('runJobs (SHP-T-13.4, SHP-REQ-157)', () => {
+  const jobsBody = {
+    total_count: 2,
+    jobs: [
+      {
+        id: 101,
+        name: 'lint',
+        status: 'completed',
+        conclusion: 'success',
+        started_at: '2026-09-24T23:03:55Z',
+        completed_at: '2026-09-24T23:04:40Z',
+        html_url: 'https://github.com/matdemers1/shipyard/actions/runs/7/job/101',
+        steps: [],
+      },
+      { id: 102, name: 'test', status: 'in_progress', conclusion: null, started_at: '2026-09-24T23:03:56Z', completed_at: null, html_url: null },
+    ],
+  };
+
+  it('asks for exactly this run id, 100 to a page, and maps each job', async () => {
+    const stub = jsonFetch(jobsBody);
+    const adapter = createGitHubAdapter({ fetch: stub });
+    const jobs = await adapter.runJobs(REPO, 7);
+    expect((stub as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(`https://api.github.com/repos/${REPO}/actions/runs/7/jobs?per_page=100`);
+    expect(jobs).toEqual([
+      {
+        id: 101,
+        name: 'lint',
+        status: 'completed',
+        conclusion: 'success',
+        startedAt: '2026-09-24T23:03:55Z',
+        completedAt: '2026-09-24T23:04:40Z',
+        url: 'https://github.com/matdemers1/shipyard/actions/runs/7/job/101',
+      },
+      { id: 102, name: 'test', status: 'in_progress', conclusion: null, startedAt: '2026-09-24T23:03:56Z', completedAt: null, url: null },
+    ]);
+  });
+
+  it('refuses github_unreachable when GitHub will not list a run\'s jobs (404), so no empty answer is cached', async () => {
+    const adapter = createGitHubAdapter({ fetch: jsonFetch({ message: 'Not Found' }, 404) });
+    const err = await expectRefusal(adapter.runJobs(REPO, 7));
+    expect(err.refusal.code).toBe('github_unreachable');
+    expect(err.refusal.fix).toContain('Actions: read');
+  });
+
+  it.each([
+    ['a body with no jobs array', { total_count: 0 }],
+    ['a job that is not an object', { jobs: ['lint'] }],
+    ['a job with no name', { jobs: [{ id: 1, status: 'completed' }] }],
+    ['a job whose start time is a number', { jobs: [{ id: 1, name: 'x', status: 'queued', started_at: 5 }] }],
+  ])('refuses github_unreachable on %s', async (_label, body) => {
+    const adapter = createGitHubAdapter({ fetch: jsonFetch(body) });
+    const err = await expectRefusal(adapter.runJobs(REPO, 7));
+    expect(err.refusal.code).toBe('github_unreachable');
+  });
+
+  it('refuses github_unreachable on a 5xx, failing closed', async () => {
+    const adapter = createGitHubAdapter({ fetch: jsonFetch({}, 503) });
+    const err = await expectRefusal(adapter.runJobs(REPO, 7));
+    expect(err.refusal.code).toBe('github_unreachable');
+  });
+
+  it('refuses a run id that is not a positive integer without calling GitHub', async () => {
+    const stub = jsonFetch(jobsBody);
+    const adapter = createGitHubAdapter({ fetch: stub });
+    const err = await expectRefusal(adapter.runJobs(REPO, -1));
+    expect(err.refusal.code).toBe('invalid_request');
+    expect(stub).not.toHaveBeenCalled();
+  });
+});
+
 describe('compare', () => {
   it('reports ahead (recorded fixture)', async () => {
     const adapter = createGitHubAdapter({ fetch: fetchFor('compare-ahead') });

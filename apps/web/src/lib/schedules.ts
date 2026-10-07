@@ -1,5 +1,7 @@
 import type { DeployAccepted, ScheduleEntry, ScheduleList, ScheduleRequest } from '@shipyard/schema';
 import { request } from './api';
+import { stateTone, type StatusTone } from './appstatus';
+import { stateWords } from './words';
 
 /**
  * Schedules (S9, SHP-T-5.4, SHP-REQ-080/081, SHP-D-039, SHP-D-051). A schedule names one app, one
@@ -59,26 +61,28 @@ export function approvalLabel(entry: Pick<ScheduleEntry, 'approval'>): string {
   }
 }
 
-/** What happened to a fired or cancelled schedule, in words. */
+/**
+ * What happened to a fired or cancelled schedule, in words. A fired deploy reads as its state in the
+ * console's one vocabulary (`stateWords`), lowercased after "Fired ·"; one still in flight is
+ * "running".
+ */
 export function outcomeLabel(entry: Pick<ScheduleEntry, 'status' | 'state'>): string {
-  if (entry.status === 'cancelled') return 'Cancelled';
+  if (entry.status === 'cancelled' || entry.state === 'cancelled') return stateWords('cancelled');
   switch (entry.state) {
     case 'succeeded':
-      return 'Fired · succeeded';
     case 'refused':
-      return 'Fired · refused';
     case 'failed':
-      return 'Fired · failed';
     case 'rolled_back':
-      return 'Fired · rolled back';
-    case 'cancelled':
-      return 'Cancelled';
+      return `Fired · ${stateWords(entry.state).toLowerCase()}`;
     default:
       return 'Fired · running';
   }
 }
 
-/** True when the outcome should change what someone does next. */
-export function outcomeIsBad(entry: Pick<ScheduleEntry, 'status' | 'state'>): boolean {
-  return entry.status === 'fired' && (entry.state === 'refused' || entry.state === 'failed' || entry.state === 'rolled_back');
+/**
+ * The outcome's badge tone, from the same helper every deploy badge uses (SHP-T-13.2): a fired
+ * deploy still in flight is attention, not neutral, and a cancelled schedule is warning.
+ */
+export function outcomeTone(entry: Pick<ScheduleEntry, 'status' | 'state'>): StatusTone {
+  return entry.status === 'cancelled' ? 'warning' : stateTone(entry.state);
 }

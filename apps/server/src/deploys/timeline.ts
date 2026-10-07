@@ -27,6 +27,12 @@ export interface TimelineItem {
   createdAt: string;
   endedAt: string | null;
   refusalCode: string | null;
+  /** The check that refused it and the refusal's message, so Activity can name both. */
+  refusalGate: string | null;
+  refusalMessage: string | null;
+  /** Set when the deploy is one member of a "Deploy all ready" rollout, and its place in it. */
+  rolloutId: string | null;
+  rolloutPosition: number | null;
 }
 
 export interface TimelinePage {
@@ -85,7 +91,16 @@ const TIMELINE_SELECT = {
   createdAt: true,
   app: { select: { name: true } },
   deploy: {
-    select: { id: true, kind: true, requestedSha: true, dryRun: true, requesterLabel: true, createdAt: true },
+    select: {
+      id: true,
+      kind: true,
+      requestedSha: true,
+      dryRun: true,
+      requesterLabel: true,
+      createdAt: true,
+      rolloutId: true,
+      rolloutPosition: true,
+    },
   },
 } satisfies Prisma.DeployTargetSelect;
 
@@ -104,6 +119,10 @@ function toItem(row: TimelineRow): TimelineItem {
     createdAt: row.createdAt.toISOString(),
     endedAt: row.endedAt?.toISOString() ?? null,
     refusalCode: parsedRefusal.success ? parsedRefusal.data.code : null,
+    refusalGate: parsedRefusal.success ? parsedRefusal.data.gate : null,
+    refusalMessage: parsedRefusal.success ? parsedRefusal.data.message : null,
+    rolloutId: row.deploy.rolloutId,
+    rolloutPosition: row.deploy.rolloutPosition,
   };
 }
 

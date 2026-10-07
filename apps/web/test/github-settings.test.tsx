@@ -6,10 +6,10 @@ import { describe, expect, it } from 'vitest';
 import type { GitHubSettings } from '@shipyard/schema';
 import { App } from '../src/App';
 import { AuthProvider } from '../src/lib/auth';
-import { Settings } from '../src/screens/Settings';
+import { GitHubSettingsSection } from '../src/screens/GitHubSettings';
 import { meReply, mockFetch, type Reply } from './fetch';
 
-/** Settings → GitHub (SHP-T-3.13), and Home's banner when GitHub is not answering. */
+/** Settings › Integrations › GitHub (SHP-T-3.13), and Home's banner when GitHub is not answering. */
 
 function wrap() {
   return render(
@@ -17,7 +17,7 @@ function wrap() {
       <TooltipProvider>
         <MemoryRouter initialEntries={['/settings']}>
           <AuthProvider>
-            <Settings />
+            <GitHubSettingsSection />
           </AuthProvider>
         </MemoryRouter>
       </TooltipProvider>
@@ -78,6 +78,13 @@ function routes(current: GitHubSettings, extra: Record<string, Reply | Reply[]> 
 
 const form = () => screen.getByRole('form', { name: 'GitHub access' });
 
+/** The card leads with GitHub's numbers; the token form opens in place. */
+async function openForm() {
+  const toggle = await screen.findByRole('button', { name: /^(Add a|Edit) GitHub token$/ });
+  expect(screen.queryByRole('form', { name: 'GitHub access' })).not.toBeInTheDocument();
+  await userEvent.setup().click(toggle);
+}
+
 describe('Settings → GitHub', () => {
   it('says the server is out of anonymous requests and what that means', async () => {
     mockFetch(routes(github()));
@@ -85,6 +92,7 @@ describe('Settings → GitHub', () => {
     expect(await screen.findByText('Out of GitHub requests')).toBeInTheDocument();
     expect(screen.getByText(/0 of 60 requests left this hour/)).toBeInTheDocument();
     expect(screen.getByText(/raises the limit to 5,000 an hour/)).toBeInTheDocument();
+    await openForm();
     expect(within(form()).getByRole('button', { name: 'Save GitHub token' })).toBeDisabled();
   });
 
@@ -100,6 +108,7 @@ describe('Settings → GitHub', () => {
     );
     const user = userEvent.setup();
     wrap();
+    await openForm();
     await user.type(await screen.findByLabelText('GitHub token'), TOKEN);
     await user.click(within(form()).getByRole('button', { name: 'Test this GitHub token' }));
     expect(await screen.findByText('GitHub accepted it')).toBeInTheDocument();
@@ -121,6 +130,7 @@ describe('Settings → GitHub', () => {
     );
     const user = userEvent.setup();
     wrap();
+    await openForm();
     await user.type(await screen.findByLabelText('GitHub token'), TOKEN);
     await user.click(within(form()).getByRole('button', { name: 'Test this GitHub token' }));
     expect(await screen.findByText('GitHub did not accept it')).toBeInTheDocument();
@@ -132,6 +142,7 @@ describe('Settings → GitHub', () => {
     wrap();
     expect(await screen.findByText('Set in server.env')).toBeInTheDocument();
     expect(screen.queryByRole('form', { name: 'GitHub access' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /GitHub token$/ })).not.toBeInTheDocument();
   });
 });
 
@@ -168,6 +179,6 @@ describe('Home when GitHub is not answering', () => {
     window.history.replaceState(null, '', '/');
     render(<App />);
     expect(await screen.findByText("Shipyard can't see new commits on GitHub", {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Check GitHub access' })).toHaveAttribute('href', '/settings#github');
+    expect(screen.getByRole('link', { name: 'Check GitHub access' })).toHaveAttribute('href', '/settings/integrations#github');
   });
 });

@@ -3,6 +3,7 @@ import type { GroupSummary } from '@shipyard/schema';
 import { useEffect, useState } from 'react';
 import { RefusalError } from '../lib/api';
 import { fetchMemberCommits, startGroupDeploy } from '../lib/groups';
+import { deployVerb } from '../lib/words';
 
 /**
  * Confirms and starts a group deploy from Home (SHP-T-5.11, SHP-REQ-078, SHP-REQ-079). A group dry
@@ -98,7 +99,7 @@ export function GroupDeploySheet({ open, onOpenChange, group, onStarted }: Group
             Cancel
           </Button>
           <Button variant="primary" loading={phase.kind === 'starting'} disabled={confirmDisabled} onClick={() => void onConfirm()}>
-            Confirm
+            {shaValid ? deployVerb(sha) : 'Deploy'}
           </Button>
         </>
       }

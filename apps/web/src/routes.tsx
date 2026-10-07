@@ -1,30 +1,22 @@
-import { Button, EmptyState, FormActions, Page, Spinner } from '@d3cloud/ui';
+import { Button, FormActions, Spinner } from '@d3cloud/ui';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Shell } from './components/Shell';
 import { EntryHeading, EntryShell } from './entry/EntryShell';
-import { useAuth, useCan, useIsAdmin } from './lib/auth';
+import { useAuth, useCan } from './lib/auth';
+import { Activity } from './screens/Activity';
 import { AcceptInvite } from './screens/AcceptInvite';
-import { Account } from './screens/Account';
-import { Agent } from './screens/Agent';
 import { AppDetail } from './screens/AppDetail';
 import { BuildDetail } from './screens/BuildDetail';
-import { Builds } from './screens/Builds';
-import { Connect } from './screens/Connect';
-import { DeployProgress } from './screens/DeployProgress';
-import { DeployRecord } from './screens/DeployRecord';
+import { Commit } from './screens/Commit';
+import { Deploy, DeployLiveRedirect } from './screens/Deploy';
 import { Home } from './screens/Home';
 import { NotFound } from './screens/NotFound';
 import { Restore } from './screens/Restore';
 import { RolloutProgress } from './screens/RolloutProgress';
-import { Schedules } from './screens/Schedules';
-import { Settings } from './screens/Settings';
+import { SettingsSection } from './screens/SettingsSection';
 import { Setup } from './screens/Setup';
 import { SignIn } from './screens/SignIn';
-import { System } from './screens/System';
-import { Timeline } from './screens/Timeline';
-import { Tokens } from './screens/Tokens';
-import { Users } from './screens/Users';
 
 /**
  * The route table. It is the only file that names every screen, so a later task changes its own
@@ -58,36 +50,35 @@ function RequireSession({ children }: { children: ReactNode }) {
 }
 
 /**
- * Screens whose whole purpose is changing state (tokens, agent enrolment, users). The nav hides
- * them from a viewer; this covers a typed-in address.
+ * Every address the ten-item nav had, and the page that replaced it (SHP-REQ-169, SHP-ADR-006). A
+ * bookmark or a link in an old alert email still lands somewhere that makes sense.
  */
-function RequireStateChange({ children }: { children: ReactNode }) {
-  const can = useCan();
-  if (!can) {
-    return (
-      <Page>
-        <EmptyState kind="no-access" heading="This page needs the deployer role" headingLevel={2}>
-          Your role is viewer, which can read but not change anything. Ask an admin for the deployer role.
-        </EmptyState>
-      </Page>
-    );
-  }
-  return children;
-}
+export const RETIRED_ROUTES: readonly { from: string; to: string }[] = [
+  { from: 'timeline', to: '/activity' },
+  { from: 'builds', to: '/activity?kind=build' },
+  { from: 'schedules', to: '/activity?kind=schedule' },
+  { from: 'system', to: '/settings/host' },
+  { from: 'agent', to: '/settings/host' },
+  { from: 'tokens', to: '/settings/tokens' },
+  { from: 'connect', to: '/settings/tokens' },
+  { from: 'users', to: '/settings/people' },
+  { from: 'account', to: '/settings/people' },
+];
 
-/** Settings are an admin's alone; the nav hides them from everyone else, and this covers a typed-in address. */
-function RequireAdmin({ children }: { children: ReactNode }) {
-  const isAdmin = useIsAdmin();
-  if (!isAdmin) {
-    return (
-      <Page>
-        <EmptyState kind="no-access" heading="This page needs the admin role" headingLevel={2}>
-          Settings change how everyone signs in, so only an admin can see them. Ask an admin if something here needs changing.
-        </EmptyState>
-      </Page>
-    );
-  }
-  return children;
+/**
+ * Sends a retired address to its replacement, replace-style so Back does not return to the dead
+ * route. The visitor's own query and hash survive (a shared link's filter or anchor); the target's
+ * own query is kept too, and the visitor's value wins where both name the same key.
+ */
+export function RetiredRedirect({ to }: { to: string }) {
+  const { search, hash } = useLocation();
+  const [pathname = '/', targetSearch = ''] = to.split('?');
+  const merged = new URLSearchParams(targetSearch);
+  new URLSearchParams(search).forEach((value, key) => {
+    merged.set(key, value);
+  });
+  const query = merged.toString();
+  return <Navigate to={{ pathname, search: query === '' ? '' : `?${query}`, hash }} replace />;
 }
 
 function SignInRoute() {
@@ -108,6 +99,15 @@ function SetupRoute() {
   if (state.status === 'signed-in') return <Navigate to="/" replace />;
   if (state.status !== 'signed-out' || state.setupAvailable !== true) return <Navigate to="/signin" replace />;
   return <Setup onSignedIn={refresh} onClosed={refresh} />;
+}
+
+/**
+ * Settings opens on the first section the role may see: Host for a deployer or admin, People for a
+ * viewer — whose own account lives there — rather than a refusal (SHP-T-13.5 verification).
+ */
+function SettingsHome() {
+  const can = useCan();
+  return <Navigate to={can ? '/settings/host' : '/settings/people'} replace />;
 }
 
 export function AppRoutes() {
@@ -162,55 +162,19 @@ export function AppRoutes() {
         <Route index element={<Home />} />
         <Route path="apps/:app" element={<AppDetail />} />
         <Route path="apps/:app/restore" element={<Restore />} />
-        <Route path="deploys/:id" element={<DeployRecord />} />
-        <Route path="deploys/:id/live" element={<DeployProgress />} />
+        <Route path="apps/:app/commits/:sha" element={<Commit />} />
+        {/* One deploy page that streams and then is the record (SHP-T-13.11); the old live address redirects to it. */}
+        <Route path="deploys/:id" element={<Deploy />} />
+        <Route path="deploys/:id/live" element={<DeployLiveRedirect />} />
         <Route path="rollouts/:id" element={<RolloutProgress />} />
-        <Route path="builds" element={<Builds />} />
         <Route path="builds/:id" element={<BuildDetail />} />
-        <Route path="timeline" element={<Timeline />} />
-        <Route path="schedules" element={<Schedules />} />
-        <Route path="connect" element={<Connect />} />
-        <Route
-          path="system"
-          element={
-            <RequireStateChange>
-              <System />
-            </RequireStateChange>
-          }
-        />
-        <Route path="account" element={<Account />} />
-        <Route
-          path="agent"
-          element={
-            <RequireStateChange>
-              <Agent />
-            </RequireStateChange>
-          }
-        />
-        <Route
-          path="tokens"
-          element={
-            <RequireStateChange>
-              <Tokens />
-            </RequireStateChange>
-          }
-        />
-        <Route
-          path="users"
-          element={
-            <RequireStateChange>
-              <Users />
-            </RequireStateChange>
-          }
-        />
-        <Route
-          path="settings"
-          element={
-            <RequireAdmin>
-              <Settings />
-            </RequireAdmin>
-          }
-        />
+        <Route path="activity" element={<Activity />} />
+        <Route path="settings" element={<SettingsHome />} />
+        <Route path="settings/:section" element={<SettingsSection />} />
+        {/* The ten-item nav's addresses, each now a page or a section of one (SHP-REQ-169). */}
+        {RETIRED_ROUTES.map(({ from, to }) => (
+          <Route key={from} path={from} element={<RetiredRedirect to={to} />} />
+        ))}
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

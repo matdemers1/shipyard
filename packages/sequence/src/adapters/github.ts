@@ -1,11 +1,11 @@
 import { refusal } from '@shipyard/schema';
 import { RefusalError } from '../ports.js';
-import type { Comparison, CompareStatus, GitHubPort, WorkflowRun } from '../ports.js';
+import type { Comparison, CompareStatus, GitHubPort, WorkflowJob, WorkflowRun } from '../ports.js';
 
 // The server's entry point (`@shipyard/sequence/github`): it reads GitHub through this adapter and
 // must not load the Docker adapter along with the barrel — the server never touches Docker.
 export { RefusalError } from '../ports.js';
-export type { GitHubPort } from '../ports.js';
+export type { GitHubPort, WorkflowJob, WorkflowRun } from '../ports.js';
 
 /**
  * The `GitHubPort` adapter (SHP-T-1.2, SHP-REQ-008/009/010/029). Talks to `api.github.com` (or a
@@ -92,7 +92,7 @@ function isRateLimitedForbidden(res: Response): boolean {
   return res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0';
 }
 
-export function createGitHubAdapter(options: GitHubAdapterOptions = {}): GitHubPort & { tokenExpiresAt(): Date | null } {
+export function createGitHubAdapter(options: GitHubAdapterOptions = {}): GitHubPort & { tokenExpiresAt(): Date | null; runJobs(repo: string, runId: number): Promise<WorkflowJob[]> } {
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const doFetch = options.fetch ?? fetch;
@@ -241,7 +241,7 @@ export function createGitHubAdapter(options: GitHubAdapterOptions = {}): GitHubP
 
   function parseWorkflowRun(raw: unknown): WorkflowRun {
     if (!isRecord(raw)) throw unreachable('returned an unexpected response: a workflow run was not an object');
-    const { id, head_sha, path, status, conclusion, event, head_branch } = raw;
+    const { id, head_sha, path, status, conclusion, event, head_branch, html_url, run_started_at, updated_at } = raw;
     if (
       typeof id !== 'number' ||
       typeof head_sha !== 'string' ||
@@ -261,6 +261,35 @@ export function createGitHubAdapter(options: GitHubAdapterOptions = {}): GitHubP
       conclusion,
       event,
       headBranch: head_branch,
+      url: typeof html_url === 'string' ? html_url : null,
+      startedAt: typeof run_started_at === 'string' ? run_started_at : null,
+      // A run's `updated_at` moves while it runs; it is the end time only once it has completed.
+      completedAt: status === 'completed' && typeof updated_at === 'string' ? updated_at : null,
+    };
+  }
+
+  function parseWorkflowJob(raw: unknown): WorkflowJob {
+    if (!isRecord(raw)) throw unreachable('returned an unexpected response: a workflow job was not an object');
+    const { id, name, status, conclusion, started_at, completed_at, html_url } = raw;
+    if (
+      typeof id !== 'number' ||
+      typeof name !== 'string' ||
+      typeof status !== 'string' ||
+      (conclusion !== null && conclusion !== undefined && typeof conclusion !== 'string') ||
+      (started_at !== null && started_at !== undefined && typeof started_at !== 'string') ||
+      (completed_at !== null && completed_at !== undefined && typeof completed_at !== 'string') ||
+      (html_url !== null && html_url !== undefined && typeof html_url !== 'string')
+    ) {
+      throw unreachable('returned an unexpected response: a workflow job was missing an expected field');
+    }
+    return {
+      id,
+      name,
+      status,
+      conclusion: conclusion ?? null,
+      startedAt: started_at ?? null,
+      completedAt: completed_at ?? null,
+      url: html_url ?? null,
     };
   }
 
@@ -329,6 +358,33 @@ export function createGitHubAdapter(options: GitHubAdapterOptions = {}): GitHubP
 
       const body = await parseJson(res);
       return parseComparison(body);
+    },
+
+    async runJobs(repo, runId) {
+      if (!Number.isSafeInteger(runId) || runId <= 0) {
+        throw new RefusalError(refusal('invalid_request', `'${String(runId)}' is not a workflow run id`));
+      }
+      // One page of 100 is every job a Shipyard repo's workflow has; the console shows lanes, not an audit log.
+      const url = `${baseUrl}/repos/${encodeRepoPath(repo)}/actions/runs/${String(runId)}/jobs?per_page=100`;
+      const res = await request(url);
+      // The run was found a moment ago, so a 404 here is a token without Actions read on this repo
+      // (or a run deleted since). Saying "no jobs" would be cached as the run's final answer; refuse
+      // instead, so nothing is cached and the console says what to fix (SHP-ADR-007).
+      if (res.status === 404) {
+        throw new RefusalError(
+          refusal(
+            'github_unreachable',
+            `GitHub would not list the jobs of run ${String(runId)} in ${repo}.`,
+            "Give the server's GitHub token Actions: read on this repository, then reload.",
+          ),
+        );
+      }
+
+      const body = await parseJson(res);
+      if (!isRecord(body) || !Array.isArray(body.jobs)) {
+        throw unreachable('returned an unexpected response: missing jobs');
+      }
+      return body.jobs.map(parseWorkflowJob);
     },
 
     async tarball(repo, sha) {

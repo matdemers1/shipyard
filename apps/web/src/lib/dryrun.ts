@@ -1,7 +1,8 @@
 import type { DeployAccepted, DeployRequest, DeployStatus } from '@shipyard/schema';
 import { request, RefusalError } from './api';
 import type { SheetAction } from '../components/DryRunSheet';
-import { ageFrom, type AgentRow } from './home';
+import { ageFrom, shortSha, type AgentRow } from './home';
+import { approveVerb, ciWords, deployVerb, rollBackVerb, VERBS } from './words';
 
 /**
  * The dry-run sheet's data layer (SHP-T-3.3, SHP-REQ-057, SHP-D-068): the request that starts a
@@ -98,6 +99,8 @@ export function approveDeploy(deployId: string): Promise<DeployAccepted> {
 
 export interface AppSummary {
   soakSeconds: number | null;
+  /** The branch G6 checks against; null when the app has no repository. Absent from an older server. */
+  defaultBranch?: string | null;
 }
 
 export function getApp(app: string): Promise<AppSummary> {
@@ -119,7 +122,7 @@ export interface CommitsResponse {
 }
 
 /**
- * Commits between `live` and the target SHA, for the sheet's "what ships" list. `null` when the
+ * Commits between `live` and the target SHA, for the sheet's "What deploys" list. `null` when the
  * endpoint is unavailable (e.g. it 404s: it is built by a parallel task) — the sheet shows
  * "commits unavailable" rather than failing.
  */
@@ -150,14 +153,107 @@ export function hasContractMigration(status: DeployStatus): boolean {
   return status.images.some((i) => i.migration === 'contract');
 }
 
-/** The label for a sheet's action, e.g. "Deploy web", used as the Modal title. */
-export function titleFor(action: SheetAction): string {
+/**
+ * The sheet's primary button (SHP-T-13.3): it names the SHA it will act on — "Deploy 2cd9c27" —
+ * never "Confirm", so what a tap does is on the button.
+ */
+export function primaryLabelFor(action: SheetAction): string {
   switch (action.kind) {
     case 'deploy':
-      return `Deploy ${action.app}`;
+      return deployVerb(action.sha);
     case 'rollback':
-      return `Roll back ${action.app}`;
+      return rollBackVerb(action.sha);
     case 'approve':
-      return `Approve deploy of ${action.app}`;
+      return approveVerb(action.sha);
   }
+}
+
+/** The sheet's title: the verb, the app and the short SHA it acts on — "Deploy bindery 2cd9c27". */
+export function titleFor(action: SheetAction): string {
+  const sha = shortSha(action.sha);
+  switch (action.kind) {
+    case 'deploy':
+      return `Deploy ${action.app} ${sha}`;
+    case 'rollback':
+      return `${VERBS.rollBack} ${action.app} to ${sha}`;
+    case 'approve':
+      return `Approve deploy of ${action.app} ${sha}`;
+  }
+}
+
+/**
+ * The line under the title: what moves and how much — "f8b48f2 → 2cd9c27 · 3 commits". Until the
+ * commits answer (or when they never do) it names only the target, so the sheet never claims a
+ * count it does not have.
+ */
+export function subtitleFor(commits: CommitsResponse | null | 'loading', target: string, shipped: number): string {
+  if (commits === null || commits === 'loading') return shortSha(target);
+  const route = commits.live === null ? shortSha(target) : `${shortSha(commits.live)} → ${shortSha(target)}`;
+  return `${route} · ${String(shipped)} ${shipped === 1 ? 'commit' : 'commits'}`;
+}
+
+/** A commit's CI state as the sheet marks it: words from the shared vocabulary and a dot tone. */
+export function commitCi(
+  ci: string | null,
+  source: string,
+): { words: string; tone: 'neutral' | 'warning' | 'danger' | 'idle' } {
+  const state = ci === 'success' || ci === 'failure' || ci === 'pending' ? ci : 'none';
+  const words = ciWords(state, source === 'shipyard' ? 'shipyard' : 'github');
+  switch (state) {
+    case 'success':
+      return { words, tone: 'neutral' };
+    case 'failure':
+      return { words, tone: 'danger' };
+    case 'pending':
+      return { words, tone: 'warning' };
+    case 'none':
+      return { words, tone: 'idle' };
+  }
+}
+
+/**
+ * One warning per commit whose CI failed and that ships along with the target. A deploy ships
+ * every commit between live and the target, so a red commit underneath a green one still goes out
+ * (SHP-REQ-161). The target itself is left out: its own failure is the dry run's refusal.
+ */
+export function rideAlongWarnings(shipped: readonly CommitInfo[], target: string): string[] {
+  return shipped
+    .filter((c) => c.ci === 'failure' && c.sha !== target)
+    .map((c) => `${shortSha(c.sha)} failed CI. Its code deploys with ${shortSha(target)}.`);
+}
+
+/**
+ * The app's newest green commit, when a refused dry run failed on CI (gate G5) and there is a
+ * different one to deploy instead. Only a plain deploy offers it: an approval is for the held
+ * SHA, and a rollback already names the release it returns to.
+ */
+export function newestGreenInstead(
+  commits: CommitsResponse | null | 'loading',
+  action: SheetAction,
+  status: DeployStatus | null,
+): string | null {
+  if (action.kind !== 'deploy' || status === null || commits === null || commits === 'loading') return null;
+  const ciRefused = status.refusal?.gate === 'G5' || status.gates.some((g) => !g.pass && g.gate === 'G5');
+  const green = commits.newestGreen;
+  return ciRefused && green !== null && green !== action.sha ? green : null;
+}
+
+/** Failed checks first, so the reason a deploy cannot go is the first thing read; order is otherwise kept. */
+export function failedFirst<T extends { pass: boolean }>(gates: readonly T[]): T[] {
+  return [...gates.filter((g) => !g.pass), ...gates.filter((g) => g.pass)];
+}
+
+/** The checks' summary line: "All 6 passed", or "5 of 6 passed". Null when the agent reported none. */
+export function checksSummary(gates: readonly { pass: boolean }[]): string | null {
+  if (gates.length === 0) return null;
+  const passed = gates.filter((g) => g.pass).length;
+  return passed === gates.length ? `All ${String(passed)} passed` : `${String(passed)} of ${String(gates.length)} passed`;
+}
+
+/** How long ago the agent answered: "3s ago" under a minute, then the console's usual ages. */
+export function askedWords(iso: string | null, now: number = Date.now()): string {
+  const then = iso === null ? Number.NaN : new Date(iso).getTime();
+  if (Number.isNaN(then)) return '—';
+  const seconds = Math.max(0, Math.floor((now - then) / 1000));
+  return seconds < 60 ? `${String(seconds)}s ago` : ageFrom(iso, now);
 }

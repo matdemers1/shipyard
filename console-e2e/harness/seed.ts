@@ -374,6 +374,24 @@ export async function reseedWorld(db: Db, now: number = Date.now()): Promise<Fix
   return fx;
 }
 
+/**
+ * The baseline with nothing waiting on a person (Apps' all-clear, SHP-T-13.14): the held deploy
+ * denied, every drift resolved by adopting what runs, and the agent heartbeating now with a GitHub
+ * token far from expiry. Needs you is empty, so Apps says "Nothing needs you". Put the baseline
+ * back with `reseedWorld` afterwards.
+ */
+export async function enterAllClearWorld(db: Db, now: number = Date.now()): Promise<void> {
+  const fx = fixture();
+  await db.approval.updateMany({ where: { deniedAt: null, approvedAt: null }, data: { deniedAt: new Date(now) } });
+  await db.deployTarget.updateMany({ where: { state: 'awaiting_approval' }, data: { state: 'cancelled', endedAt: new Date(now) } });
+  await db.driftEvent.updateMany({
+    where: { resolvedAt: null },
+    data: { resolvedAt: new Date(now), resolution: 'adopt_live', reason: 'console-e2e: all clear', resolvedByUserId: fx.users.admin },
+  });
+  await db.app.updateMany({ data: { driftedAt: null } });
+  await db.agent.updateMany({ where: { confirmedAt: { not: null } }, data: { lastHeartbeatAt: new Date(now), patExpiresAt: ahead(200 * DAY, now) } });
+}
+
 const DEPLOYER_EMAIL = 'deployer@shipyard.test';
 
 /** An admin and a viewer who sign in, a deployer to list, and a disabled account. */

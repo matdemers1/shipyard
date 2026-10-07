@@ -125,7 +125,7 @@ describe('EntryShell', () => {
       expect(claim).toHaveTextContent(`${ENTRY_CLAIMS[i]?.title ?? ''} ${ENTRY_CLAIMS[i]?.detail ?? ''}`);
     }
     expect(ENTRY_CLAIMS.map((c) => c.title)).toEqual([
-      'Nothing ships that CI did not pass.',
+      'Nothing deploys that CI did not pass.',
       'The backup runs before the migration.',
       'A failed soak rolls itself back.',
     ]);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { appStatus, ciWords, summarizeCommits, type StatusInput } from '../src/lib/appstatus';
+import { appStatus, summarizeCommits, type StatusInput } from '../src/lib/appstatus';
+import { ciWords } from '../src/lib/words';
 import type { CommitEntry, CommitsInfo } from '../src/lib/home';
 
 /** SHP-T-3.10: one status per app, in words, from what the server already answers. */
@@ -31,10 +32,10 @@ function input(overrides: Partial<StatusInput> = {}): StatusInput {
 }
 
 describe('appStatus', () => {
-  it('reads frozen over ready, offers no ship, and still names what would ship', () => {
+  it('reads frozen over ready, offers no deploy, and still names what would deploy', () => {
     const s = appStatus(input({ frozen: true, commits: commits([commit('a', 'success')], { ahead: 1 }) }));
     expect(s).toMatchObject({ kind: 'frozen', label: 'Frozen', tone: 'neutral', shipSha: null });
-    expect(s.detail).toMatch(new RegExp(`^${sha('a').slice(0, 7)} is ready to ship once it is unfrozen`));
+    expect(s.detail).toMatch(new RegExp(`^${sha('a').slice(0, 7)} is ready to deploy once it is unfrozen`));
   });
 
   it('lets a deploy already running read as deploying while frozen', () => {
@@ -76,7 +77,7 @@ describe('appStatus', () => {
     expect(s.detail).toMatch(/1 newer commit is still being built/);
   });
 
-  it('puts a deploy in progress, an approval and drift ahead of anything to ship', () => {
+  it('puts a deploy in progress, an approval and drift ahead of anything to deploy', () => {
     const ready = commits([commit('a', 'success')]);
     expect(appStatus(input({ commits: ready, active: { holder: 'matt', state: 'soaking', currentStep: null } })).kind).toBe('deploying');
     expect(appStatus(input({ commits: ready, approval: { sha: sha('a'), requester: { label: 'claude' } } })).kind).toBe('approval');

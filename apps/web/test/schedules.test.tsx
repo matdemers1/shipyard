@@ -3,13 +3,13 @@ import userEvent from '@testing-library/user-event';
 import type { ScheduleEntry, ScheduleList } from '@shipyard/schema';
 import { describe, expect, it } from 'vitest';
 import { App } from '../src/App';
-import { approvalLabel, fireAtProblem, localToIso, outcomeLabel, shaIsValid } from '../src/lib/schedules';
+import { approvalLabel, fireAtProblem, localToIso, outcomeLabel, outcomeTone, shaIsValid } from '../src/lib/schedules';
 import { meReply, mockFetch, type Reply } from './fetch';
 
 /**
- * Schedules (S9, SHP-T-5.4): upcoming with the approval each carries; fired-and-refused entries
- * with the reason; "Nothing scheduled" when empty; a deployer schedules, cancels and approves; a
- * viewer only reads.
+ * Schedules (S9, SHP-T-5.4), now inside Activity (SHP-T-13.13): upcoming with the approval each
+ * carries, pinned over the feed; fired-and-refused entries with the reason as feed rows; a deployer
+ * schedules, cancels and approves; a viewer only reads. The feed itself is tested in activity.test.tsx.
  */
 
 const SHA = 'a'.repeat(40);
@@ -66,6 +66,8 @@ function routes(role: 'deployer' | 'viewer', data: ScheduleList | Reply[], extra
   return mockFetch({
     'GET /api/auth/me': meReply(role),
     'GET /api/schedules': Array.isArray(data) ? data : { status: 200, body: data },
+    'GET /api/deploys/timeline': { status: 200, body: { items: [], nextCursor: null } },
+    'GET /api/builds': { status: 200, body: { items: [], nextCursor: null } },
     'GET /api/apps': { status: 200, body: { apps: [{ name: 'd3auth' }, { name: 'web' }] } },
     ...extra,
   });
@@ -101,32 +103,39 @@ describe('schedule helpers', () => {
     expect(outcomeLabel(entry({ status: 'cancelled', state: 'cancelled' }))).toBe('Cancelled');
     expect(outcomeLabel(entry({ status: 'fired', state: 'succeeded' }))).toBe('Fired · succeeded');
   });
+
+  it("tones the outcome like every other deploy badge: in flight is attention, never neutral (SHP-T-13.2)", () => {
+    expect(outcomeTone(entry({ status: 'fired', state: 'swapping' }))).toBe('attention');
+    expect(outcomeTone(entry({ status: 'fired', state: 'soaking' }))).toBe('attention');
+    expect(outcomeTone(REFUSED)).toBe('danger');
+    expect(outcomeTone(entry({ status: 'fired', state: 'rolled_back' }))).toBe('danger');
+    expect(outcomeTone(entry({ status: 'fired', state: 'succeeded' }))).toBe('neutral');
+    expect(outcomeTone(entry({ status: 'cancelled', state: 'cancelled' }))).toBe('warning');
+  });
 });
 
 describe('the schedules screen', () => {
   it('lists upcoming with approval captured, and a fired-and-refused schedule with its reason', async () => {
     routes('deployer', { upcoming: [entry(), AWAITING], past: [REFUSED] });
-    renderAt('/schedules');
+    renderAt('/activity?kind=schedule');
 
     const upcoming = await screen.findByRole('list', { name: 'Upcoming deploys' }, { timeout: 4000 });
     expect(within(upcoming).getByText('Approved by matt@example.com')).toBeInTheDocument();
     expect(within(upcoming).getByText('Awaiting approval')).toBeInTheDocument();
-    const past = screen.getByRole('list', { name: 'Fired and cancelled deploys' });
-    expect(within(past).getByText('Fired · refused')).toBeInTheDocument();
-    expect(within(past).getByText(/is not ahead of live b1c2d3e/)).toBeInTheDocument();
+    expect(await screen.findByText('Refused — Ahead of live — aaaaaaa is not ahead of live b1c2d3e (behind)')).toBeInTheDocument();
   });
 
-  it('says "Nothing scheduled" when nothing is', async () => {
+  it('shows no Upcoming card when nothing is scheduled, and still offers Schedule a deploy', async () => {
     routes('deployer', { upcoming: [], past: [] });
-    renderAt('/schedules');
-    expect(await screen.findByText('Nothing scheduled', {}, { timeout: 4000 })).toBeInTheDocument();
+    renderAt('/activity?kind=schedule');
+    expect(await screen.findByRole('button', { name: 'Schedule a deploy' }, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Upcoming deploys' })).not.toBeInTheDocument();
   });
 
   it('a viewer reads and cannot schedule, cancel or approve', async () => {
     routes('viewer', { upcoming: [entry(), AWAITING], past: [REFUSED] });
-    renderAt('/schedules');
+    renderAt('/activity?kind=schedule');
     expect(await screen.findByText('Awaiting approval', {}, { timeout: 4000 })).toBeInTheDocument();
-    expect(screen.getByText('Your role can read schedules but not change them.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Schedule a deploy' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Cancel / })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Approve / })).not.toBeInTheDocument();
@@ -139,7 +148,7 @@ describe('the schedules screen', () => {
       { status: 200, body: { upcoming: [created], past: [] } },
     ], { 'POST /api/schedules': { status: 201, body: created } });
     const user = userEvent.setup();
-    renderAt('/schedules');
+    renderAt('/activity?kind=schedule');
 
     await user.click(await screen.findByRole('button', { name: 'Schedule a deploy' }, { timeout: 4000 }));
     const dialog = await screen.findByRole('dialog', { name: 'Schedule a deploy' });
@@ -166,7 +175,7 @@ describe('the schedules screen', () => {
         body: { app: 'd3auth', sha: SHA, fireAt: new Date(local).toISOString() },
       });
     });
-    expect(await screen.findByText('Approved by matt@example.com')).toBeInTheDocument();
+    expect(await screen.findByRole('list', { name: 'Upcoming deploys' })).toBeInTheDocument();
   });
 
   it('a deployer cancels an upcoming schedule after confirming', async () => {
@@ -179,10 +188,12 @@ describe('the schedules screen', () => {
       { 'DELETE /api/schedules/s-1': { status: 200, body: entry({ status: 'cancelled', state: 'cancelled' }) } },
     );
     const user = userEvent.setup();
-    renderAt('/schedules');
+    renderAt('/activity?kind=schedule');
     await user.click(await screen.findByRole('button', { name: 'Cancel d3auth at aaaaaaa' }, { timeout: 4000 }));
     await user.click(await screen.findByRole('button', { name: 'Cancel deploy' }));
-    expect(await screen.findByText('Nothing scheduled')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole('list', { name: 'Upcoming deploys' })).not.toBeInTheDocument();
+    });
     expect(calls.some((c) => c.method === 'DELETE' && c.path === '/api/schedules/s-1')).toBe(true);
   });
 
@@ -194,7 +205,7 @@ describe('the schedules screen', () => {
       },
     });
     const user = userEvent.setup();
-    renderAt('/schedules');
+    renderAt('/activity?kind=schedule');
     await user.click(await screen.findByRole('button', { name: 'Approve d3auth at aaaaaaa' }, { timeout: 4000 }));
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: 'Approve' }));

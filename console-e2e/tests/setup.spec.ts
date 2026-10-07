@@ -86,13 +86,13 @@ test.describe('first-run setup', () => {
 
     // The right one creates the admin and signs them in.
     await typeCode(page, totpFor(secret));
-    await expect(h1(page, 'Home')).toBeVisible();
+    await expect(h1(page, 'Apps')).toBeVisible();
     await expect(page.locator('.shp-topline__who')).toContainText(FIRST.email);
 
     // Setup is closed now: the route sends a signed-in admin home, and the API says so.
     expect(await (await page.request.get('/api/setup')).json()).toEqual({ available: false });
     await page.goto('/setup');
-    await expect(h1(page, 'Home')).toBeVisible();
+    await expect(h1(page, 'Apps')).toBeVisible();
 
     // A fresh browser gets sign-in, not setup, and the new admin signs in like anyone else.
     const context = await browser.newContext({ baseURL: BASE_URL });

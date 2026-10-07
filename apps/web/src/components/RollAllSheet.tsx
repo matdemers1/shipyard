@@ -4,17 +4,18 @@ import { useEffect, useRef, useState } from 'react';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { sha7 } from '../lib/appstatus';
 import { planRollout, startRollout } from '../lib/rollouts';
+import { DEPLOY_ALL_READY, deployAllReadyVerb } from '../lib/words';
 
 /**
- * Confirms and starts "Roll all" from Home (SHP-T-12.2, SHP-REQ-154). On open it asks the server for
- * the plan — the order it would ship in, Shipyard's own app last, and any refusal it would get now
+ * Confirms and starts "Deploy all ready" from Home (SHP-T-12.2, SHP-REQ-154, words per SHP-T-13.3).
+ * On open it asks the server for the plan — the order it would deploy in, Shipyard's own app last, and any refusal it would get now
  * (a lock, a freeze, drift) — so what the deployer confirms is what the server will do. Confirming
  * starts the rollout; there is no rollout dry run, and each app's gates still run on the agent.
  */
 export interface RollAllSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** The apps Home calls ready to ship, at the SHA each card would ship. */
+  /** The apps Home calls ready, at the SHA each card would deploy. */
   items: readonly RolloutItem[];
   /** Called with the rollout ID once it has started. */
   onStarted?: (rolloutId: string) => void;
@@ -75,7 +76,7 @@ export function RollAllSheet({ open, onOpenChange, items, onStarted }: RollAllSh
     <Modal
       open={open}
       onOpenChange={onOpenChange}
-      title={`Roll all ${String(count)} apps`}
+      title={deployAllReadyVerb(count)}
       description="One at a time, in this order: each app deploys and soaks before the next one starts. Any failure stops the rest, untouched."
       size="lg"
       footer={
@@ -94,7 +95,7 @@ export function RollAllSheet({ open, onOpenChange, items, onStarted }: RollAllSh
             disabled={phase.kind !== 'planned'}
             onClick={() => void onConfirm()}
           >
-            Roll all
+            {DEPLOY_ALL_READY}
           </Button>
         </>
       }
@@ -109,7 +110,7 @@ export function RollAllSheet({ open, onOpenChange, items, onStarted }: RollAllSh
       ) : null}
 
       {plan !== null ? (
-        <DataList aria-label="Apps to roll, in order">
+        <DataList aria-label="Apps to deploy, in order">
           {plan.members.map((member, i) => (
             <DataListRow
               key={member.app}

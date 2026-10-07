@@ -12,7 +12,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@d3cloud/ui": "https://github.com/matdemers1/d3-design-system/releases/download/v1.2.2/d3cloud-ui-1.2.2.tgz",
+    "@d3cloud/ui": "https://github.com/matdemers1/d3-design-system/releases/download/v1.7.0/d3cloud-ui-1.7.0.tgz",
     "lucide-react": "^1.47.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

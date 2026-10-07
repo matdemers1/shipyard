@@ -1,5 +1,5 @@
-import { Alert, Button, FormField, Input, Modal, Select, Stack } from '@d3cloud/ui';
-import { useState, type SyntheticEvent } from 'react';
+import { Alert, Button, FormActions, FormField, Input, Modal, Select, Stack } from '@d3cloud/ui';
+import { useId, useState, type SyntheticEvent } from 'react';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { fireAtProblem, localToIso, schedules, shaIsValid, type ScheduleEntry } from '../lib/schedules';
 
@@ -30,6 +30,7 @@ export function ScheduleSheet({ apps, onScheduled }: ScheduleSheetProps) {
   const iso = localToIso(at);
   const timeProblem = fireAtProblem(iso);
   const valid = chosenApp !== '' && shaOk && timeProblem === null;
+  const formId = useId();
 
   const close = (): void => {
     setOpen(false);
@@ -70,9 +71,20 @@ export function ScheduleSheet({ apps, onScheduled }: ScheduleSheetProps) {
         </Button>
       }
       title="Schedule a deploy"
-      description="Every gate re-runs when it fires; if one fails then, the deploy is refused and the reason shown here."
+      description="Every check runs again when it fires; if one fails then, the deploy is refused and the reason shown here."
+      // The action rides the sheet's footer, pinned on a phone while the form scrolls (SHP-REQ-173).
+      footer={
+        <FormActions>
+          <Button type="button" variant="secondary" onClick={close}>
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} variant="primary" loading={busy}>
+            Schedule {chosenApp}
+          </Button>
+        </FormActions>
+      }
     >
-      <Stack as="form" gap="16" onSubmit={(e) => void submit(e)} noValidate>
+      <Stack as="form" id={formId} gap="16" onSubmit={(e) => void submit(e)} noValidate>
         <FormField label="App" help="For an app that requires approval, scheduling it is your approval.">
           <Select
             value={chosenApp}
@@ -114,11 +126,6 @@ export function ScheduleSheet({ apps, onScheduled }: ScheduleSheetProps) {
             {refused.fix}
           </Alert>
         ) : null}
-        <Stack gap="8" align="end">
-          <Button type="submit" variant="primary" loading={busy}>
-            Schedule {chosenApp}
-          </Button>
-        </Stack>
       </Stack>
     </Modal>
   );

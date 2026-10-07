@@ -1,12 +1,17 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { App } from '../src/App';
 import type { Call } from './fetch';
 import { meReply, mockFetch } from './fetch';
-import { outcomeLabel, type TimelinePage } from '../src/lib/timeline';
+import type { TimelinePage } from '../src/lib/timeline';
+import { stateWords } from '../src/lib/words';
 
-/** SHP-T-3.7: the timeline (S8, SHP-REQ-062) and the deploy record (S6). */
+/**
+ * SHP-T-3.7: the timeline (S8, SHP-REQ-062) — now the deploy half of Activity (SHP-T-13.13), which
+ * `/timeline` redirects to. The feed's own behaviour is tested in activity.test.tsx; these keep the
+ * timeline's filters honest against its endpoint.
+ */
 
 function renderAt(path: string) {
   window.history.replaceState(null, '', path);
@@ -43,243 +48,62 @@ const API_REFUSED = {
   refusalCode: 'app_frozen',
 };
 
-describe('Timeline (S8)', () => {
-  it('shows "No deploys yet" when there are none and no filters are set', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': page([]),
-    });
+function routes(timeline: ReturnType<typeof page> | ReturnType<typeof page>[]) {
+  return mockFetch({
+    'GET /api/auth/me': meReply('viewer'),
+    'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
+    'GET /api/deploys/timeline': timeline,
+    'GET /api/builds': { status: 200, body: { items: [], nextCursor: null } },
+    'GET /api/schedules': { status: 200, body: { upcoming: [], past: [] } },
+  });
+}
+
+describe('Timeline, inside Activity (S8)', () => {
+  it('/timeline lands on the feed and lists deploys with their outcome, app, sha and requester', async () => {
+    routes(page([WEB_SUCCEEDED, API_REFUSED]));
     renderAt('/timeline');
-    expect(await screen.findByText('No deploys yet')).toBeInTheDocument();
+    expect(await screen.findByText('Deployed')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/activity');
+    expect(screen.getByText(/Refused — app frozen/)).toBeInTheDocument();
+    expect(screen.getByText('bbbbbbb')).toBeInTheDocument();
+    expect(screen.getByText(/Bob/)).toBeInTheDocument();
   });
 
-  it('lists deploys newest first, with an outcome badge, app, sha and requester', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': page([WEB_SUCCEEDED, API_REFUSED]),
-    });
-    renderAt('/timeline');
-    const list = await screen.findByRole('list', { name: 'Deploys' });
-    const rows = within(list).getAllByRole('listitem');
-    expect(rows).toHaveLength(2);
-    expect(within(rows[0] as HTMLElement).getByText('Succeeded')).toBeInTheDocument();
-    expect(within(rows[0] as HTMLElement).getByText(/web/)).toBeInTheDocument();
-    expect(within(rows[1] as HTMLElement).getByText('Refused')).toBeInTheDocument();
-    expect(within(rows[1] as HTMLElement).getByText(/app_frozen/)).toBeInTheDocument();
-  });
-
-  it('reads app, outcome and kind straight from the URL on load', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': page([WEB_SUCCEEDED]),
-    });
+  it('keeps the old Timeline address\'s filters: app, outcome and kind reach the endpoint', async () => {
+    const calls = routes(page([WEB_SUCCEEDED]));
     renderAt('/timeline?app=web&outcome=succeeded&kind=deploy');
-    await screen.findByText('Succeeded');
+    await screen.findByText('Deployed');
     expect(await screen.findByRole('combobox', { name: 'Outcome' })).toHaveTextContent('Succeeded');
-    expect(screen.getByRole('combobox', { name: 'Kind' })).toHaveTextContent('Deploy');
-  });
-
-  it('the app filter select shows the app chosen in the URL', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': page([WEB_SUCCEEDED]),
-    });
-    renderAt('/timeline?app=web');
-    await screen.findByText('Succeeded');
-    expect(await screen.findByRole('combobox', { name: 'App' })).toHaveTextContent('web');
+    expect(screen.getByRole('combobox', { name: 'App' })).toHaveTextContent('web');
+    expect(screen.getByRole('button', { name: 'Deploys' })).toHaveAttribute('aria-pressed', 'true');
+    expect(calls.some((c: Call) => c.path === '/api/deploys/timeline')).toBe(true);
   });
 
   it('typing a requester and pressing Enter narrows the list (mocked) and updates the URL', async () => {
-    const calls = mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': [page([WEB_SUCCEEDED, API_REFUSED]), page([API_REFUSED])],
-    });
+    const calls = routes([page([WEB_SUCCEEDED, API_REFUSED]), page([API_REFUSED])]);
     const user = userEvent.setup();
-    renderAt('/timeline');
-    await screen.findByText('Succeeded');
+    renderAt('/activity');
+    await screen.findByText('Deployed');
 
-    const requester = screen.getByRole('textbox', { name: 'Requester' });
-    await user.type(requester, 'Bob{Enter}');
+    await user.type(screen.getByRole('textbox', { name: 'Requester' }), 'Bob{Enter}');
 
     await waitFor(() => {
-      expect(screen.queryByText('Succeeded')).not.toBeInTheDocument();
+      expect(screen.queryByText('Deployed')).not.toBeInTheDocument();
     });
-    expect(screen.getByText('Refused')).toBeInTheDocument();
+    expect(screen.getByText(/Refused/)).toBeInTheDocument();
     expect(new URLSearchParams(window.location.search).get('requester')).toBe('Bob');
-    const requesterCalls = calls.filter((c: Call) => c.path === '/api/deploys/timeline' && c.method === 'GET');
-    expect(requesterCalls.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('shows "No deploys match" with a clear-filters action for a filtered empty result', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': [page([]), page([WEB_SUCCEEDED, API_REFUSED])],
-    });
-    const user = userEvent.setup();
-    renderAt('/timeline?app=web&outcome=cancelled');
-    expect(await screen.findByText('No deploys match')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
-    await screen.findByText('Succeeded');
-    expect(window.location.search).toBe('');
-  });
-
-  it('shows a Load more control when there is a next page, and appends on click', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }] } },
-      'GET /api/deploys/timeline': [page([WEB_SUCCEEDED], 'cursor-1'), page([API_REFUSED], null)],
-    });
-    const user = userEvent.setup();
-    renderAt('/timeline');
-    await screen.findByText('Succeeded');
-    const more = screen.getByRole('button', { name: 'Load more' });
-    await user.click(more);
-    await screen.findByText('Refused');
-    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    const timelineCalls = calls.filter((c: Call) => c.path === '/api/deploys/timeline' && c.method === 'GET');
+    expect(timelineCalls.length).toBeGreaterThanOrEqual(2);
   });
 });
 
-describe('Deploy record (S6)', () => {
-  const STATUS = {
-    deployId: 'd-1',
-    kind: 'deploy',
-    app: 'web',
-    sha: 'a'.repeat(40),
-    dryRun: false,
-    state: 'failed',
-    currentStep: null,
-    requester: { label: 'Alice', repo: 'org/web', branch: 'main' },
-    images: [{ service: 'web', sha: 'a'.repeat(40), digest: 'sha256:deadbeef', migration: null }],
-    schemaRevision: null,
-    refusal: null,
-    gates: [
-      { gate: 'G5', pass: true, reason: 'CI green' },
-      { gate: 'G7', pass: false, reason: 'not ahead of live' },
-    ],
-    createdAt: '2026-01-01T00:00:00.000Z',
-    endedAt: '2026-01-01T00:01:00.000Z',
-  };
+// The deploy record's tests moved with it to the one deploy page: test/deploy.test.tsx (SHP-T-13.11).
 
-  it('renders gates, images and the journal', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/deploys/d-1': { status: 200, body: STATUS },
-      'GET /api/deploys/d-1/steps': {
-        status: 200,
-        body: { steps: [{ name: 'pull', argv: ['docker', 'pull', 'x'], startedAt: STATUS.createdAt, endedAt: STATUS.endedAt, exitCode: 0, output: 'ok' }] },
-      },
-      'GET /api/deploys/d-1/foreman': { status: 200, body: { posts: [], stuck: false } },
-    });
-    renderAt('/deploys/d-1');
-    expect(await screen.findByRole('heading', { level: 1, name: /web/ })).toBeInTheDocument();
-    expect(screen.getByText('G5')).toBeInTheDocument();
-    expect(screen.getByText('Pass')).toBeInTheDocument();
-    expect(screen.getByText('G7')).toBeInTheDocument();
-    expect(screen.getByText('Fail')).toBeInTheDocument();
-    expect(screen.getByText(/sha256:deadbeef/)).toBeInTheDocument();
-    expect(screen.getByText('pull')).toBeInTheDocument();
-    expect(screen.getByText('docker pull x')).toBeInTheDocument();
-    expect(screen.getByText('No Foreman mapping')).toBeInTheDocument();
-  });
-
-  it('renders a refusal', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/deploys/d-1': {
-        status: 200,
-        body: { ...STATUS, state: 'refused', refusal: { code: 'app_frozen', gate: 'G2', message: 'The app is frozen.', fix: 'Unfreeze it and retry.' } },
-      },
-      'GET /api/deploys/d-1/steps': { status: 200, body: { steps: [] } },
-      'GET /api/deploys/d-1/foreman': { status: 200, body: { posts: [], stuck: false } },
-    });
-    renderAt('/deploys/d-1');
-    expect(await screen.findByText('The app is frozen.')).toBeInTheDocument();
-    expect(screen.getByText('Unfreeze it and retry.')).toBeInTheDocument();
-  });
-
-  it('shows the outbox-failing badge when a Foreman post is stuck', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/deploys/d-1': { status: 200, body: { ...STATUS, state: 'succeeded' } },
-      'GET /api/deploys/d-1/steps': { status: 200, body: { steps: [] } },
-      'GET /api/deploys/d-1/foreman': {
-        status: 200,
-        body: {
-          posts: [
-            { service: 'web', idempotencyKey: 'd-1:web', delivered: false, attempts: 3, lastError: 'HTTP 503', nextAt: '2026-01-01T02:00:00.000Z' },
-          ],
-          stuck: true,
-        },
-      },
-    });
-    renderAt('/deploys/d-1');
-    expect(await screen.findByText('Outbox failing')).toBeInTheDocument();
-    expect(screen.getByText('Pending')).toBeInTheDocument();
-    expect(screen.getByText(/HTTP 503/)).toBeInTheDocument();
-  });
-
-  it('lists a group deploy\'s members in order, with the stopped member\'s group_stopped reason (SHP-T-5.11)', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/deploys/d-1': {
-        status: 200,
-        body: {
-          ...STATUS,
-          app: 'bravo',
-          state: 'failed',
-          refusal: { code: 'health_failed', gate: 'none', message: 'bravo answered 500 on /health.', fix: 'Fix the release and deploy again.' },
-          group: {
-            name: 'trio',
-            members: [
-              { app: 'alpha', state: 'succeeded', refusal: null, canary: true, position: 0, targetId: 't1' },
-              {
-                app: 'bravo',
-                state: 'failed',
-                refusal: { code: 'health_failed', gate: 'none', message: 'bravo answered 500 on /health.', fix: 'Fix the release and deploy again.' },
-                canary: false,
-                position: 1,
-                targetId: 't2',
-              },
-              {
-                app: 'charlie',
-                state: 'cancelled',
-                refusal: { code: 'group_stopped', gate: 'none', message: 'The group deploy stopped at bravo (failed); this member was not touched.', fix: 'x' },
-                canary: false,
-                position: 2,
-                targetId: 't3',
-              },
-            ],
-          },
-        },
-      },
-      'GET /api/deploys/d-1/steps': { status: 200, body: { steps: [] } },
-      'GET /api/deploys/d-1/foreman': { status: 200, body: { posts: [], stuck: false } },
-    });
-    renderAt('/deploys/d-1');
-    const section = await screen.findByText('trio — deployed in order, canary first');
-    expect(section).toBeInTheDocument();
-    const group = screen.getByText('alpha').closest('dl');
-    expect(group).not.toBeNull();
-    if (group === null) throw new Error('no group list');
-    const rows = within(group).getAllByRole('term');
-    expect(rows.map((r) => r.textContent)).toEqual(['alpha', 'bravo', 'charlie']);
-    expect(within(group).getByText('Canary')).toBeInTheDocument();
-    expect(within(group).getByText(/The group deploy stopped at bravo/)).toBeInTheDocument();
-  });
-});
-
-describe('outcomeLabel (SHP-DA-013)', () => {
+describe('stateWords (SHP-DA-013)', () => {
   it('names each unfinished state instead of one "Active"', () => {
-    expect(outcomeLabel('queued')).toBe('Queued');
-    expect(outcomeLabel('awaiting_approval')).toBe('Waiting for approval');
-    expect(outcomeLabel('soaking')).toBe('Soaking');
-    expect(outcomeLabel('rolled_back')).toBe('Rolled back');
+    expect(stateWords('queued')).toBe('Queued');
+    expect(stateWords('awaiting_approval')).toBe('Waiting for approval');
+    expect(stateWords('soaking')).toBe('Soaking');
+    expect(stateWords('rolled_back')).toBe('Rolled back');
   });
 });

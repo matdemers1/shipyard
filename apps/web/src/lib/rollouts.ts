@@ -1,22 +1,23 @@
-import type { RolloutAccepted, RolloutItem, RolloutPlan, RolloutStatus } from '@shipyard/schema';
+import type { DeployTargetState, RolloutAccepted, RolloutItem, RolloutPlan, RolloutStatus } from '@shipyard/schema';
 import { useEffect, useRef, useState } from 'react';
 import { RefusalError, request, unreachableRefusal } from './api';
-import type { AppStatus } from './appstatus';
+import { type AppStatus, type StatusTone, stateTone } from './appstatus';
 import type { HomeApp } from './home';
 import { isTerminal } from './progress';
 
 /**
- * "Roll all" (SHP-T-12.2, SHP-REQ-154): every app Home calls ready to ship, rolled one at a time —
- * each at the SHA its card would ship, the next only once the one before has soaked. The server
+ * "Deploy all ready" (SHP-T-12.2, SHP-REQ-154; the console's word since SHP-T-13.3, while the rollout
+ * routes and types keep their names): every app Home calls ready, deployed one at a time — each at
+ * the SHA its card would deploy, the next only once the one before has soaked. The server
  * decides the order (Shipyard's own app always last, SHP-REQ-152), so the sheet shows the order the
  * plan endpoint answers, never one worked out here.
  */
 
-/** The fewest ready apps for which Home offers Roll all; one app is just its own Ship button. */
+/** The fewest ready apps for which Home offers Deploy all ready; one app is just its own Deploy button. */
 export const MIN_ROLL_ALL = 2;
 
 /**
- * The apps Roll all would ship: those whose status is "ready to ship" with a SHA to ship, and not
+ * The apps Deploy all ready would deploy: those whose status is "ready" with a SHA to deploy, and not
  * frozen (a frozen app would refuse the whole rollout). Deploying, drifted and approval-waiting apps
  * already have another status, so they are never "ready".
  */
@@ -37,6 +38,17 @@ export function planRollout(items: readonly RolloutItem[]): Promise<RolloutPlan>
 /** `POST /api/rollouts` — starts it: every app locked at once, shipped one at a time. */
 export function startRollout(items: readonly RolloutItem[]): Promise<RolloutAccepted> {
   return request<RolloutAccepted>('/api/rollouts', { method: 'POST', body: { items } });
+}
+
+/**
+ * A rollout member's badge tone, one of the library's four (SHP-T-13.2): a member that has not
+ * finished — running, or queued behind the app before it — is `attention`, so "Running" and
+ * "Waiting its turn" carry a fill in light mode; a finished one is neutral, a cancelled one
+ * `warning`, a failed one `danger`, as `stateTone` says for every terminal state.
+ */
+export function memberTone(member: { state: DeployTargetState }): StatusTone {
+  if (!isTerminal(member.state)) return 'attention';
+  return stateTone(member.state);
 }
 
 /** True once no member of the rollout can change any more. */

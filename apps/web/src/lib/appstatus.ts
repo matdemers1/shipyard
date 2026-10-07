@@ -1,14 +1,21 @@
+import type { BadgeTone } from '@d3cloud/ui';
 import type { CommitEntry, CommitsInfo } from './home';
+import { STATUS_WORDS, stateWords } from './words';
 
 /**
  * One app's state in plain words (SHP-T-3.10): what it is doing and why, derived from what the
- * server already answers. Home's cards and app detail's status panel both read this, so the two
- * never tell a different story about the same app.
+ * server already answers. Apps' rows, its Needs you list and app detail's status panel all read
+ * this, so they never tell a different story about the same app. Apps lists rows alphabetically and
+ * never by status (SHP-D-089): a row that moved under the thumb on refresh would be a mis-tap on a
+ * deploy console.
  *
- * The case this exists for: "10 waiting" with nothing to ship. Waiting counts every commit on the
+ * The case this exists for: "10 waiting" with nothing ready. Waiting counts every commit on the
  * default branch ahead of the recorded release, but GitHub runs the image workflow once per push,
  * on the newest commit of that push — so most waiting commits never get a run of their own and
- * have no images. They are not lost: they ship inside the next green commit after them.
+ * have no images. They are not lost: they deploy inside the next green commit after them.
+ *
+ * Every label and headline here takes its words from ./words (SHP-T-13.3); `shipSha` stays the
+ * field's name, and what it holds is the commit the Deploy button names.
  */
 
 export type StatusKind =
@@ -25,19 +32,26 @@ export type StatusKind =
   | 'github-unavailable'
   | 'no-repo';
 
-export type StatusTone = 'neutral' | 'attention' | 'danger';
+/**
+ * Every status is one of the library's four tones and nothing else (SHP-T-13.2). Derived from
+ * `Badge`'s own prop type so a tone the library drops or adds fails the typecheck here, rather than
+ * rendering an unstyled badge: `neutral` is quietly fine, `attention` should change what you do
+ * next (and marks work in flight), `warning` is degraded or held and needs a look but not action
+ * now, `danger` is blocked or failed. There is no success tone (D-016).
+ */
+export type StatusTone = BadgeTone;
 
 export interface AppStatus {
   kind: StatusKind;
-  /** `attention` where it should change what you do next; `danger` for blocked or failed. */
+  /** One of the library's four tones: `attention` where it should change what you do next, `warning` for degraded or held, `danger` for blocked or failed. */
   tone: StatusTone;
-  /** A badge's worth: "Ready to ship". */
+  /** A badge's worth: "Ready". */
   label: string;
-  /** One line, the thing to know: "Ready to ship 1a2b3c4". */
+  /** One line, the thing to know: "Ready to deploy 1a2b3c4". */
   headline: string;
   /** Why, in a sentence or two. */
   detail: string;
-  /** The SHA a deployer can ship now, when there is one. */
+  /** The SHA a deployer can deploy now, when there is one. */
   shipSha: string | null;
 }
 
@@ -52,11 +66,11 @@ export interface CommitSummary {
   running: number;
   /** No image-workflow run on a push to the default branch — no images to deploy. */
   noRun: number;
-  /** Commits after the one that would ship; they wait for a later green commit. */
+  /** Commits after the one that would deploy; they wait for a later green commit. */
   afterShip: number;
 }
 
-/** What the status needs to know about an app. Home and app detail both have these facts. */
+/** What the status needs to know about an app. Apps and app detail both have these facts. */
 export interface StatusInput {
   repo: string | null;
   liveSha: string | null;
@@ -77,59 +91,28 @@ function plural(n: number, one: string, many = `${one}s`): string {
   return `${String(n)} ${n === 1 ? one : many}`;
 }
 
-/** Deploy states in words a person uses. */
-const STATE_WORDS: Record<string, string> = {
-  queued: 'Queued',
-  awaiting_approval: 'Waiting for approval',
-  locked: 'Starting',
-  verifying: 'Checking the commit',
-  backing_up: 'Backing up',
-  migrating: 'Running migrations',
-  pulling: 'Pulling images',
-  swapping: 'Swapping containers',
-  checking: 'Health check',
-  soaking: 'Soaking',
-  rolling_back: 'Rolling back',
-  succeeded: 'Succeeded',
-  failed: 'Failed',
-  rolled_back: 'Rolled back',
-  refused: 'Refused',
-  cancelled: 'Cancelled',
-};
-
-export function stateWords(state: string): string {
-  return STATE_WORDS[state] ?? state.replaceAll('_', ' ');
-}
-
+/**
+ * A deploy state's tone. Only a finished-and-fine or not-yet-started deploy is neutral: every state
+ * in between is "Running" or "Active" on the badge, and a neutral badge is a transparent one in
+ * light mode, so in-flight states are `attention` (SHP-T-13.2). A cancelled deploy ended on someone's
+ * say-so, not a fault, but its app may be half-moved: `warning`, worth a look and not an alarm.
+ */
 export function stateTone(state: string): StatusTone {
-  if (state === 'failed' || state === 'rolled_back' || state === 'refused') return 'danger';
-  if (state === 'awaiting_approval') return 'attention';
-  return 'neutral';
-}
-
-/** Per-commit build state in words, for the waiting list: GitHub CI's, or Shipyard's own build's. */
-export function ciWords(ci: CommitEntry['ci'], source: CommitsInfo['buildSource'] = 'github'): string {
-  if (source === 'shipyard') {
-    switch (ci) {
-      case 'success':
-        return 'Built';
-      case 'failure':
-        return 'Build failed';
-      case 'pending':
-        return 'Building';
-      case 'none':
-        return 'Not built';
-    }
-  }
-  switch (ci) {
-    case 'success':
-      return 'Images built';
-    case 'failure':
-      return 'CI failed';
-    case 'pending':
-      return 'CI running';
-    case 'none':
-      return 'No images';
+  switch (state) {
+    case 'failed':
+    case 'rolled_back':
+    case 'refused':
+      return 'danger';
+    case 'cancelled':
+      return 'warning';
+    case 'queued':
+    case 'succeeded':
+      return 'neutral';
+    default:
+      // awaiting_approval, locked, verifying, backing_up, migrating, pulling, swapping, checking,
+      // soaking, rolling_back — and any state a newer server adds, which is more likely in flight
+      // than finished.
+      return 'attention';
   }
 }
 
@@ -157,9 +140,10 @@ export function summarizeCommits(commits: CommitsInfo | null): CommitSummary {
 
 /**
  * The newest commit that has a CI run at all: that run decides whether the latest push is
- * deployable. Commits after it without a run belong to the same push.
+ * deployable. Commits after it without a run belong to the same push. Exported so a CI-failed row
+ * links to the run that failed, the same commit the status names.
  */
-function newestWithRun(entries: CommitEntry[]): CommitEntry | undefined {
+export function newestWithRun(entries: CommitEntry[]): CommitEntry | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry !== undefined && entry.ci !== 'none') return entry;
@@ -167,7 +151,7 @@ function newestWithRun(entries: CommitEntry[]): CommitEntry | undefined {
   return undefined;
 }
 
-/** Why the commits after the ship target are not in it yet. */
+/** Why the commits after the deploy target are not in it yet. */
 function afterShipNote(entries: CommitEntry[], shipSha: string, shipyard: boolean): string {
   const index = entries.findIndex((c) => c.sha === shipSha);
   const after = entries.slice(index + 1);
@@ -176,9 +160,9 @@ function afterShipNote(entries: CommitEntry[], shipSha: string, shipyard: boolea
     return ` ${plural(after.length, 'newer commit')} ${after.length === 1 ? 'is' : 'are'} still being built; wait if you want ${after.length === 1 ? 'it' : 'them'} too.`;
   }
   if (after.some((c) => c.ci === 'failure')) {
-    return ` ${shipyard ? 'A newer build failed' : 'CI failed on a newer commit'}, so ${plural(after.length, 'commit')} after this one can't ship yet.`;
+    return ` ${shipyard ? 'A newer build failed' : 'CI failed on a newer commit'}, so ${plural(after.length, 'commit')} after this one can't deploy yet.`;
   }
-  return ` ${plural(after.length, 'newer commit')} ${after.length === 1 ? 'has' : 'have'} no images yet and will ship with a later green commit.`;
+  return ` ${plural(after.length, 'newer commit')} ${after.length === 1 ? 'has' : 'have'} no images yet and will deploy with a later green commit.`;
 }
 
 export function appStatus(input: StatusInput): AppStatus {
@@ -196,8 +180,8 @@ export function appStatus(input: StatusInput): AppStatus {
     return {
       kind: 'deploying',
       tone: 'attention',
-      label: active.state === 'rolling_back' ? 'Rolling back' : 'Deploying',
-      headline: active.state === 'rolling_back' ? 'Rolling back now' : 'Deploying now',
+      label: active.state === 'rolling_back' ? STATUS_WORDS.rollingBack : STATUS_WORDS.deploying,
+      headline: active.state === 'rolling_back' ? `${STATUS_WORDS.rollingBack} now` : `${STATUS_WORDS.deploying} now`,
       detail: `${active.holder} holds this app; it is at “${step}”. Nothing else can deploy it until this finishes.`,
       shipSha: null,
     };
@@ -206,9 +190,11 @@ export function appStatus(input: StatusInput): AppStatus {
   if (approval !== undefined) {
     return {
       kind: 'approval',
-      tone: 'attention',
-      label: 'Needs approval',
-      headline: `Waiting for approval to ship ${sha7(approval.sha)}`,
+      // Approval and drift wait on a person, so they share the warning tone the board gives them;
+      // attention stays for ready and in flight, danger for what failed (SHP-P-13 design, D-086).
+      tone: 'warning',
+      label: STATUS_WORDS.waitingForApproval,
+      headline: `Waiting for approval to deploy ${sha7(approval.sha)}`,
       detail: `${approval.requester.label} asked to deploy it. A deployer has to review and approve before anything changes.`,
       shipSha: null,
     };
@@ -217,8 +203,8 @@ export function appStatus(input: StatusInput): AppStatus {
   if (input.drift !== null && input.drift !== undefined) {
     return {
       kind: 'drift',
-      tone: 'danger',
-      label: 'Drift',
+      tone: 'warning',
+      label: STATUS_WORDS.drift,
       headline: 'Running something Shipyard did not deploy',
       detail:
         'The containers on the host no longer match the recorded release — most often a deploy done by hand. New deploys are refused until someone adopts what is running or redeploys the recorded release.',
@@ -226,17 +212,18 @@ export function appStatus(input: StatusInput): AppStatus {
     };
   }
 
-  // A freeze refuses every new deploy (G2), so it wins over "ready": offering Ship here would only
+  // A freeze refuses every new deploy (G2), so it wins over "ready": offering Deploy here would only
   // lead to a refusal. A deploy already running finishes, so `active` stays above it.
   if (input.frozen === true) {
     const ship = commits?.newestGreen ?? null;
     const waiting = ship !== null && ship !== liveSha && entries.some((c) => c.sha === ship);
     return {
       kind: 'frozen',
+      // Frozen is a deliberate hold, not a problem: neutral, with the snowflake beside it.
       tone: 'neutral',
-      label: 'Frozen',
+      label: STATUS_WORDS.frozen,
       headline: 'Frozen — new deploys are refused',
-      detail: `${waiting ? `${sha7(ship)} is ready to ship once it is unfrozen. ` : ''}Rollbacks and restores still work while it is frozen.`,
+      detail: `${waiting ? `${sha7(ship)} is ready to deploy once it is unfrozen. ` : ''}Rollbacks and restores still work while it is frozen.`,
       shipSha: null,
     };
   }
@@ -255,7 +242,7 @@ export function appStatus(input: StatusInput): AppStatus {
   if (commits === null || commits.source === 'unavailable') {
     return {
       kind: 'github-unavailable',
-      tone: 'neutral',
+      tone: 'warning',
       label: 'GitHub unreachable',
       headline: "Can't see new commits",
       detail:
@@ -285,9 +272,9 @@ export function appStatus(input: StatusInput): AppStatus {
     return {
       kind: 'ready',
       tone: 'attention',
-      label: 'Ready to ship',
-      headline: `Ready to ship ${sha7(ship)}`,
-      detail: `${shipyard ? 'Shipyard built its images.' : 'Its images are built and CI passed.'} Shipping it brings live forward by ${plural(includes, 'commit')}.${afterShipNote(entries, ship, shipyard)}`,
+      label: STATUS_WORDS.ready,
+      headline: `Ready to deploy ${sha7(ship)}`,
+      detail: `${shipyard ? 'Shipyard built its images.' : 'Its images are built and CI passed.'} Deploying it brings live forward by ${plural(includes, 'commit')}.${afterShipNote(entries, ship, shipyard)}`,
       shipSha: ship,
     };
   }
@@ -296,9 +283,9 @@ export function appStatus(input: StatusInput): AppStatus {
     return {
       kind: 'up-to-date',
       tone: 'neutral',
-      label: 'Up to date',
-      headline: 'Up to date',
-      detail: `Live is the newest commit on ${branch}. Nothing to ship.`,
+      label: STATUS_WORDS.upToDate,
+      headline: STATUS_WORDS.upToDate,
+      detail: `Live is the newest commit on ${branch}. Nothing to deploy.`,
       shipSha: null,
     };
   }
@@ -308,9 +295,9 @@ export function appStatus(input: StatusInput): AppStatus {
     return {
       kind: 'ci-running',
       tone: 'neutral',
-      label: 'Building',
+      label: shipyard ? STATUS_WORDS.building : STATUS_WORDS.ciRunning,
       headline: `${builder} is building ${sha7(decider.sha)}`,
-      detail: `${aheadWords} since live, none deployable yet. When this ${shipyard ? 'build succeeds' : 'run passes'}, ${sha7(decider.sha)} becomes the one to ship.`,
+      detail: `${aheadWords} since live, none deployable yet. When this ${shipyard ? 'build succeeds' : 'run passes'}, ${sha7(decider.sha)} becomes the one to deploy.`,
       shipSha: null,
     };
   }
@@ -319,11 +306,11 @@ export function appStatus(input: StatusInput): AppStatus {
     return {
       kind: 'ci-failed',
       tone: 'danger',
-      label: shipyard ? 'Build failed' : 'CI failed',
+      label: shipyard ? STATUS_WORDS.buildFailed : STATUS_WORDS.ciFailed,
       headline: shipyard ? `Shipyard's build of ${sha7(decider.sha)} failed` : `CI failed on ${sha7(decider.sha)}`,
       detail: shipyard
         ? `${aheadWords} since live, and the newest build failed, so nothing new is deployable. Open the build to see which stage failed, then push a fix or rebuild it.`
-        : `${aheadWords} since live, and the newest build failed, so no images were published. Fix it and push again — a green push makes all of them shippable.`,
+        : `${aheadWords} since live, and the newest build failed, so no images were published. Fix it and push again — a green push makes all of them deployable.`,
       shipSha: null,
     };
   }
@@ -331,30 +318,11 @@ export function appStatus(input: StatusInput): AppStatus {
   return {
     kind: 'no-images',
     tone: 'neutral',
-    label: 'Nothing to ship',
+    label: STATUS_WORDS.waiting,
     headline: `${aheadWords} since live, none ${shipyard ? 'built' : 'with images'}`,
     detail: shipyard
       ? `Shipyard builds this app itself, and none of these has a succeeded build yet. Pushes to ${branch} build on their own; to build one now, queue it from Builds (or ask Claude to run shipyard_build).`
       : `GitHub builds images once per push, for its newest commit, and none of these has a finished build on ${branch} yet. A new push's build shows up here within a minute; if none ever does, check the manifest's workflow name.`,
     shipSha: null,
   };
-}
-
-/** Where Home puts an app: what needs you first, then what is quietly fine. */
-export function statusRank(kind: StatusKind): number {
-  const order: StatusKind[] = [
-    'approval',
-    'drift',
-    'deploying',
-    'ready',
-    'ci-failed',
-    'ci-running',
-    'frozen',
-    'no-images',
-    'github-unavailable',
-    'never-deployed',
-    'no-repo',
-    'up-to-date',
-  ];
-  return order.indexOf(kind);
 }

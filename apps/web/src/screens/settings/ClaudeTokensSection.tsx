@@ -6,11 +6,11 @@ import {
   Cluster,
   DataList,
   DataListRow,
+  EmptyState,
   FormActions,
   FormField,
   Input,
-  Link,
-  Page,
+  Modal,
   PageHeader,
   Section,
   Spinner,
@@ -19,30 +19,40 @@ import {
   Tabs,
   Textarea,
 } from '@d3cloud/ui';
-import { KeyRound } from 'lucide-react';
+import { KeyRound, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState, type SyntheticEvent } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
-import { CopyButton, Mono } from '../components/Copyable';
-import { relativeTime, tokens as tokenApi, type TokenCreated, type TokenSummary } from '../lib/admin';
-import { RefusalError, unreachableRefusal } from '../lib/api';
-import { useCan } from '../lib/auth';
-import { claudeAddCommand, deploySnippetFor, envLine, mcpJsonWithEnv, mcpUrl, TOKEN_ENV, TOOLS } from '../lib/connect';
+import { CopyButton, Mono } from '../../components/Copyable';
+import { relativeTime, shortDate, tokens as tokenApi, type TokenCreated, type TokenSummary } from '../../lib/admin';
+import type { RefusalError } from '../../lib/api';
+import { useCan } from '../../lib/auth';
+import { claudeAddCommand, deploySnippetFor, envLine, mcpJsonWithEnv, mcpUrl, TOKEN_ENV, TOOLS } from '../../lib/connect';
+import { RefusalAlert, asRefusal } from './shared';
 
 /**
- * Connect Claude Code (SHP-T-3.12), `/connect`: everything needed to point Claude Code at this
- * Shipyard's MCP server, in order — what it can do, a token scoped to chosen apps, the command
- * (or a repo `.mcp.json` that holds no secret), a check that turns green on the token's first
- * MCP call, and the CLAUDE.md snippet. A viewer reads it all and is told who can make the token.
+ * Settings › Claude & tokens (SHP-T-3.12, SHP-REQ-046, SHP-ADR-006). "Connect a Claude session"
+ * comes first and holds the page's only token-creation form: a token scoped to chosen apps, the
+ * exact `claude mcp add` command (or a repo `.mcp.json` that holds no secret), a check that turns
+ * green on the token's first MCP call, and the CLAUDE.md snippet. Below it, every token and its
+ * last use, each revocable after a confirmation (SHP-REQ-170: one form, one list).
+ *
+ * A viewer reads the connect steps and is told who can make the token; the token list needs a
+ * state-changing role, as the old API tokens screen did, so a viewer is not shown it at all.
  */
 
 /** How often the page asks whether the new token has been used, and for how long. */
 export const CONNECT_POLL_MS = 3000;
 export const CONNECT_POLL_LIMIT_MS = 15 * 60 * 1000;
 
+/** A token nobody has used for this long is worth revoking. */
+export const UNUSED_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
 const PLACEHOLDER = '<your token>';
 
-function asRefusal(error: unknown): RefusalError {
-  return error instanceof RefusalError ? error : unreachableRefusal();
+/** Live, and neither used nor made in the last thirty days. */
+export function isUnused(t: TokenSummary, now: number = Date.now()): boolean {
+  if (t.revokedAt !== null) return false;
+  const last = Date.parse(t.lastUsedAt ?? t.createdAt);
+  return !Number.isNaN(last) && now - last > UNUSED_AFTER_MS;
 }
 
 function TokenForm({ apps, onCreated }: { apps: string[]; onCreated: (t: TokenCreated) => void }) {
@@ -77,13 +87,9 @@ function TokenForm({ apps, onCreated }: { apps: string[]; onCreated: (t: TokenCr
   }
 
   return (
-    <Stack as="form" gap="16" noValidate onSubmit={submit}>
-      {refusal === null ? null : (
-        <Alert tone="danger" title={refusal.message} dynamic>
-          {refusal.fix}
-        </Alert>
-      )}
-      <FormField label="Name" help="So you can tell your tokens apart on API tokens — e.g. “Claude Code on my laptop”.">
+    <Stack as="form" gap="16" noValidate onSubmit={submit} aria-label="Make a token">
+      <RefusalAlert refusal={refusal} />
+      <FormField label="Name" help="So you can tell your tokens apart in the list below — e.g. “Claude Code on my laptop”.">
         <Input
           name="label"
           autoComplete="off"
@@ -160,71 +166,52 @@ function ConnectionCheck({ created, used, polling }: { created: TokenCreated | n
   );
 }
 
-export function Connect() {
-  const can = useCan();
+function ConnectCard({
+  can,
+  apps,
+  list,
+  onRefresh,
+}: {
+  can: boolean;
+  apps: string[];
+  list: TokenSummary[] | null;
+  onRefresh: () => void;
+}) {
   const origin = window.location.origin;
-  const [apps, setApps] = useState<string[]>([]);
-  const [list, setList] = useState<TokenSummary[] | null>(null);
-  const [refusal, setRefusal] = useState<RefusalError | null>(null);
   const [created, setCreated] = useState<TokenCreated | null>(null);
   const [createdAt, setCreatedAt] = useState(0);
-
-  const load = useCallback(async () => {
-    try {
-      const [t, a] = await Promise.all([tokenApi.list(), tokenApi.appNames()]);
-      setList(t);
-      setApps(a);
-      setRefusal(null);
-    } catch (error) {
-      setRefusal(asRefusal(error));
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const [now, setNow] = useState(() => Date.now());
 
   const used = created === null ? null : (list?.find((t) => t.id === created.id) ?? null);
   const connected = used !== null && used.lastUsedAt !== null;
-  const [now, setNow] = useState(() => Date.now());
   const polling = created !== null && !connected && now - createdAt < CONNECT_POLL_LIMIT_MS;
 
   useEffect(() => {
     if (!polling) return;
     const timer = setInterval(() => {
       setNow(Date.now());
-      void tokenApi
-        .list()
-        .then(setList)
-        .catch(() => undefined);
+      onRefresh();
     }, CONNECT_POLL_MS);
     return () => {
       clearInterval(timer);
     };
-  }, [polling]);
+  }, [polling, onRefresh]);
 
   const token = created?.token ?? PLACEHOLDER;
   const command = claudeAddCommand(origin, token);
   const mcpJson = mcpJsonWithEnv(origin);
   const snippet = deploySnippetFor(origin);
   const exportLine = envLine(token);
-  const others = (list ?? []).filter((t) => t.revokedAt === null && t.id !== created?.id);
 
   return (
-    <Page width="narrow">
+    <Section
+      title="Connect a Claude session"
+      description="Let Claude Code see what is live and deploy through Shipyard from any repo — no SSH, and every deploy still passes every check."
+    >
       <Stack gap="24">
-        <PageHeader
-          title="Connect Claude Code"
-          description="Let Claude Code see what is live and ship through Shipyard from any repo — no SSH, and every deploy still passes every check."
-        />
-
-        {refusal === null ? null : (
-          <Alert tone="danger" title={refusal.message} dynamic>
-            {refusal.fix}
-          </Alert>
-        )}
-
         <Section
+          surface="plain"
+          headingLevel={3}
           title="1. Make a token"
           description="One token per machine or repo, limited to the apps you tick. You can revoke it any time."
         >
@@ -240,7 +227,7 @@ export function Connect() {
                 setCreated(t);
                 setCreatedAt(Date.now());
                 setNow(Date.now());
-                void load();
+                onRefresh();
               }}
             />
           ) : (
@@ -257,11 +244,27 @@ export function Connect() {
                   </div>
                 </Stack>
               </FormField>
+              <FormActions align="start">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setCreated(null);
+                  }}
+                >
+                  Make another token
+                </Button>
+              </FormActions>
             </Stack>
           )}
         </Section>
 
-        <Section title="2. Add Shipyard to Claude Code" description="Pick one. The first is simplest; the second suits a repo you share.">
+        <Section
+          surface="plain"
+          headingLevel={3}
+          title="2. Add Shipyard to Claude Code"
+          description="Pick one. The first is simplest; the second suits a repo you share."
+        >
           <Tabs
             aria-label="How to add Shipyard"
             defaultValue="user"
@@ -272,9 +275,7 @@ export function Connect() {
           >
             <TabPanel value="user">
               <Stack gap="8">
-                <p className="shp-status__detail">
-                  Run this once in a terminal. The token is kept in your own Claude Code settings, not in any repo.
-                </p>
+                <p className="shp-status__detail">Run this once in a terminal. The token is kept in your own Claude Code settings, not in any repo.</p>
                 <Mono value={command} block />
                 <div>
                   <CopyButton text={command} label="Copy command" />
@@ -304,13 +305,15 @@ export function Connect() {
           </Tabs>
         </Section>
 
-        <Section title="3. Check it works">
+        <Section surface="plain" headingLevel={3} title="3. Check it works">
           <ConnectionCheck created={created} used={used} polling={polling} />
         </Section>
 
         <Section
+          surface="plain"
+          headingLevel={3}
           title="4. Teach the repo how to deploy"
-          description="Optional, and worth it: paste this into the repo’s CLAUDE.md so Claude Code deploys through Shipyard, names itself, and reports what shipped."
+          description="Optional, and worth it: paste this into the repo’s CLAUDE.md so Claude Code deploys through Shipyard, names itself, and reports what it deployed."
         >
           <Stack gap="8">
             <Textarea mono readOnly aria-label="CLAUDE.md snippet" rows={10} value={snippet} />
@@ -321,6 +324,8 @@ export function Connect() {
         </Section>
 
         <Section
+          surface="plain"
+          headingLevel={3}
           title="What Claude Code can do"
           description={`Shipyard’s MCP server at ${mcpUrl(origin)}. Approval-required apps still wait for a person, and a token only reaches the apps it names.`}
         >
@@ -330,36 +335,172 @@ export function Connect() {
             ))}
           </DataList>
         </Section>
-
-        {others.length > 0 ? (
-          <Section
-            title="Already connected"
-            description="Tokens already out there and when each last called Shipyard."
-            actions={
-              <Link asChild>
-                <RouterLink to="/tokens">Manage tokens</RouterLink>
-              </Link>
-            }
-          >
-            <DataList aria-label="Existing tokens">
-              {others.map((t) => (
-                <DataListRow
-                  key={t.id}
-                  title={t.label}
-                  description={t.apps.join(', ')}
-                  meta={
-                    t.lastUsedAt === null ? (
-                      <Badge tone="neutral">Never used</Badge>
-                    ) : (
-                      <Badge tone="neutral">{relativeTime(t.lastUsedAt)}</Badge>
-                    )
-                  }
-                />
-              ))}
-            </DataList>
-          </Section>
-        ) : null}
       </Stack>
-    </Page>
+    </Section>
+  );
+}
+
+function tokenDescription(t: TokenSummary): string {
+  const used =
+    t.lastUsedAt === null ? 'never used' : `last used ${relativeTime(t.lastUsedAt)}${t.lastUsedIp === null ? '' : ` from ${t.lastUsedIp}`}`;
+  return `${t.apps.join(', ')} · created ${shortDate(t.createdAt)} · ${used}`;
+}
+
+function TokenMeta({ t, now }: { t: TokenSummary; now: number }) {
+  if (t.revokedAt !== null) return <Badge tone="danger">Revoked</Badge>;
+  return (
+    <span className="shp-row-meta">
+      {isUnused(t, now) ? <Badge tone="warning">Unused for 30 days</Badge> : null}
+      <code>{t.prefix}…</code>
+    </span>
+  );
+}
+
+function TokenList({ list, onRevoked }: { list: TokenSummary[]; onRevoked: (row: TokenSummary) => void }) {
+  const [revoking, setRevoking] = useState<TokenSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [refusal, setRefusal] = useState<RefusalError | null>(null);
+  const now = Date.now();
+  const active = list.filter((t) => t.revokedAt === null).length;
+
+  const revoke = () => {
+    if (revoking === null) return;
+    setBusy(true);
+    setRefusal(null);
+    tokenApi
+      .revoke(revoking.id)
+      .then((row) => {
+        onRevoked(row);
+        setRevoking(null);
+      })
+      .catch((error: unknown) => {
+        setRevoking(null);
+        setRefusal(asRefusal(error));
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  return (
+    <Section
+      title={`Tokens (${String(active)} active)`}
+      description="Bearer tokens for Claude Code sessions and CI, each limited to named apps, and when each last called Shipyard."
+    >
+      <Stack gap="16">
+        <RefusalAlert refusal={refusal} />
+        <DataList
+          aria-label="API tokens"
+          empty={
+            <EmptyState kind="empty" size="inline" heading="No tokens yet" headingLevel={3}>
+              Make one above for each machine or repo that deploys through Claude Code, scoped to its apps.
+            </EmptyState>
+          }
+        >
+          {list.map((t) => (
+            <DataListRow
+              key={t.id}
+              title={t.label}
+              description={tokenDescription(t)}
+              meta={<TokenMeta t={t} now={now} />}
+              actions={
+                t.revokedAt === null ? (
+                  <Button
+                    type="button"
+                    variant="danger-ghost"
+                    size="sm"
+                    icon={<Trash2 />}
+                    aria-label={`Revoke ${t.label}`}
+                    onClick={() => {
+                      setRevoking(t);
+                    }}
+                  >
+                    Revoke
+                  </Button>
+                ) : undefined
+              }
+            />
+          ))}
+        </DataList>
+        <Modal
+          open={revoking !== null}
+          onOpenChange={(open) => {
+            if (!open) setRevoking(null);
+          }}
+          title="Revoke this token?"
+          description={revoking === null ? undefined : `“${revoking.label}” stops working at once. Anything using it must be given a new token.`}
+          destructive
+          footer={
+            <FormActions>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setRevoking(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="button" variant="danger" loading={busy} onClick={revoke}>
+                Revoke token
+              </Button>
+            </FormActions>
+          }
+        />
+      </Stack>
+    </Section>
+  );
+}
+
+export function ClaudeTokensSection() {
+  const can = useCan();
+  const [apps, setApps] = useState<string[]>([]);
+  const [list, setList] = useState<TokenSummary[] | null>(null);
+  const [refusal, setRefusal] = useState<RefusalError | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [t, a] = await Promise.all([tokenApi.list(), tokenApi.appNames()]);
+      setList(t);
+      setApps(a);
+      setRefusal(null);
+    } catch (error) {
+      setRefusal(asRefusal(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    // A viewer can make no token and sees no list, so there is nothing to read for them.
+    if (can) void load();
+  }, [can, load]);
+
+  // A new token, and each poll while waiting for its first call, re-reads the one list both cards show.
+  const refreshList = useCallback(() => {
+    void tokenApi
+      .list()
+      .then(setList)
+      .catch(() => undefined);
+  }, []);
+
+  return (
+    <Stack gap="24">
+      <PageHeader title="Claude & tokens" description="Connect Claude Code to this Shipyard, and see every token that can reach it." />
+      <RefusalAlert refusal={refusal} />
+      <ConnectCard can={can} apps={apps} list={list} onRefresh={refreshList} />
+      {can ? (
+        list === null ? (
+          refusal === null ? (
+            <Spinner label="Loading tokens" />
+          ) : null
+        ) : (
+          <TokenList
+            list={list}
+            onRevoked={(row) => {
+              setList((prev) => (prev === null ? prev : prev.map((t) => (t.id === row.id ? row : t))));
+            }}
+          />
+        )
+      ) : null}
+    </Stack>
   );
 }

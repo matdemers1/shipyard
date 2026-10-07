@@ -19,10 +19,10 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
 import { RefusalError, unreachableRefusal } from '../lib/api';
+import type { StatusTone } from '../lib/appstatus';
 import { useCan } from '../lib/auth';
 import {
   BUILD_STAGES,
-  BUILD_STATE_LABEL,
   STAGE_LABEL,
   TRIGGER_LABEL,
   buildStateTone,
@@ -38,6 +38,7 @@ import {
   type BuildStreamOptions,
   type Transport,
 } from '../lib/builds';
+import { BUILD_STATE_WORDS } from '../lib/words';
 import { formatRelativeTime } from '../lib/timeline';
 
 /**
@@ -118,7 +119,7 @@ const STAGE_STATE_LABEL: Record<BuildStageView['state'], string> = {
 function StageItem({ stage, view, build }: { stage: BuildStage; view: BuildStageView | undefined; build: Detail }) {
   const current = view?.state === 'running' && !isTerminalBuild(build.state);
   let label: string;
-  let tone: 'neutral' | 'attention' | 'danger' = 'neutral';
+  let tone: StatusTone = 'neutral';
   if (view === undefined) {
     label = isTerminalBuild(build.state) ? 'Did not run' : 'Waiting';
   } else if (view.state === 'running' && isTerminalBuild(build.state)) {
@@ -431,7 +432,7 @@ export function BuildDetailView({ id, options }: { id: string; options?: BuildSt
         <div ref={stateRef} tabIndex={-1} role="group" aria-label="Build state">
           <Cluster gap="12" justify="between">
             <Cluster gap="8">
-              <Badge tone={buildStateTone(build.state)}>{BUILD_STATE_LABEL[build.state]}</Badge>
+              <Badge tone={buildStateTone(build.state)}>{BUILD_STATE_WORDS[build.state]}</Badge>
               <TransportNote transport={transport} done={done} />
             </Cluster>
             <Link asChild>

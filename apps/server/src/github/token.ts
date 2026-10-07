@@ -113,6 +113,8 @@ export function liveGitHub(deps: GitHubTokenDeps): GitHubPort {
       if (p.tarball === undefined) throw new RefusalError(refusal('github_unreachable', 'GitHub tarballs are unavailable.'));
       return p.tarball(repo, sha);
     },
+    // A person opening a commit page, never the poll (SHP-ADR-007): the same token cache as the rest.
+    runJobs: async (repo, runId) => (await port()).runJobs(repo, runId),
   };
 }
 

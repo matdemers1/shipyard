@@ -1,5 +1,6 @@
 import { request } from './api';
-import { stateWords } from './appstatus';
+import type { StatusTone } from './appstatus';
+import { stateWords } from './words';
 
 /**
  * The console's read side of the deploy history: the timeline (S8, SHP-REQ-062) and a single
@@ -31,11 +32,11 @@ export type TimelineOutcome = 'succeeded' | 'failed' | 'rolled_back' | 'refused'
 
 export const OUTCOME_OPTIONS: readonly { value: TimelineOutcome; label: string }[] = [
   { value: 'active', label: 'In progress' },
-  { value: 'succeeded', label: 'Succeeded' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'rolled_back', label: 'Rolled back' },
-  { value: 'refused', label: 'Refused' },
-  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'succeeded', label: stateWords('succeeded') },
+  { value: 'failed', label: stateWords('failed') },
+  { value: 'rolled_back', label: stateWords('rolled_back') },
+  { value: 'refused', label: stateWords('refused') },
+  { value: 'cancelled', label: stateWords('cancelled') },
 ];
 
 export const KIND_OPTIONS: readonly { value: DeployKind; label: string }[] = [
@@ -55,6 +56,14 @@ export interface TimelineItem {
   createdAt: string;
   endedAt: string | null;
   refusalCode: string | null;
+  /**
+   * Optional: a server that sends them lets Activity name the check and the reason on a refused
+   * row, and group a rollout's deploys by id instead of by the label they carry (SHP-T-13.13).
+   */
+  refusalGate?: string | null;
+  refusalMessage?: string | null;
+  rolloutId?: string | null;
+  rolloutPosition?: number | null;
 }
 
 export interface TimelinePage {
@@ -148,25 +157,6 @@ export interface DeployStatus {
   group?: DeployGroup;
 }
 
-export function fetchDeployStatus(id: string): Promise<DeployStatus> {
-  return request<DeployStatus>(`/api/deploys/${encodeURIComponent(id)}`);
-}
-
-export interface DeployStep {
-  name: string;
-  argv: string[];
-  startedAt: string;
-  endedAt: string | null;
-  exitCode: number | null;
-  output: string | null;
-}
-
-/** `GET /api/deploys/:id/steps`, built alongside this task; the journal (SHP-T-3.7 reads only). */
-export async function fetchDeploySteps(id: string): Promise<DeployStep[]> {
-  const { steps } = await request<{ steps: DeployStep[] }>(`/api/deploys/${encodeURIComponent(id)}/steps`);
-  return steps;
-}
-
 export interface ForemanPost {
   service: string;
   idempotencyKey: string;
@@ -195,26 +185,9 @@ export function isTerminal(state: DeployTargetState): boolean {
   return ['succeeded', 'failed', 'rolled_back', 'refused', 'cancelled'].includes(state);
 }
 
-export function outcomeLabel(state: DeployTargetState): string {
-  switch (state) {
-    case 'succeeded':
-      return 'Succeeded';
-    case 'failed':
-      return 'Failed';
-    case 'rolled_back':
-      return 'Rolled back';
-    case 'refused':
-      return 'Refused';
-    case 'cancelled':
-      return 'Cancelled';
-    default:
-      // Not finished yet: say which step, not one "Active" for queued, held and soaking alike (SHP-DA-013).
-      return stateWords(state);
-  }
-}
+export type BadgeTone = StatusTone;
 
-export type BadgeTone = 'neutral' | 'attention' | 'danger';
-
+/** The same four tones as `stateTone`: a deploy still moving is `attention`, a cancelled one `warning` (SHP-T-13.2). */
 export function outcomeTone(state: DeployTargetState): BadgeTone {
   switch (state) {
     case 'succeeded':
@@ -223,6 +196,8 @@ export function outcomeTone(state: DeployTargetState): BadgeTone {
     case 'refused':
     case 'rolled_back':
       return 'danger';
+    case 'cancelled':
+      return 'warning';
     default:
       return 'attention';
   }
@@ -249,4 +224,72 @@ export function formatRelativeTime(iso: string, now: Date = new Date()): string 
     if (abs < limit) return rtf.format(Math.round(-seconds / divisor), unit);
   }
   return rtf.format(Math.round(-seconds / 31536000), 'year');
+}
+
+
+// ─── Activity's time and duration words (SHP-T-13.13) ──────────────────────
+
+const SHORT_TIME: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+
+function startOfDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+/** Whole calendar days from `then`'s day to `now`'s day, in local time. */
+function daysBetween(then: Date, now: Date): number {
+  return Math.round((startOfDay(now) - startOfDay(then)) / 86_400_000);
+}
+
+/**
+ * A feed row's time: "12m ago", "3h ago", "Yesterday 11:57 AM", "Mon 11:57 AM" within the week,
+ * "Oct 1, 11:57 AM" after it. No seconds. A time ahead of `now` (a schedule) reads absolute.
+ */
+export function formatFeedTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso);
+  const seconds = Math.round((now.getTime() - then.getTime()) / 1000);
+  const clock = then.toLocaleTimeString('en-US', SHORT_TIME);
+  if (seconds >= 0 && seconds < 60) return 'just now';
+  if (seconds >= 0 && seconds < 3600) return `${String(Math.floor(seconds / 60))}m ago`;
+  const days = daysBetween(then, now);
+  if (seconds >= 0 && days === 0) return `${String(Math.floor(seconds / 3600))}h ago`;
+  if (seconds >= 0 && days === 1) return `Yesterday ${clock}`;
+  if (seconds >= 0 && seconds < 7 * 86_400) return `${then.toLocaleDateString('en-US', { weekday: 'short' })} ${clock}`;
+  const date = then.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(then.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
+  return `${date}, ${clock}`;
+}
+
+/** When a schedule is due: "Today 9:00 AM", "Thu 9:00 AM" within the week, "Oct 14, 9:00 AM" beyond. */
+export function formatDue(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso);
+  const clock = at.toLocaleTimeString('en-US', SHORT_TIME);
+  const days = daysBetween(now, at);
+  if (days === 0) return `Today ${clock}`;
+  if (days === 1) return `Tomorrow ${clock}`;
+  if (days > 1 && days < 7) return `${at.toLocaleDateString('en-US', { weekday: 'short' })} ${clock}`;
+  const date = at.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(at.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
+  return `${date}, ${clock}`;
+}
+
+/** The heading over a day's rows: "Today", "Yesterday", "Oct 4" (with the year when it is not this one). */
+export function dayLabel(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso);
+  const days = daysBetween(at, now);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return at.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(at.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
+}
+
+/** One calendar day's key in local time, for grouping rows. */
+export function dayKey(iso: string): string {
+  const at = new Date(iso);
+  return `${String(at.getFullYear())}-${String(at.getMonth() + 1)}-${String(at.getDate())}`;
+}
+
+/** "45s", "5m 52s", "1h 2m": whole seconds up to a minute, then minutes and seconds, then hours and minutes. */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${String(total)}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${String(minutes)}m ${String(total % 60)}s`;
+  return `${String(Math.floor(minutes / 60))}h ${String(minutes % 60)}m`;
 }

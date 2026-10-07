@@ -1,12 +1,27 @@
 import { createHash } from 'node:crypto';
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import {
+  DEPLOY_SHA,
+  INTERNAL_ERROR,
+  alertBox,
+  appRow,
+  dryRunStatus,
+  fakeDryRun,
+  h1,
+  hold,
+  isPath,
+  json,
+  needsYou,
+  needsYouRow,
+} from '../harness/console.js';
 import { withDb } from '../harness/db.js';
 import { USERS, storageStateFor } from '../harness/env.js';
 import { HOUR, MINUTE, DAY, ago, createDeploy, fixture, reseedWorld, sha, wipeAppData } from '../harness/seed.js';
 
 /**
- * SHP-T-6.1, SHP-REQ-091: every empty, loading, error and permission-denied state the screen
- * inventory lists, one test per cell, named "S<n> <state>: <what>". A "—" cell has no test.
+ * SHP-T-6.1 and SHP-T-13.14, SHP-REQ-091: every empty, loading, error and permission-denied state
+ * the screen inventory lists, on the redesigned console (SHP-P-13) — one test per cell, named
+ * "S<n> <state>: <what>". A "—" cell has no test.
  *
  * Loading states are observed by holding one routed request; error states the real server cannot
  * be made to produce on demand (a lost database, a dry run the absent agent never finishes) are
@@ -14,92 +29,28 @@ import { HOUR, MINUTE, DAY, ago, createDeploy, fixture, reseedWorld, sha, wipeAp
  * `_test` database — a scenario that changes the world puts the baseline back afterwards.
  */
 
-// ── Helpers ─────────────────────────────────────────────────────────────
+/** A step's row on the deploy page, by the agent's name for the step (SHP-T-13.11: `data-step`). */
+const stepCard = (page: Page, name: string) => page.getByRole('list', { name: 'Deploy steps' }).locator(`[data-step="${name}"]`);
 
-const h1 = (page: Page, name: string | RegExp) => expect(page.getByRole('heading', { level: 1, name })).toBeVisible();
+/** The deploy page's verdict banner, by the start of its title (SHP-T-13.11). */
+const verdict = (page: Page, title: RegExp) => page.getByRole('region', { name: title });
 
-/** The home card for `app`. */
-const card = (page: Page, app: string) => page.getByRole('listitem').filter({ has: page.getByRole('link', { name: app, exact: true }) });
-
-/** A step's card on the progress screen, by the step's name. */
-const stepCard = (page: Page, name: string) =>
-  page.getByRole('list', { name: 'Deploy steps' }).getByRole('listitem').filter({ has: page.locator('strong').getByText(name, { exact: true }) });
-
-/** A route handler that holds the request until `release()` is called (then lets it through). */
-function hold(): { handler: (route: Route) => Promise<void>; release: () => void; seen: Promise<void> } {
-  let release: () => void = () => undefined;
-  let markSeen: () => void = () => undefined;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const seen = new Promise<void>((resolve) => {
-    markSeen = resolve;
-  });
-  return {
-    handler: async (route) => {
-      markSeen();
-      await gate;
-      await route.continue().catch(() => undefined);
-    },
-    release: () => {
-      release();
-    },
-    seen,
-  };
-}
-
-const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-
-/** Exactly the server's generic 500 (apps/server/src/errors.ts) — what a lost database answers. */
-const INTERNAL_ERROR = {
-  error: { code: 'internal_error', gate: 'none', message: 'An unexpected error occurred.', fix: 'Try again; if this persists, contact an operator.' },
-};
-
-/**
- * An Alert by its text. A static `@d3cloud/ui` Alert has no role (only a `dynamic` one is a live
- * region), so it is found by the design system's class.
- */
-const alertBox = (page: Page, text: string) => page.locator('.d3-alrt').filter({ hasText: text });
-
-const isPath = (path: string) => (url: URL) => url.pathname === path;
-
-// ── The dry-run sheet's fakes (no agent runs a dry run in this harness) ──
-
-const FAKE_DRY_RUN = 'console-e2e-fake-dry-run';
-
-/** Answers the sheet's dry-run POST with a fake deploy ID, and its poll with `status`. */
-async function fakeDryRun(page: Page, status: Record<string, unknown> | null): Promise<void> {
-  await page.route(isPath('/api/deploys'), async (route) => {
-    if (route.request().method() !== 'POST') return route.fallback();
-    return json(route, 202, { deployId: FAKE_DRY_RUN, state: 'queued' });
-  });
-  if (status !== null) {
-    await page.route(isPath(`/api/deploys/${FAKE_DRY_RUN}`), (route) => json(route, 200, status));
-  }
-}
-
-function dryRunStatus(app: string, at: string, overrides: Record<string, unknown>): Record<string, unknown> {
-  return {
-    deployId: FAKE_DRY_RUN,
-    kind: 'deploy',
-    app,
-    sha: at,
-    dryRun: true,
-    state: 'succeeded',
-    currentStep: null,
-    requester: { label: USERS.admin.displayName, repo: null, branch: null },
-    images: [],
-    schemaRevision: null,
-    refusal: null,
-    gates: ['G1', 'G2', 'G3', 'G4', 'G5'].map((gate) => ({ gate, pass: true, reason: 'ok' })),
-    createdAt: new Date().toISOString(),
-    endedAt: new Date().toISOString(),
-    ...overrides,
-  };
-}
+/** A row of Settings › Host's health checklist, by its name. */
+const healthRow = (page: Page, name: string) =>
+  page
+    .getByRole('list', { name: 'Host health' })
+    .getByRole('listitem')
+    .filter({ has: page.getByText(name, { exact: true }) });
 
 /** The held d3auth deploy's SHA (seed.ts: the approval app's second commit). */
 const HELD_SHA = sha(42);
+
+/** Apps › Needs you: "Approve and deploy <sha7>" on the held deploy opens the deploy sheet as its review. */
+async function openApproval(page: Page) {
+  const fx = fixture();
+  await needsYouRow(page, fx.apps.approval).getByRole('button', { name: `Approve and deploy ${HELD_SHA.slice(0, 7)}` }).click();
+  return page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval} ${HELD_SHA.slice(0, 7)}` });
+}
 
 // ── S1 Sign in (signed out) ─────────────────────────────────────────────
 
@@ -162,38 +113,35 @@ test.describe('as an admin, baseline world', () => {
   test("S2 error: the server can't reach its database", async ({ page }) => {
     await page.route(isPath('/api/apps'), (route) => json(route, 500, INTERNAL_ERROR));
     await page.goto('/');
-    await h1(page, 'Home');
+    await h1(page, 'Apps');
     const alert = alertBox(page, 'An unexpected error occurred.');
     await expect(alert).toBeVisible();
     await expect(alert).toContainText('lost its database');
     await expect(page.getByRole('link', { name: fixture().apps.history, exact: true })).toHaveCount(0);
   });
 
-  test('S3 empty: "Nothing to ship — live is" the SHA asked for', async ({ page }) => {
+  test('S3 empty: "Nothing to deploy — live is" the SHA asked for', async ({ page }) => {
     const fx = fixture();
     await fakeDryRun(page, dryRunStatus(fx.apps.approval, HELD_SHA, {}));
     await page.route(isPath(`/api/apps/${fx.apps.approval}/commits`), (route) =>
       json(route, 200, { live: HELD_SHA, head: HELD_SHA, commits: [], newestGreen: HELD_SHA, source: 'github' }),
     );
     await page.goto('/');
-    await page.getByRole('button', { name: 'Review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
-    await expect(dialog.getByText(`Nothing to ship — live is ${HELD_SHA.slice(0, 7)}.`)).toBeVisible();
+    const dialog = await openApproval(page);
+    await expect(dialog.getByText(`Nothing to deploy — live is ${HELD_SHA.slice(0, 7)}.`)).toBeVisible();
   });
 
   test('S3 loading: a spinner while the gates are checked', async ({ page }) => {
-    const fx = fixture();
     // The dry-run request never answers during the test: the sheet stays in "checking".
     await page.route(isPath('/api/deploys'), async (route) => {
       if (route.request().method() !== 'POST') return route.fallback();
       await new Promise(() => undefined);
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
+    const dialog = await openApproval(page);
     await expect(dialog.getByText(/Starting the checks · \d+s/)).toBeVisible();
     await expect(dialog.locator('.d3-spn')).toBeAttached();
-    await expect(dialog.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: `Approve and deploy ${HELD_SHA.slice(0, 7)}` })).toBeDisabled();
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
 
@@ -213,34 +161,41 @@ test.describe('as an admin, baseline world', () => {
       }),
     );
     await page.goto('/');
-    await page.getByRole('button', { name: 'Review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
+    const dialog = await openApproval(page);
     const g5 = dialog.getByRole('listitem').filter({ hasText: 'G5' });
-    await expect(g5).toContainText('failed');
+    await expect(g5).toContainText(/failed/i);
     await expect(g5).toContainText(reason);
     await expect(dialog.getByRole('alert').filter({ hasText: fix })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: `Approve and deploy ${HELD_SHA.slice(0, 7)}` })).toBeDisabled();
   });
 
-  test('S4 loading: the step list with live output, the current step marked', async ({ page }) => {
-    await page.goto(`/deploys/${fixture().deploys.inProgress}/live`);
+  test('S4 loading: every planned step listed, the current step marked, finished ones with their result', async ({ page }) => {
+    const id = fixture().deploys.inProgress;
+    // The old live address is a redirect to the one deploy page (SHP-T-13.11).
+    await page.goto(`/deploys/${id}/live`);
+    await expect(page).toHaveURL(new RegExp(`/deploys/${id}$`));
     const steps = page.getByRole('list', { name: 'Deploy steps' });
     await expect(steps).toBeVisible();
     const current = steps.locator('[aria-current="step"]');
-    await expect(current).toContainText('soak');
+    await expect(current).toContainText('Soak');
     await expect(current).toContainText('Running');
-    await expect(steps.getByLabel('Output of pull')).toContainText('Pulled');
+    await expect(stepCard(page, 'pull')).toContainText('Pulled');
+    await expect(verdict(page, /^Soaking/)).toBeVisible();
   });
 
   test('S4 error: the failed step highlighted, rollback steps after it', async ({ page }) => {
     await page.goto(`/deploys/${fixture().deploys.rolledBack}/live`);
     await expect(page.getByRole('list', { name: 'Deploy steps' })).toBeVisible();
     const check = stepCard(page, 'check');
-    await expect(check).toContainText('Failed (exit 1)');
+    await expect(check).toHaveAttribute('data-state', 'failed');
+    await expect(check).toContainText('exit 1');
     await expect(check).toContainText('/health: 503');
     const rollback = stepCard(page, 'rollback');
-    await expect(rollback).toContainText('Rollback');
-    await expect(alertBox(page, 'Rolled back')).toContainText('/health answered 503');
+    await expect(rollback).toContainText('Roll back');
+    await expect(verdict(page, /^Rolled back/)).toContainText('/health answered 503');
+    // Next actions, and never a Retry.
+    await expect(page.getByRole('group', { name: 'Next actions' }).getByRole('button', { name: 'Deploy again' })).toBeVisible();
+    await expect(page.getByText(/\bRetry\b/)).toHaveCount(0);
   });
 
   test('S5 empty: "Never deployed through Shipyard" with adopt-live', async ({ page }) => {
@@ -257,9 +212,9 @@ test.describe('as an admin, baseline world', () => {
     await held.seen;
     await expect(page.getByRole('status').filter({ hasText: `Loading ${app}` })).toBeAttached();
     await expect(page.locator('[aria-busy="true"]').first()).toBeAttached();
-    await expect(page.getByRole('heading', { name: 'How it deploys' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: /^Next up/ })).toHaveCount(0);
     held.release();
-    await expect(page.getByRole('heading', { name: 'How it deploys' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^Next up/ })).toBeVisible();
   });
 
   test('S5 error: the drift banner says deploys are blocked', async ({ page }) => {
@@ -273,13 +228,14 @@ test.describe('as an admin, baseline world', () => {
   test('S6 loading: a skeleton while the deploy is read', async ({ page }) => {
     const id = fixture().deploys.succeeded;
     const held = hold();
-    await page.route(isPath(`/api/deploys/${id}`), held.handler);
+    // The page reads the deploy from its event stream first, polling only when the stream fails.
+    await page.route((url) => url.pathname === `/api/deploys/${id}` || url.pathname === `/api/deploys/${id}/events`, held.handler);
     await page.goto(`/deploys/${id}`);
     await held.seen;
     await expect(page.getByRole('status').filter({ hasText: 'Loading this deploy' })).toBeAttached();
     await expect(page.locator('[aria-busy="true"]').first()).toBeAttached();
     held.release();
-    await expect(page.getByRole('heading', { level: 1 })).toContainText('·');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(/^Deploy /);
   });
 
   test('S6 error: an outbox failing badge on a deploy Foreman never received', async ({ page }) => {
@@ -313,12 +269,12 @@ test.describe('as an admin, baseline world', () => {
     await page.route((url) => url.pathname === '/api/deploys/timeline' && url.searchParams.get('cursor') === 'console-e2e-next-page', async (route) => {
       await held.handler(route).catch(() => undefined);
     });
-    await page.goto('/timeline');
-    await h1(page, 'Timeline');
-    await expect(page.getByRole('list', { name: 'Deploys' })).toBeVisible();
-    await page.getByRole('button', { name: /^(Load more|Loading…)$/ }).scrollIntoViewIfNeeded();
+    await page.goto('/activity');
+    await h1(page, 'Activity');
+    await expect(page.locator('.shp-feed')).toBeVisible();
+    await page.getByRole('button', { name: 'Load more' }).scrollIntoViewIfNeeded();
     await held.seen;
-    await expect(page.getByRole('button', { name: 'Loading…' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Load more' })).toHaveAttribute('aria-busy', 'true');
     await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
 
@@ -343,11 +299,17 @@ test.describe('as an admin, baseline world', () => {
       return refused.deployId;
     });
     try {
+      // The old /schedules address lands on Activity's schedules view (SHP-REQ-169).
       await page.goto('/schedules');
-      const past = page.getByRole('list', { name: 'Fired and cancelled deploys' });
-      const row = past.getByRole('listitem').filter({ hasText: message });
+      await expect(page).toHaveURL(/\/activity\?kind=schedule$/);
+      const row = page.locator('.shp-feed').getByRole('listitem').filter({ hasText: message });
       await expect(row).toBeVisible();
-      await expect(row).toContainText('Clear the freeze');
+      // The check by its name, never its code (SHP-REQ-171).
+      await expect(row).toContainText('Refused — Not frozen');
+      // The row opens the deploy, which says how to fix it.
+      await row.getByRole('link').click();
+      await expect(page).toHaveURL(new RegExp(`/deploys/${created}$`));
+      await expect(page.getByText(/Clear the freeze/).first()).toBeVisible();
     } finally {
       await withDb(async (db) => {
         await db.schedule.deleteMany({ where: { deployId: created } });
@@ -358,19 +320,27 @@ test.describe('as an admin, baseline world', () => {
   });
 
   test('S12 error: a fingerprint that does not match is refused', async ({ page }) => {
-    await page.goto('/agent');
-    await h1(page, 'Agent');
+    // An agent awaits its fingerprint, so Host opens its enrolment (SHP-T-13.6).
+    await page.goto('/settings/host');
+    await h1(page, 'Host');
     await page.getByRole('textbox', { name: 'Type the fingerprint shown on the host' }).fill('SHA256:not-the-fingerprint-on-the-host');
     await page.getByRole('button', { name: 'Confirm agent' }).click();
     await expect(alertBox(page, 'The fingerprint does not match this agent.')).toBeVisible();
     // Still awaiting confirmation.
-    await expect(page.getByText('Awaiting confirmation')).toBeVisible();
+    await expect(page.getByText('Awaiting confirmation', { exact: true })).toBeVisible();
   });
 
   test('S12 error: the agent PAT expiring within 30 days', async ({ page }) => {
-    await page.goto('/agent');
-    await expect(alertBox(page, "The agent's GitHub token expires within 30 days")).toBeVisible();
-    await expect(page.getByText('Expiring', { exact: true })).toBeVisible();
+    await page.goto('/settings/host');
+    const row = healthRow(page, "Agent's GitHub token");
+    await expect(row).toContainText(/Expires in \d+ days/);
+    await expect(row).toContainText('Replace it on the host before it does.');
+    await row.getByRole('button', { name: 'Renew…' }).click();
+    await expect(page.getByRole('dialog', { name: "Renew the agent's GitHub token" })).toBeVisible();
+    // Apps says so too, with the way to Settings (SHP-D-089).
+    await page.goto('/');
+    await expect(needsYou(page).getByText('The agent’s GitHub token expires soon')).toBeVisible();
+    await expect(needsYou(page).getByRole('link', { name: 'Renew in Settings' })).toHaveAttribute('href', '/settings/host');
   });
 
   test('S13 empty: "Just you" when no one else has an account', async ({ page }) => {
@@ -381,16 +351,18 @@ test.describe('as an admin, baseline world', () => {
       const all = (await response.json()) as { id: string }[];
       await json(route, 200, all.filter((u) => u.id === me));
     });
-    await page.goto('/users');
+    await page.goto('/settings/people');
     await expect(page.getByRole('heading', { name: 'Just you' })).toBeVisible();
   });
 
   test('S15 error: an outbox unsent over an hour is badged', async ({ page }) => {
-    await page.goto('/system');
-    await h1(page, 'System');
-    await expect(alertBox(page, 'Deploys not yet recorded in Foreman')).toBeVisible();
-    // The nav badge, visible from every screen.
-    await expect(page.getByRole('link', { name: /^System, \d+ needing attention$/ })).toBeVisible();
+    await page.goto('/settings/host');
+    await h1(page, 'Host');
+    await expect(healthRow(page, 'Foreman outbox')).toContainText('waited over an hour to be recorded in Foreman');
+    // The Host section's own entry in the Settings sub-nav carries the warning dot.
+    await expect(page.getByRole('navigation', { name: 'Settings' }).getByRole('link', { name: /^Host.*needs a look/ })).toBeVisible();
+    // The sidebar's host footer, visible from every screen, links to Settings › Host.
+    await expect(page.getByRole('link', { name: /Host · \d+ to look at/ })).toBeVisible();
   });
 });
 
@@ -403,12 +375,14 @@ test.describe('as an admin, a changed world', () => {
     await withDb((db) => reseedWorld(db));
   });
 
-  test('S2 empty: "No agent enrolled yet" links to the agent screen', async ({ page }) => {
+  test('S2 empty: "No agent enrolled yet" links to agent enrolment in Settings › Host', async ({ page }) => {
     await withDb((db) => wipeAppData(db));
     await page.goto('/');
     await expect(page.getByRole('heading', { name: 'No agent enrolled yet' })).toBeVisible();
     await page.getByRole('link', { name: 'Enrol an agent' }).click();
-    await h1(page, 'Agent');
+    await expect(page).toHaveURL(/\/settings\/host$/);
+    await h1(page, 'Host');
+    await expect(healthRow(page, 'Agent')).toContainText('No agent enrolled');
   });
 
   test('S2 empty: "Agent reported no apps" links to the onboarding runbook', async ({ page }) => {
@@ -429,10 +403,14 @@ test.describe('as an admin, a changed world', () => {
     await expect(page.getByRole('link', { name: 'Onboarding runbook' })).toHaveAttribute('href', /docs\/runbooks\/onboard-app\.md$/);
   });
 
-  test('S2 error: an agent stale for over 5 minutes shows a banner', async ({ page }) => {
+  test('S2 error: an agent stale for over 5 minutes is in Needs you, with the way to Settings', async ({ page }) => {
     await withDb((db) => db.agent.updateMany({ where: { confirmedAt: { not: null } }, data: { lastHeartbeatAt: ago(10 * MINUTE) } }));
     await page.goto('/');
-    await expect(alertBox(page, 'No agent has reported recently')).toBeVisible();
+    const row = needsYou(page).getByRole('listitem').filter({ hasText: 'The agent has stopped reporting' });
+    await expect(row).toContainText('live SHAs and drift may be out of date');
+    await row.getByRole('link', { name: 'Open Settings' }).click();
+    await h1(page, 'Host');
+    await expect(healthRow(page, 'Agent')).toContainText('Not checked in since');
   });
 
   test('S7 error: a failed restore command is in the journal', async ({ page }) => {
@@ -458,48 +436,62 @@ test.describe('as an admin, a changed world', () => {
       });
       return failed.deployId;
     });
-    // Confirming a restore follows it live; the record keeps the journal.
+    // Confirming a restore follows it live, at the address that is also its record (SHP-T-13.11).
     await page.goto(`/deploys/${deployId}/live`);
-    await expect(alertBox(page, 'Failed')).toContainText('The restore step exited 1.');
-    await expect(stepCard(page, 'restore')).toContainText('Failed (exit 1)');
-    await page.getByRole('link', { name: 'Deploy record' }).click();
-    const journal = page.getByRole('region', { name: 'Journal' }).or(page.locator('section').filter({ has: page.getByRole('heading', { name: 'Journal' }) }));
-    await expect(journal.first()).toContainText('exit 1');
-    await expect(journal.first()).toContainText('pg_restore: error: could not open input file');
+    await expect(page).toHaveURL(new RegExp(`/deploys/${deployId}$`));
+    // A restore has its own verdict (SHP-T-13.11): it names the failed step and that the data may have changed.
+    const banner = verdict(page, /^Restore failed at Restore/);
+    await expect(banner).toContainText('The restore step exited 1.');
+    await expect(banner).toContainText('the data may have changed');
+    const restore = stepCard(page, 'restore');
+    await expect(restore).toHaveAttribute('data-state', 'failed');
+    await expect(restore).toContainText('exit 1');
+    await expect(restore.getByLabel('Output of Restore')).toContainText('pg_restore: error: could not open input file');
   });
 
-  test('S8 empty: "No deploys yet"', async ({ page }) => {
+  test('S8 empty: "No activity yet"', async ({ page }) => {
     await withDb((db) => wipeAppData(db));
-    await page.goto('/timeline');
-    await expect(page.getByRole('heading', { name: 'No deploys yet' })).toBeVisible();
+    await page.goto('/activity');
+    await expect(page.getByRole('heading', { name: 'No activity yet' })).toBeVisible();
   });
 
-  test('S9 empty: "Nothing scheduled"', async ({ page }) => {
+  test('S9 empty: nothing scheduled — the schedules view matches nothing, and offers to clear it', async ({ page }) => {
     await withDb((db) => wipeAppData(db));
-    await page.goto('/schedules');
-    await expect(page.getByRole('heading', { name: 'Nothing scheduled' })).toBeVisible();
+    await page.goto('/activity?kind=schedule');
+    await expect(page.getByRole('heading', { name: 'Nothing matches' })).toBeVisible();
+    await expect(page.getByRole('list', { name: 'Upcoming deploys' })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Clear filters' }).click();
+    await expect(page).toHaveURL(/\/activity$/);
+    await expect(page.getByRole('heading', { name: 'No activity yet' })).toBeVisible();
   });
 
-  test('S11 empty: "No tokens — create one per repo" with the config snippet', async ({ page }) => {
+  test('S11 empty: "No tokens yet", with the command to connect Claude Code', async ({ page }) => {
     await withDb((db) => wipeAppData(db));
-    await page.goto('/tokens');
-    await expect(page.getByRole('heading', { name: 'No tokens — create one per repo' })).toBeVisible();
-    await expect(page.getByText('"mcpServers"')).toBeVisible();
-    await expect(page.getByText('Bearer <token>')).toBeVisible();
+    await page.goto('/settings/tokens');
+    await expect(page.getByRole('heading', { name: 'No tokens yet' })).toBeVisible();
+    await expect(page.getByText(/^claude mcp add .*Bearer <your token>"$/)).toBeVisible();
   });
 
   test('S12 empty: "No agent" links to the install runbook', async ({ page }) => {
     await withDb((db) => wipeAppData(db));
-    await page.goto('/agent');
+    await page.goto('/settings/host');
+    await expect(healthRow(page, 'Agent')).toContainText('No agent enrolled');
+    await page.getByRole('button', { name: 'Show enrolment' }).click();
     await expect(page.getByRole('heading', { name: 'No agent — see the install runbook' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Install runbook' })).toHaveAttribute('href', /docs\/runbooks\/install\.md$/);
+    const runbooks = page.getByRole('link', { name: 'Install runbook' });
+    await expect(runbooks).toHaveCount(2);
+    for (const link of await runbooks.all()) await expect(link).toHaveAttribute('href', /docs\/runbooks\/install\.md$/);
   });
 
   test('S12 error: the agent PAT has expired', async ({ page }) => {
     await withDb((db) => db.agent.updateMany({ where: { confirmedAt: { not: null } }, data: { patExpiresAt: ago(DAY) } }));
-    await page.goto('/agent');
-    await expect(alertBox(page, "The agent's GitHub token has expired")).toBeVisible();
-    await expect(page.getByText('Expired', { exact: true })).toBeVisible();
+    await page.goto('/settings/host');
+    const row = healthRow(page, "Agent's GitHub token");
+    await expect(row).toContainText(/^.*Expired · /);
+    await expect(row).toContainText('Deploys cannot read commit history or check runs');
+    await expect(row.getByRole('button', { name: 'Renew…' })).toBeVisible();
+    await page.goto('/');
+    await expect(needsYou(page).getByText('The agent’s GitHub token has expired')).toBeVisible();
   });
 
   test('S13 error: an expired invite link says so', async ({ page }) => {
@@ -532,11 +524,12 @@ test.describe('as a viewer', () => {
   test('S2 denied: deploy buttons are hidden', async ({ page }) => {
     const fx = fixture();
     await page.goto('/');
-    await expect(page.getByRole('link', { name: fx.apps.history, exact: true })).toBeVisible();
-    await expect(card(page, fx.apps.history)).toContainText('Since live');
-    await expect(page.getByRole('button', { name: /^Ship / })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /^(Up to date|Nothing green)$/ })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Deploy group' })).toHaveCount(0);
+    // The row says the app is ready, and offers nothing to press.
+    await expect(appRow(page, fx.apps.history)).toContainText('Ready');
+    await expect(page.getByRole('button', { name: DEPLOY_SHA })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Deploy all ready/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Deploy group/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Review / })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Deny' })).toHaveCount(0);
   });
 
@@ -545,8 +538,8 @@ test.describe('as a viewer', () => {
     // No fakes: this is what the real server and console do for a viewer. The held deploy is
     // visible, but nothing that opens the sheet (Review, Deploy, Roll back) is offered…
     await page.goto('/');
-    await expect(page.getByText(fx.apps.approval, { exact: false }).first()).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Review', exact: true })).toHaveCount(0);
+    await expect(needsYouRow(page, fx.apps.approval)).toContainText(`asked to deploy ${HELD_SHA.slice(0, 7)}`);
+    await expect(page.getByRole('button', { name: /^(Review|Approve)/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Deny' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Deploy/ })).toHaveCount(0);
     // …and asking the API for a dry run anyway is refused: the sheet has nothing to show.
@@ -557,10 +550,12 @@ test.describe('as a viewer', () => {
   test('S5 denied: app detail has no actions', async ({ page }) => {
     const fx = fixture();
     await page.goto(`/apps/${fx.apps.history}`);
-    await expect(page.getByRole('heading', { name: 'How it deploys' })).toBeVisible();
-    await expect(page.getByRole('list', { name: 'Rollback targets' }).getByRole('listitem').first()).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^Next up/ })).toBeVisible();
+    // The deploys are listed, and none offers a roll back; the header offers no deploy and no freeze.
+    await expect(page.getByRole('list', { name: 'Deploys' }).getByRole('listitem').first()).toBeVisible();
     await expect(page.getByRole('button', { name: /^Roll back to / })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Freeze', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: DEPLOY_SHA })).toHaveCount(0);
     // Drift and never-deployed: seen, not acted on.
     await page.goto(`/apps/${fx.apps.drifted}`);
     await expect(page.getByText('Your role is viewer: a deployer resolves drift.')).toBeVisible();
@@ -578,10 +573,9 @@ test.describe('as a viewer', () => {
   });
 
   test('S9 denied: schedules are read-only', async ({ page }) => {
-    await page.goto('/schedules');
-    await h1(page, 'Schedules');
+    await page.goto('/activity?kind=schedule');
+    await h1(page, 'Activity');
     await expect(page.getByRole('list', { name: 'Upcoming deploys' }).getByRole('listitem').first()).toBeVisible();
-    await expect(page.getByText('Your role can read schedules but not change them.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Schedule a deploy' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^(Cancel|Approve) / })).toHaveCount(0);
   });
@@ -589,25 +583,39 @@ test.describe('as a viewer', () => {
   test('S10 denied: freeze and unfreeze are hidden', async ({ page }) => {
     const fx = fixture();
     await page.goto(`/apps/${fx.apps.frozen}`);
-    await expect(alertBox(page, `${fx.apps.frozen} is frozen`)).toBeVisible();
+    await expect(alertBox(page, 'Season finale this weekend: no deploys.')).toContainText(/^Frozen until/);
     await expect(page.getByRole('button', { name: 'Unfreeze', exact: true })).toHaveCount(0);
     await page.goto(`/apps/${fx.apps.history}`);
-    await expect(page.getByRole('heading', { name: 'How it deploys' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^Next up/ })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Freeze', exact: true })).toHaveCount(0);
   });
 
-  for (const [n, path, label] of [
-    ['S11', '/tokens', 'API tokens'],
-    ['S12', '/agent', 'Agent'],
-    ['S13', '/users', 'Users'],
-    ['S15', '/system', 'System'],
-  ] as const) {
-    test(`${n} denied: ${label} is deployer-only`, async ({ page }) => {
+  // The deployer-only screens became Settings sections (SHP-ADR-006). The old addresses redirect;
+  // Host stays a deployer's, and the open sections show a viewer only what is theirs.
+  for (const path of ['/agent', '/system', '/settings/host']) {
+    test(`S12/S15 denied: ${path} is deployer-only, and the Settings sub-nav does not offer Host`, async ({ page }) => {
       await page.goto(path);
-      await expect(page.getByRole('heading', { name: DENIED })).toBeVisible();
-      await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0);
-      // And the nav does not offer it.
-      await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: label, exact: true })).toHaveCount(0);
+      await expect(page).toHaveURL(/\/settings\/host$/);
+      await expect(page.getByRole('heading', { name: DENIED }).first()).toBeVisible();
+      await expect(page.getByRole('navigation', { name: 'Settings' }).getByRole('link', { name: /^Host/ })).toHaveCount(0);
     });
   }
+
+  test('S11 denied: tokens are a deployer’s — a viewer is told who makes one, and sees no list', async ({ page }) => {
+    await page.goto('/tokens');
+    await expect(page).toHaveURL(/\/settings\/tokens$/);
+    await h1(page, 'Claude & tokens');
+    await expect(alertBox(page, 'A deployer makes the token')).toBeVisible();
+    await expect(page.getByRole('list', { name: 'API tokens' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Make the token' })).toHaveCount(0);
+  });
+
+  test('S13 denied: users and invites are a deployer’s — a viewer sees only their own account', async ({ page }) => {
+    await page.goto('/users');
+    await expect(page).toHaveURL(/\/settings\/people$/);
+    await h1(page, 'People');
+    await expect(page.getByRole('heading', { name: 'Your account' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Users' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Create invite' })).toHaveCount(0);
+  });
 });

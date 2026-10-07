@@ -42,6 +42,6 @@ export async function signIn(page: Page, user: SeedUser, options: SignInOptions 
   if (options.waitForFreshStep === true) await nextStep(Date.now());
 
   await page.keyboard.type(totpFor(user.totpSecret));
-  // The code input submits itself on the sixth digit; landing on Home is the proof of a session.
-  await expect(page.getByRole('heading', { level: 1, name: 'Home' })).toBeVisible();
+  // The code input submits itself on the sixth digit; landing on Apps is the proof of a session.
+  await expect(page.getByRole('heading', { level: 1, name: 'Apps' })).toBeVisible();
 }

@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import type { SystemStatus } from '@shipyard/schema';
+import { createContext, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { request, RefusalError } from './api';
+import { system } from './system';
 
 /**
- * Data for the S2 home screen (SHP-T-3.2, SHP-REQ-056, SHP-REQ-059, SHP-REQ-060, SHP-REQ-087):
- * one card per app with its live SHA, commits waiting on the default branch and their CI state,
- * lock state, last result and a deploy action, plus the approvals banner. Everything here is
- * read-only — the state-changing calls (deploy, approve, deny) live in `DryRunSheet` and the
- * banner's own deny confirm.
+ * Data for Apps (SHP-T-3.2, SHP-T-13.8, SHP-REQ-056, SHP-REQ-087, SHP-REQ-155): one row per app
+ * with its live SHA, the commits waiting on the default branch and their CI state, and what needs
+ * a person. Everything here is read-only — the state-changing calls (deploy, approve, deny, adopt)
+ * live in `DryRunSheet`, Needs you's deny confirm and the drift buttons.
  */
 
 export type CiState = 'success' | 'failure' | 'pending' | 'none';
@@ -83,41 +84,55 @@ export interface AgentRow {
   stale: boolean;
 }
 
-/** `GET /api/deploys?app=&limit=1` — just enough for "last result". */
-export interface LastDeploy {
-  deployId: string;
-  state: string;
-  endedAt: string | null;
-}
-
 export interface HomeApp extends AppRow {
   commits: CommitsInfo | null;
-  lastDeploy: LastDeploy | null;
-  /** This app has a pending approval waiting (SHP-D-071's card badge). */
+  /** This app has a pending approval waiting (SHP-D-071). */
   approvalPending: boolean;
 }
 
 export type HomeStatus = 'loading' | 'ready' | 'error';
 
-export interface HomeData {
+/**
+ * Everything Apps and the shell read, from one set of requests (SHP-T-13.8): the apps with their
+ * commits, the approvals, the agents and — for a role that may read it — the host's status. The
+ * Apps badge is `needsYouItems` over this same snapshot, so the number in the nav and the rows on
+ * the page are counted from one answer and cannot disagree.
+ */
+export interface AppsSnapshot {
   status: HomeStatus;
   apps: HomeApp[];
   approvals: PendingApproval[];
-  /** True when no agent has ever enrolled. */
-  noAgent: boolean;
-  /** An agent is enrolled and confirmed, but has reported no apps. */
-  noApps: boolean;
-  /** No confirmed agent has reported within the heartbeat window. */
-  agentStale: boolean;
+  /** Null until read, or when `/api/agent` could not be read. */
+  agents: AgentRow[] | null;
+  /** `GET /api/system`, or null when it was not asked for, could not be read, or the role may not read it. */
+  system: SystemStatus | null;
   error: RefusalError | null;
+  /** When the last read that succeeded finished, in epoch milliseconds. */
+  loadedAt: number | null;
+}
+
+export interface AppsStore {
+  getSnapshot: () => AppsSnapshot;
+  subscribe: (listener: () => void) => () => void;
+  /**
+   * Keeps the snapshot fresh while the caller is mounted: polls at the shortest pace any watcher
+   * asked for and on window focus, and reads `/api/system` while any watcher may read it. Returns
+   * the function that stops watching.
+   */
+  watch: (everyMs: number, readSystem: boolean) => () => void;
+  /** Reads everything again now — after a deny, an adopt, a started deploy. */
   refresh: () => void;
 }
 
-interface RawDeploysResponse {
-  deployId: string;
-  state: string;
-  endedAt: string | null;
-}
+const INITIAL: AppsSnapshot = {
+  status: 'loading',
+  apps: [],
+  approvals: [],
+  agents: null,
+  system: null,
+  error: null,
+  loadedAt: null,
+};
 
 async function fetchCommits(app: string): Promise<CommitsInfo | null> {
   try {
@@ -127,87 +142,157 @@ async function fetchCommits(app: string): Promise<CommitsInfo | null> {
   }
 }
 
-async function fetchLastDeploy(app: string): Promise<LastDeploy | null> {
-  try {
-    const rows = await request<RawDeploysResponse[]>(`/api/deploys?app=${encodeURIComponent(app)}&limit=1`);
-    const row = rows[0];
-    return row === undefined ? null : { deployId: row.deployId, state: row.state, endedAt: row.endedAt };
-  } catch {
-    return null;
-  }
-}
+/**
+ * One store per signed-in shell. The shell creates it and provides it, so Apps and the nav badge
+ * share one polling loop for `/api/apps`, `/api/approvals` and the per-app commits, instead of each
+ * running its own. It is an object rather than module state so that every shell — and every test
+ * that renders one — starts empty.
+ */
+export function createAppsStore(): AppsStore {
+  let snapshot = INITIAL;
+  const listeners = new Set<() => void>();
+  const watches = new Set<{ everyMs: number; readSystem: boolean }>();
+  let generation = 0;
+  // What the read in flight, and the last one that landed, asked for: a watcher that needs the host
+  // status starts a new read when the one it would otherwise share did not ask for it.
+  let inFlight: { readSystem: boolean } | null = null;
+  let lastReadSystem = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let timerMs = 0;
 
-/** Polls `/api/apps`, `/api/approvals`, `/api/agent`, then per-app commits and last deploy. */
-export function useHomeData(): HomeData {
-  const [status, setStatus] = useState<HomeStatus>('loading');
-  const [apps, setApps] = useState<HomeApp[]>([]);
-  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
-  const [agents, setAgents] = useState<AgentRow[]>([]);
-  const [error, setError] = useState<RefusalError | null>(null);
-  const generation = useRef(0);
+  const emit = (next: AppsSnapshot): void => {
+    snapshot = next;
+    for (const listener of listeners) listener();
+  };
 
-  const load = useCallback(async () => {
-    const gen = ++generation.current;
+  const wantsSystem = (): boolean => [...watches].some((w) => w.readSystem);
+
+  async function load(): Promise<void> {
+    const gen = ++generation;
+    const readSystem = wantsSystem();
+    inFlight = { readSystem };
     try {
-      const [appRows, approvalRows, agentRows] = await Promise.all([
+      const [appRows, approvalRows, agentRows, host] = await Promise.all([
         request<{ apps: AppRow[] }>('/api/apps').then((r) => r.apps),
         request<PendingApproval[]>('/api/approvals'),
-        request<AgentRow[]>('/api/agent'),
+        // Only the empty states read the agents; a failed read must not hide the apps.
+        request<AgentRow[]>('/api/agent').catch(() => null),
+        readSystem ? system.status().catch(() => null) : Promise.resolve(null),
       ]);
-      if (gen !== generation.current) return;
+      if (gen !== generation) return;
 
       const pendingByApp = new Set(approvalRows.map((a) => a.app));
-      const enriched = await Promise.all(
-        appRows.map(async (row): Promise<HomeApp> => {
-          const [commits, lastDeploy] = await Promise.all([fetchCommits(row.name), fetchLastDeploy(row.name)]);
-          return { ...row, commits, lastDeploy, approvalPending: pendingByApp.has(row.name) };
-        }),
+      const apps = await Promise.all(
+        appRows.map(async (row): Promise<HomeApp> => ({
+          ...row,
+          commits: await fetchCommits(row.name),
+          approvalPending: pendingByApp.has(row.name),
+        })),
       );
-      if (gen !== generation.current) return;
+      if (gen !== generation) return;
 
-      setApps(enriched);
-      setApprovals(approvalRows);
-      setAgents(agentRows);
-      setStatus('ready');
-      setError(null);
+      lastReadSystem = readSystem;
+      emit({ status: 'ready', apps, approvals: approvalRows, agents: agentRows, system: host, error: null, loadedAt: Date.now() });
     } catch (err) {
-      if (gen !== generation.current) return;
-      setError(err instanceof RefusalError ? err : null);
-      setStatus('error');
+      if (gen !== generation) return;
+      // The last answer stays, so the badge does not invent or drop a warning on one failed read.
+      emit({ ...snapshot, status: 'error', error: err instanceof RefusalError ? err : null });
+    } finally {
+      if (gen === generation) inFlight = null;
     }
-  }, []);
+  }
 
-  useEffect(() => {
+  const onFocus = (): void => {
     void load();
-    const onFocus = () => {
-      void load();
-    };
-    const interval = setInterval(() => {
-      void load();
-    }, 30_000);
-    window.addEventListener('focus', onFocus);
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      clearInterval(interval);
-    };
-  }, [load]);
+  };
 
-  const noAgent = status === 'ready' && agents.length === 0;
-  const confirmed = agents.filter((a) => a.confirmed);
-  const noApps = status === 'ready' && confirmed.length > 0 && apps.length === 0;
-  const agentStale = status === 'ready' && confirmed.length > 0 && confirmed.every((a) => a.stale);
+  // One timer at the shortest pace any watcher asked for, and the focus listener while anyone watches.
+  function rearm(): void {
+    const pace = watches.size === 0 ? 0 : Math.min(...[...watches].map((w) => w.everyMs));
+    if (pace === timerMs) return;
+    if (timer !== undefined) clearInterval(timer);
+    timer = undefined;
+    if (timerMs === 0) window.addEventListener('focus', onFocus);
+    if (pace === 0) window.removeEventListener('focus', onFocus);
+    else timer = setInterval(onFocus, pace);
+    timerMs = pace;
+  }
 
   return {
-    status,
-    apps,
-    approvals,
-    noAgent,
-    noApps,
-    agentStale,
-    error,
+    getSnapshot: () => snapshot,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    watch: (everyMs, readSystem) => {
+      const entry = { everyMs, readSystem };
+      watches.add(entry);
+      // A watcher shares the read in flight, or a recent enough answer, when it has what it reads;
+      // otherwise — Apps opened five minutes after the shell's last read — it reads now.
+      const covered =
+        inFlight !== null
+          ? !readSystem || inFlight.readSystem
+          : snapshot.loadedAt !== null && Date.now() - snapshot.loadedAt < everyMs && (!readSystem || lastReadSystem);
+      if (!covered) void load();
+      rearm();
+      return () => {
+        watches.delete(entry);
+        rearm();
+      };
+    },
     refresh: () => {
       void load();
     },
+  };
+}
+
+export const AppsStoreContext = createContext<AppsStore | null>(null);
+
+/**
+ * The shell's store, or — for a screen rendered without the shell — one of the screen's own, so
+ * nothing ever renders without data.
+ */
+export function useAppsStore(): AppsStore {
+  const shared = useContext(AppsStoreContext);
+  const [own] = useState(createAppsStore);
+  return shared ?? own;
+}
+
+/** Subscribes to the store and keeps it fresh at `everyMs` while mounted. */
+export function useAppsSnapshot(store: AppsStore, everyMs: number, readSystem: boolean): AppsSnapshot {
+  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  useEffect(() => store.watch(everyMs, readSystem), [store, everyMs, readSystem]);
+  return snapshot;
+}
+
+/** How often Apps reads while it is open. The shell alone reads every five minutes. */
+export const HOME_POLL_MS = 30_000;
+
+export interface HomeData extends AppsSnapshot {
+  /** True when no agent has ever enrolled. */
+  noAgent: boolean;
+  /** An agent is enrolled and confirmed, but has reported no apps. */
+  noApps: boolean;
+  refresh: () => void;
+}
+
+/**
+ * Apps' data: the shell's shared snapshot, read every 30 seconds while Apps is open. `readSystem`
+ * is false for a viewer, who may not read `/api/system`.
+ */
+export function useHomeData(readSystem: boolean): HomeData {
+  const store = useAppsStore();
+  const snapshot = useAppsSnapshot(store, HOME_POLL_MS, readSystem);
+  const agents = snapshot.agents;
+  const ready = snapshot.status === 'ready' && agents !== null;
+  const confirmed = agents?.filter((a) => a.confirmed) ?? [];
+  return {
+    ...snapshot,
+    noAgent: ready && agents.length === 0,
+    noApps: ready && confirmed.length > 0 && snapshot.apps.length === 0,
+    refresh: store.refresh,
   };
 }
 

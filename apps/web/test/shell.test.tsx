@@ -76,7 +76,7 @@ describe('session', () => {
       'GET /api/apps': NOT_SIGNED_IN,
     });
     renderAt('/');
-    await screen.findByRole('heading', { level: 1, name: 'Home' });
+    await screen.findByRole('heading', { level: 1, name: 'Apps' });
     await act(async () => {
       await request('/api/apps').catch(() => undefined);
     });
@@ -113,7 +113,7 @@ describe('phone layout', () => {
     mockFetch({ 'GET /api/auth/me': meReply('viewer') });
     const user = userEvent.setup();
     renderAt('/');
-    await screen.findByRole('heading', { level: 1, name: 'Home' });
+    await screen.findByRole('heading', { level: 1, name: 'Apps' });
     expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /skip to content/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /switch to (light|dark) theme/i })).toBeInTheDocument();
@@ -131,7 +131,7 @@ describe('phone layout', () => {
     mockFetch({ 'GET /api/auth/me': meReply('admin') });
     const user = userEvent.setup();
     renderAt('/');
-    await screen.findByRole('heading', { level: 1, name: 'Home' });
+    await screen.findByRole('heading', { level: 1, name: 'Apps' });
     const before = document.documentElement.getAttribute('data-theme');
     await user.click(screen.getByRole('button', { name: /switch to (light|dark) theme/i }));
     const after = document.documentElement.getAttribute('data-theme');

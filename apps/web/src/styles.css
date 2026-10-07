@@ -717,3 +717,238 @@
     }
   }
 }
+
+/* SHP-T-13.8 — Apps: Needs you and the app rows (SHP-REQ-155, SHP-D-089). Rows are one list in a
+   fixed order; on a wide list each part has its own column so SHAs, lanes and badges line up down
+   the page, and on a phone the same row stacks — nothing scrolls sideways at 390 px. */
+@layer shipyard {
+  /* Needs you: one card, one row per thing waiting on a person. */
+  .shp-needs {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-needs__row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-8) var(--space-12);
+    padding: var(--space-12) var(--space-8);
+  }
+  .shp-needs__row + .shp-needs__row {
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-needs__icon {
+    display: inline-flex;
+    color: var(--color-warning);
+  }
+  .shp-needs__icon[data-tone='danger'] {
+    color: var(--color-danger);
+  }
+  .shp-needs__icon[data-tone='attention'] {
+    color: var(--color-accent);
+  }
+  .shp-needs__icon svg {
+    width: var(--space-20);
+    height: var(--space-20);
+  }
+  .shp-needs__text {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-needs__age {
+    margin-left: var(--space-8);
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    white-space: nowrap;
+  }
+  /* The actions sit under the words on a phone, beside them once there is room. */
+  .shp-needs__actions {
+    grid-column: 1 / -1;
+  }
+  @media (min-width: 768px) {
+    .shp-needs__row {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+    }
+    .shp-needs__actions {
+      grid-column: auto;
+      justify-content: flex-end;
+    }
+  }
+  .shp-needs-calm {
+    margin: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+
+  /* A row's navigation action (Resolve, Watch, View run): a link, as tall as a button under a thumb. */
+  .shp-row-link {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+  }
+  @media (pointer: coarse) {
+    .shp-row-link {
+      min-height: calc(var(--space-40) + var(--space-4));
+    }
+  }
+
+  /* All apps. Phone first: name and badge, SHAs and lane, why, then a full-width action. */
+  .shp-app-rows {
+    container-type: inline-size;
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-app-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'name badge more'
+      'sha lane lane'
+      'why why why'
+      'action action action';
+    align-items: center;
+    gap: var(--space-6) var(--space-12);
+    padding: var(--space-12) var(--space-8);
+    min-width: 0;
+  }
+  .shp-app-row + .shp-app-row {
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-app-row__name {
+    grid-area: name;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    font-weight: var(--weight-semibold);
+  }
+  .shp-app-row__repo {
+    display: none;
+    overflow: hidden;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-16);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shp-app-row__sha {
+    grid-area: sha;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2) var(--space-8);
+    min-width: 0;
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+  }
+  .shp-app-row__sha code {
+    font-family: var(--font-mono);
+    white-space: nowrap;
+  }
+  .shp-app-row__quiet {
+    color: var(--color-fg-muted);
+    white-space: nowrap;
+  }
+  .shp-app-row__lane {
+    grid-area: lane;
+    justify-self: end;
+  }
+  .shp-app-row__badge {
+    grid-area: badge;
+    justify-self: end;
+  }
+  .shp-app-row__why {
+    grid-area: why;
+    margin: 0;
+    min-width: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-16);
+    overflow-wrap: anywhere;
+  }
+  .shp-app-row__group::before {
+    content: ' · ';
+  }
+  .shp-app-row__action {
+    grid-area: action;
+    display: flex;
+    min-width: 0;
+  }
+  .shp-app-row__action:empty {
+    display: none;
+  }
+  .shp-app-row__action > * {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+  .shp-app-row__more {
+    grid-area: more;
+  }
+
+  /* A wide list: name + repo | live → target | lane | badge over why | action | overflow. */
+  @container (min-width: 760px) {
+    .shp-app-row {
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) auto minmax(0, 1.3fr) minmax(0, auto) auto;
+      grid-template-areas:
+        'name sha lane badge action more'
+        'name sha lane why action more';
+      column-gap: var(--space-16);
+      row-gap: var(--space-2);
+    }
+    .shp-app-row__repo {
+      display: block;
+    }
+    .shp-app-row__lane,
+    .shp-app-row__badge {
+      justify-self: start;
+    }
+    .shp-app-row__action {
+      justify-content: flex-end;
+    }
+    .shp-app-row__action:empty {
+      display: flex;
+    }
+    .shp-app-row__action > * {
+      flex: none;
+    }
+  }
+
+  /* The lane's legend, and the groups line with its deploy action. */
+  .shp-lane-legend {
+    margin: var(--space-8) 0 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-12);
+    line-height: var(--leading-16);
+  }
+  .shp-groups-line {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+  }
+  .shp-groups-line li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-8) var(--space-12);
+    min-width: 0;
+  }
+  .shp-groups-line strong {
+    color: var(--color-fg);
+  }
+}

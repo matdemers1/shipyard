@@ -1,19 +1,18 @@
 import type { PatWarning, SystemStatus } from '@shipyard/schema';
-import { useCallback, useEffect, useState } from 'react';
-import { request } from './api';
+import { useMemo } from 'react';
 import { appStatus } from './appstatus';
-import type { AppRow, CommitsInfo, PendingApproval } from './home';
-import { system } from './system';
+import { useAppsSnapshot, type AppRow, type AppsStore, type CommitsInfo, type PendingApproval } from './home';
 
 /**
  * Needs you (SHP-ADR-006, SHP-D-089): everything that is waiting on a person, in one list. There
  * is no separate Inbox — Apps shows the list and the nav's Apps badge is its length — so the
- * count and the list are derived from the same function and cannot disagree.
+ * count and the list are derived from the same function, over the same snapshot of the shared
+ * store (SHP-T-13.8), and cannot disagree.
  *
  * Four things from the apps (a deploy waiting for approval, drift, a failed build on the newest
  * push) and two from the host (an agent that has stopped reporting, and a GitHub token that is
  * expiring or expired). A frozen app is held on purpose and is never "ci-failed"; `appStatus` is
- * what decides that, so Home's cards and this list read one rule.
+ * what decides that, so the app rows and this list read one rule.
  */
 
 export type NeedsYouKind = 'approval' | 'drift' | 'ci-failed' | 'agent-stale' | 'agent-token';
@@ -93,61 +92,23 @@ export interface NeedsYou {
   hostWarnings: string[];
 }
 
-const NONE: NeedsYou = { items: [], count: 0, hostWarnings: [] };
-
-async function fetchCommits(app: string): Promise<CommitsInfo | null> {
-  try {
-    return await request<CommitsInfo>(`/api/apps/${encodeURIComponent(app)}/commits`);
-  } catch {
-    return null;
-  }
+/** The list, its count and the host lines, from one snapshot: Apps and the badge both call this. */
+export function needsYouFrom(snapshot: NeedsYouInput): NeedsYou {
+  const items = needsYouItems({ apps: snapshot.apps, approvals: snapshot.approvals, system: snapshot.system });
+  return { items, count: items.length, hostWarnings: hostWarnings(snapshot.system) };
 }
 
+/** How often the shell reads on its own, the pace the nav's old System badge had. */
+export const SHELL_POLL_MS = 5 * 60 * 1000;
+
 /**
- * What the shell shows: the Apps badge and the host footer. Read once per sign-in, when the tab
- * regains focus, and every five minutes — the same pace the nav's old System badge had. A failed
- * read leaves the last answer rather than inventing a warning. `readSystem` is false for a
- * viewer, who cannot read `/api/system`; the apps' own items still count.
+ * What the shell shows: the Apps badge and the host footer, from the shared store (SHP-T-13.8) —
+ * the same snapshot Apps renders its Needs you rows from. On its own the shell reads every five
+ * minutes and when the tab regains focus; while Apps is open the store reads at Apps' pace, and
+ * the badge moves with it. A failed read leaves the last answer rather than inventing a warning.
+ * `readSystem` is false for a viewer, who cannot read `/api/system`; the apps' own items still count.
  */
-export function useNeedsYou(readSystem: boolean): NeedsYou {
-  const [state, setState] = useState<NeedsYou>(NONE);
-
-  const load = useCallback(
-    async (isLive: () => boolean) => {
-      try {
-        const [apps, approvals, status] = await Promise.all([
-          request<{ apps: AppRow[] }>('/api/apps').then((r) => r.apps),
-          request<PendingApproval[]>('/api/approvals'),
-          readSystem ? system.status().catch(() => null) : Promise.resolve(null),
-        ]);
-        const withCommits = await Promise.all(
-          apps.map(async (app): Promise<NeedsYouApp> => ({ ...app, commits: await fetchCommits(app.name) })),
-        );
-        if (!isLive()) return;
-        const items = needsYouItems({ apps: withCommits, approvals, system: status });
-        setState({ items, count: items.length, hostWarnings: hostWarnings(status) });
-      } catch {
-        // Keep what was last known.
-      }
-    },
-    [readSystem],
-  );
-
-  useEffect(() => {
-    let live = true;
-    const isLive = () => live;
-    void load(isLive);
-    const onFocus = () => {
-      void load(isLive);
-    };
-    const timer = setInterval(onFocus, 5 * 60 * 1000);
-    window.addEventListener('focus', onFocus);
-    return () => {
-      live = false;
-      clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [load]);
-
-  return state;
+export function useNeedsYou(store: AppsStore, readSystem: boolean): NeedsYou {
+  const snapshot = useAppsSnapshot(store, SHELL_POLL_MS, readSystem);
+  return useMemo(() => needsYouFrom(snapshot), [snapshot]);
 }

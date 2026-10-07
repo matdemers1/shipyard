@@ -19,15 +19,11 @@ function renderAt(path: string) {
 const wrapper = ({ children }: { children: ReactNode }) => <AuthProvider>{children}</AuthProvider>;
 
 describe('role-aware navigation', () => {
-  it("hides Tokens, Agent and Users from a viewer, and useCan() is false", async () => {
+  it('shows a viewer the same three destinations, and useCan() is false', async () => {
     mockFetch({ 'GET /api/auth/me': meReply('viewer') });
     renderAt('/');
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect(within(nav).getByRole('link', { name: 'Home' })).toBeInTheDocument();
-    expect(within(nav).getByRole('link', { name: 'Timeline' })).toBeInTheDocument();
-    expect(within(nav).queryByRole('link', { name: 'API tokens' })).not.toBeInTheDocument();
-    expect(within(nav).queryByRole('link', { name: 'Agent' })).not.toBeInTheDocument();
-    expect(within(nav).queryByRole('link', { name: 'Users' })).not.toBeInTheDocument();
+    expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Settings']);
 
     const { result } = renderHook(() => useCan(), { wrapper });
     await waitFor(() => {
@@ -35,13 +31,11 @@ describe('role-aware navigation', () => {
     });
   });
 
-  it.each(['deployer', 'operator', 'admin'] as const)('shows Tokens, Agent and Users to %s, and useCan() is true', async (role) => {
+  it.each(['deployer', 'operator', 'admin'] as const)('shows %s the three destinations, and useCan() is true', async (role) => {
     mockFetch({ 'GET /api/auth/me': meReply(role) });
     renderAt('/');
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect(within(nav).getByRole('link', { name: 'API tokens' })).toBeInTheDocument();
-    expect(within(nav).getByRole('link', { name: 'Agent' })).toBeInTheDocument();
-    expect(within(nav).getByRole('link', { name: 'Users' })).toBeInTheDocument();
+    expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Settings']);
 
     const { result } = renderHook(() => useCan(), { wrapper });
     await waitFor(() => {
@@ -114,7 +108,7 @@ describe('session', () => {
 });
 
 describe('phone layout', () => {
-  it('collapses the nav behind a menu button below lg, and keeps the skip link and theme toggle', async () => {
+  it('replaces the nav with a bottom tab bar below lg, and keeps the skip link, menu and theme toggle', async () => {
     viewport.desktop = false;
     mockFetch({ 'GET /api/auth/me': meReply('viewer') });
     const user = userEvent.setup();
@@ -123,12 +117,14 @@ describe('phone layout', () => {
     expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /skip to content/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /switch to (light|dark) theme/i })).toBeInTheDocument();
+    const bar = screen.getByRole('navigation', { name: 'Primary' });
+    expect(within(bar).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Settings']);
 
+    // The menu button now opens the account, not a second copy of the navigation.
     const menus = screen.getAllByRole('button', { name: /menu|navigation/i });
     await user.click(menus[0] as HTMLElement);
-    const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect(within(nav).getByRole('link', { name: 'Timeline' })).toBeInTheDocument();
-    expect(within(nav).queryByRole('link', { name: 'Users' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Main' })).not.toBeInTheDocument();
   });
 
   it('toggles the theme on <html>', async () => {

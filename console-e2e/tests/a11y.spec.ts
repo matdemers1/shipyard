@@ -96,14 +96,14 @@ const SCREENS: Screen[] = [
     },
   },
   {
-    name: 'S2 home at phone width, navigation open',
+    name: 'S2 home at phone width, tab bar',
     as: 'admin',
     phone: true,
     path: () => '/',
     ready: (p) => h1(p, 'Home'),
     act: async (p) => {
-      await p.getByRole('button', { name: 'Open navigation' }).click();
-      await expect(p.getByRole('link', { name: 'Timeline' })).toBeVisible();
+      // On a phone the bottom tab bar is the navigation (SHP-ADR-006, @d3cloud/ui TabBar).
+      await expect(p.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /^Settings/ })).toBeVisible();
     },
   },
   // S3 Dry-run sheet — a deploy, an approval review, and a group deploy.
@@ -415,7 +415,7 @@ const SCREENS: Screen[] = [
     path: () => '/tokens',
     ready: async (p) => {
       await h1(p, 'API tokens');
-      await expect(p.getByText('matdemers1/d3-auth')).toBeVisible();
+      await expect(p.getByRole('list', { name: 'API tokens' }).getByText('matdemers1/d3-auth')).toBeVisible();
     },
   },
   {
@@ -430,7 +430,7 @@ const SCREENS: Screen[] = [
     path: () => '/tokens',
     ready: async (p) => {
       await h1(p, 'API tokens');
-      await expect(p.getByText('matdemers1/d3-auth')).toBeVisible();
+      await expect(p.getByRole('list', { name: 'API tokens' }).getByText('matdemers1/d3-auth')).toBeVisible();
     },
     act: async (p) => {
       await p.getByRole('button', { name: /^Revoke /, exact: false }).first().click();
@@ -443,12 +443,14 @@ const SCREENS: Screen[] = [
     path: () => '/tokens',
     ready: async (p) => {
       await h1(p, 'API tokens');
-      await expect(p.getByText('matdemers1/d3-auth')).toBeVisible();
+      await expect(p.getByRole('list', { name: 'API tokens' }).getByText('matdemers1/d3-auth')).toBeVisible();
     },
     act: async (p) => {
-      await p.getByRole('textbox', { name: 'Label' }).fill('console-e2e-a11y-token');
-      await p.getByRole('checkbox').first().check();
-      await p.getByRole('button', { name: 'Create token' }).click();
+      // Settings › Claude & tokens stacks Connect above the token list until SHP-T-13.6: use the list's own form.
+      const form = p.locator('form').filter({ has: p.getByRole('button', { name: 'Create token' }) }).last();
+      await form.getByRole('textbox', { name: 'Label' }).fill('console-e2e-a11y-token');
+      await form.getByRole('checkbox').first().check();
+      await form.getByRole('button', { name: 'Create token' }).click();
       await expect(p.getByText(/created$/)).toBeVisible();
       await expect(p.getByRole('button', { name: 'Copy token' })).toBeVisible();
     },
@@ -546,7 +548,7 @@ const SCREENS: Screen[] = [
   {
     name: 'S16 settings',
     as: 'admin',
-    path: () => '/settings',
+    path: () => '/settings/integrations',
     ready: async (p) => {
       await h1(p, 'Settings');
       await expect(p.getByRole('button', { name: 'Download app manifest', exact: true })).toBeVisible();
@@ -555,7 +557,7 @@ const SCREENS: Screen[] = [
   {
     name: 'S16 settings, a failed test',
     as: 'admin',
-    path: () => '/settings',
+    path: () => '/settings/integrations',
     ready: (p) => h1(p, 'Settings'),
     act: async (p) => {
       await p.getByRole('textbox', { name: 'Issuer' }).fill('http://127.0.0.1:9');
@@ -566,7 +568,7 @@ const SCREENS: Screen[] = [
   {
     name: 'S16 settings, turn-off confirm',
     as: 'admin',
-    path: () => '/settings',
+    path: () => '/settings/integrations',
     ready: (p) => h1(p, 'Settings'),
     act: async (p) => {
       // An issuer nothing answers: saved, the button stays off, and Turn off appears.
@@ -581,7 +583,7 @@ const SCREENS: Screen[] = [
   {
     name: 'S16 settings, alert email test failed',
     as: 'admin',
-    path: () => '/settings',
+    path: () => '/settings/integrations',
     ready: (p) => h1(p, 'Settings'),
     act: async (p) => {
       // A relay nothing answers: saved, and the test says it could not connect.
@@ -593,7 +595,7 @@ const SCREENS: Screen[] = [
   {
     name: 'S16 settings, alert email turn-off confirm',
     as: 'admin',
-    path: () => '/settings',
+    path: () => '/settings/integrations',
     ready: (p) => h1(p, 'Settings'),
     act: async (p) => {
       await saveDeadRelay(p);
@@ -604,7 +606,7 @@ const SCREENS: Screen[] = [
   {
     name: 'S16 settings as a viewer, denied',
     as: 'viewer',
-    path: () => '/settings',
+    path: () => '/settings/integrations',
     ready: (p) => expect(p.getByRole('heading', { name: 'This page needs the admin role' })).toBeVisible(),
   },
   // Invite acceptance — the form, its authenticator step, and a dead link.

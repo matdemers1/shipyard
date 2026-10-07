@@ -192,6 +192,8 @@ test.describe('a deployer', () => {
 
     // The list, reached from the navigation, filtered to the app.
     await page.goto('/');
+    // Builds is a view of Activity since SHP-ADR-006.
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: /^Activity/ }).click();
     await page.getByRole('link', { name: 'Builds', exact: true }).first().click();
     await h1(page, 'Builds');
     const list = page.getByRole('list', { name: 'Builds' });

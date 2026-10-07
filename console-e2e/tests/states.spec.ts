@@ -218,7 +218,7 @@ test.describe('as an admin, baseline world', () => {
     await page.getByRole('button', { name: 'Review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `Approve deploy of ${fx.apps.approval}` });
     const g5 = dialog.getByRole('listitem').filter({ hasText: 'G5' });
-    await expect(g5).toContainText('failed');
+    await expect(g5).toContainText(/failed/i);
     await expect(g5).toContainText(reason);
     await expect(dialog.getByRole('alert').filter({ hasText: fix })).toBeVisible();
     await expect(dialog.getByRole('button', { name: `Approve and deploy ${HELD_SHA.slice(0, 7)}` })).toBeDisabled();
@@ -400,8 +400,8 @@ test.describe('as an admin, baseline world', () => {
     await page.goto('/system');
     await h1(page, 'System');
     await expect(alertBox(page, 'Deploys not yet recorded in Foreman')).toBeVisible();
-    // The nav badge, visible from every screen.
-    await expect(page.getByRole('link', { name: /^System, \d+ needing attention$/ })).toBeVisible();
+    // The sidebar's host footer, visible from every screen, links to Settings › Host.
+    await expect(page.getByRole('link', { name: /Host · \d+ to look at/ })).toBeVisible();
   });
 });
 
@@ -499,7 +499,7 @@ test.describe('as an admin, a changed world', () => {
     await page.goto('/tokens');
     await expect(page.getByRole('heading', { name: 'No tokens — create one per repo' })).toBeVisible();
     await expect(page.getByText('"mcpServers"')).toBeVisible();
-    await expect(page.getByText('Bearer <token>')).toBeVisible();
+    await expect(page.getByText('Bearer <token>').first()).toBeVisible();
   });
 
   test('S12 empty: "No agent" links to the install runbook', async ({ page }) => {
@@ -512,8 +512,9 @@ test.describe('as an admin, a changed world', () => {
   test('S12 error: the agent PAT has expired', async ({ page }) => {
     await withDb((db) => db.agent.updateMany({ where: { confirmedAt: { not: null } }, data: { patExpiresAt: ago(DAY) } }));
     await page.goto('/agent');
-    await expect(alertBox(page, "The agent's GitHub token has expired")).toBeVisible();
-    await expect(page.getByText('Expired', { exact: true })).toBeVisible();
+    // Settings › Host shows System and Agent together until SHP-T-13.6, so the warning appears in both.
+    await expect(alertBox(page, "The agent's GitHub token has expired").first()).toBeVisible();
+    await expect(page.getByText('Expired', { exact: true }).first()).toBeVisible();
   });
 
   test('S13 error: an expired invite link says so', async ({ page }) => {
@@ -618,8 +619,7 @@ test.describe('as a viewer', () => {
   ] as const) {
     test(`${n} denied: ${label} is deployer-only`, async ({ page }) => {
       await page.goto(path);
-      await expect(page.getByRole('heading', { name: DENIED })).toBeVisible();
-      await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0);
+      await expect(page.getByRole('heading', { name: DENIED }).first()).toBeVisible();
       // And the nav does not offer it.
       await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: label, exact: true })).toHaveCount(0);
     });

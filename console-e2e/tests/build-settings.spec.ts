@@ -81,7 +81,7 @@ test.describe('S16 settings → Builds as an admin', () => {
   test.use({ storageState: storageStateFor('admin') });
 
   test('edit and save the CPU, memory and cache-cap limits; they persist across a reload', async ({ page }) => {
-    await page.goto('/settings');
+    await page.goto('/settings/builds');
     await h1(page, 'Settings');
 
     const form = page.getByRole('form', { name: 'Builds' });
@@ -107,7 +107,7 @@ test.describe('S16 settings → Builds as an admin', () => {
   });
 
   test('a CPU value that is not a half-CPU step disables Save', async ({ page }) => {
-    await page.goto('/settings');
+    await page.goto('/settings/builds');
     await h1(page, 'Settings');
     const form = page.getByRole('form', { name: 'Builds' });
     await form.getByRole('spinbutton', { name: 'CPUs' }).fill('1.3');

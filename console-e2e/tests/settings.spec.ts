@@ -60,8 +60,8 @@ test.describe('S16 settings as an admin', () => {
   test('test, save and turn off Sign in with D3 Auth — live, without a restart', async ({ page, browser }) => {
     await expectSignInOffersD3Auth(browser, false);
 
-    await page.goto('/');
-    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Settings', exact: true }).click();
+    // Sign in with D3 Auth lives in Settings › Integrations since SHP-ADR-006 (SHP-D-090).
+    await page.goto('/settings/integrations');
     await h1(page, 'Settings');
     await expect(page.getByText('Off', { exact: true })).toBeVisible();
     await expect(page.getByText('http://127.0.0.1:').first()).toBeVisible();
@@ -104,7 +104,7 @@ test.describe('S16 settings as an admin', () => {
   });
 
   test('an issuer that does not answer is saved, the button stays off, and the screen says why', async ({ page, browser }) => {
-    await page.goto('/settings');
+    await page.goto('/settings/integrations');
     await h1(page, 'Settings');
     await page.getByRole('textbox', { name: 'Issuer' }).fill('http://127.0.0.1:9');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -118,7 +118,7 @@ test.describe('S16 settings → alert email as an admin', () => {
   test.use({ storageState: storageStateFor('admin') });
 
   test('save the relay, send a test email through it, and turn it off — the token never comes back', async ({ page }) => {
-    await page.goto('/settings');
+    await page.goto('/settings/integrations');
     await h1(page, 'Settings');
     await expect(page.getByText('Alerts off', { exact: true })).toBeVisible();
     await expect(page.getByText(/agent has been silent for more than five minutes/)).toBeVisible();
@@ -159,7 +159,7 @@ test.describe('S16 settings → alert email as an admin', () => {
   });
 
   test("a relay that refuses the token: the test says so, with the relay's answer", async ({ page }) => {
-    await page.goto('/settings');
+    await page.goto('/settings/integrations');
     await h1(page, 'Settings');
     const form = page.getByRole('form', { name: 'Alert email' });
     await form.getByRole('textbox', { name: /^Relay URL/ }).fill(relay.url);
@@ -177,11 +177,12 @@ test.describe('S16 settings → alert email as an admin', () => {
 test.describe('S16 settings as a viewer', () => {
   test.use({ storageState: storageStateFor('viewer') });
 
-  test('S16 denied: Settings is admin-only', async ({ page }) => {
-    await page.goto('/settings');
+  // Settings is a destination for every role since SHP-ADR-006; its admin-only Integrations section
+  // still refuses a viewer, and so does the API behind it.
+  test('S16 denied: Settings › Integrations is admin-only', async ({ page }) => {
+    await page.goto('/settings/integrations');
     await expect(page.getByRole('heading', { name: 'This page needs the admin role' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0);
-    await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Settings', exact: true })).toHaveCount(0);
     expect((await page.request.get('/api/settings/d3auth')).status()).toBe(403);
     expect((await page.request.get('/api/settings/mail')).status()).toBe(403);
   });

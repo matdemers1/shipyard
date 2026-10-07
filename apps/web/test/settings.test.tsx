@@ -7,10 +7,10 @@ import { describe, expect, it } from 'vitest';
 import type { D3AuthSettings, MailSettings } from '@shipyard/schema';
 import { App } from '../src/App';
 import { AuthProvider } from '../src/lib/auth';
-import { Settings } from '../src/screens/Settings';
+import { D3AuthCard } from '../src/screens/Settings';
 import { meReply, mockFetch, type Reply } from './fetch';
 
-/** Settings → Sign in with D3 Auth (SHP-T-6.8, SHP-REQ-110). */
+/** Settings › Integrations › Sign in with D3 Auth (SHP-T-6.8, SHP-REQ-110): a compact card whose form opens in place. */
 
 function wrap(children: ReactNode) {
   return render(
@@ -86,10 +86,38 @@ function routes(extra: Record<string, Reply | Reply[]> = {}, current: D3AuthSett
   };
 }
 
-describe('Settings screen', () => {
+/** Renders the card and opens it with its one action: Set up, Edit or View. */
+async function openCard() {
+  wrap(<D3AuthCard />);
+  const toggle = await screen.findByRole('button', { name: /^(Set up|Edit|View) Sign in with D3 Auth$/ });
+  await userEvent.setup().click(toggle);
+  return toggle;
+}
+
+describe('Sign in with D3 Auth card', () => {
+  it('shows its status and nothing else until opened', async () => {
+    mockFetch(routes());
+    wrap(<D3AuthCard />);
+    expect(await screen.findByText('Off')).toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: 'Set up Sign in with D3 Auth' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('textbox', { name: 'Issuer' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download app manifest' })).not.toBeInTheDocument();
+    await userEvent.setup().click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('textbox', { name: 'Issuer' })).toBeInTheDocument();
+  });
+
+  it('says Edit once it is set up', async () => {
+    mockFetch(routes({}, ON));
+    wrap(<D3AuthCard />);
+    expect(await screen.findByRole('button', { name: 'Edit Sign in with D3 Auth' })).toBeInTheDocument();
+    expect(screen.getByText('On')).toBeInTheDocument();
+  });
+
   it('shows D3 Auth off, the redirect URI to copy and the manifest to download', async () => {
     mockFetch(routes());
-    wrap(<Settings />);
+    await openCard();
     expect(await screen.findByText('Off')).toBeInTheDocument();
     expect(screen.getByText(REDIRECT)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy redirect URI' })).toBeInTheDocument();
@@ -100,7 +128,7 @@ describe('Settings screen', () => {
 
   it('saves the issuer, client ID and secret, then shows it on without a restart and forgets the secret', async () => {
     const calls = mockFetch(routes({ 'PUT /api/settings/d3auth': { status: 200, body: ON } }));
-    wrap(<Settings />);
+    await openCard();
     await screen.findByText('Off');
     const user = userEvent.setup();
     await user.type(screen.getByRole('textbox', { name: 'Issuer' }), 'https://auth.example.com');
@@ -119,7 +147,7 @@ describe('Settings screen', () => {
 
   it('keeps a stored secret when the field is left blank', async () => {
     const calls = mockFetch(routes({ 'PUT /api/settings/d3auth': { status: 200, body: ON } }, ON));
-    wrap(<Settings />);
+    await openCard();
     expect(await screen.findByRole('textbox', { name: 'Issuer' })).toHaveValue('https://auth.example.com');
     await userEvent.setup().click(screen.getByRole('button', { name: 'Save' }));
     await screen.findByText('Saved');
@@ -128,7 +156,7 @@ describe('Settings screen', () => {
 
   it('says why a saved issuer is not live', async () => {
     mockFetch(routes({}, { ...ON, available: false, reachable: false, problem: 'The issuer did not answer OpenID discovery.' }));
-    wrap(<Settings />);
+    await openCard();
     expect(await screen.findByText('Configured, but the D3 Auth button is off')).toBeInTheDocument();
     expect(screen.getByText('The issuer did not answer OpenID discovery.')).toBeInTheDocument();
   });
@@ -151,7 +179,7 @@ describe('Settings screen', () => {
         },
       }),
     );
-    wrap(<Settings />);
+    await openCard();
     await screen.findByText('Off');
     const user = userEvent.setup();
     await user.type(screen.getByRole('textbox', { name: 'Issuer' }), 'https://auth.example.com');
@@ -163,7 +191,7 @@ describe('Settings screen', () => {
 
   it('turns D3 Auth off after a confirmation', async () => {
     const calls = mockFetch(routes({ 'DELETE /api/settings/d3auth': { status: 200, body: settings() } }, ON));
-    wrap(<Settings />);
+    await openCard();
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Turn off' }));
     const dialog = await screen.findByRole('dialog', { name: 'Turn off Sign in with D3 Auth?' });
@@ -175,7 +203,7 @@ describe('Settings screen', () => {
 
   it('shows server.env settings read-only, with no way to change them here', async () => {
     mockFetch(routes({}, { ...ON, source: 'env', updatedAt: null }));
-    wrap(<Settings />);
+    await openCard();
     expect(await screen.findByText('Set in server.env')).toBeInTheDocument();
     expect(screen.getByText('https://auth.example.com')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
@@ -191,7 +219,7 @@ describe('Settings screen', () => {
         },
       }),
     );
-    wrap(<Settings />);
+    await openCard();
     await screen.findByText('Off');
     const user = userEvent.setup();
     await user.type(screen.getByRole('textbox', { name: 'Issuer' }), 'https://auth.example.com');

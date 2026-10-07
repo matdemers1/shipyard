@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
 import { claudeAddCommand, DEPLOY_SNIPPET, deploySnippetFor, envLine, mcpJsonWithEnv } from '../src/lib/connect';
-import { CONNECT_POLL_MS } from '../src/screens/Connect';
+import { CONNECT_POLL_MS } from '../src/screens/settings/ClaudeTokensSection';
 import { meReply, mockFetch } from './fetch';
 
 /**
@@ -70,8 +70,8 @@ describe('Connect page', () => {
       'GET /api/auth/me': meReply('deployer'),
       'GET /api/auth/methods': { status: 200, body: { password: true, d3auth: false } },
       'GET /api/apps': APPS,
-      // /connect now lands on Settings › Claude & tokens, where the token list reads once on mount
-      // before Connect's own reads (SHP-T-13.5's interim section; SHP-T-13.6 replaces it).
+      // /connect lands on Settings › Claude & tokens. One list serves the connect card and the token
+      // list: read on mount, again once the token is made, then on each poll until its first call.
       'GET /api/tokens': [
         { status: 200, body: [] },
         { status: 200, body: [] },

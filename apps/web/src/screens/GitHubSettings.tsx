@@ -7,7 +7,8 @@ import { RefusalError, unreachableRefusal } from '../lib/api';
 import { settings as settingsApi } from '../lib/settings';
 
 /**
- * Settings → GitHub (SHP-T-3.13): the server's read-only GitHub token. Without one the server calls
+ * Settings › Integrations › GitHub (SHP-T-3.13): the server's read-only GitHub token, as a compact
+ * card — GitHub's own rate-limit numbers as the status line, and the form only when Edit opens it. Without one the server calls
  * GitHub anonymously — 60 requests an hour per address, shared with the agent — and a busy Home
  * screen runs out, after which Shipyard sees no new commits and offers nothing to deploy. The
  * token is write-only; GITHUB_TOKEN_SERVER in server.env wins and makes this section read-only.
@@ -47,7 +48,7 @@ function RateLimit({ r, problem }: { r: GitHubRateLimit | null; problem: string 
   if (!r.authenticated) {
     return (
       <Alert tone="warning" title="Calling GitHub without a token">
-        {line} A busy Home screen can use that up in minutes. Add a token below.
+        {line} A busy Apps page can use that up in minutes. Add a token here.
       </Alert>
     );
   }
@@ -228,6 +229,7 @@ export function GitHubSettingsSection() {
   const [g, setG] = useState<GitHubSettings | null>(null);
   const [refusal, setRefusal] = useState<RefusalError | null>(null);
   const [done, setDone] = useState<'saved' | 'cleared' | null>(null);
+  const [open, setOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -242,17 +244,36 @@ export function GitHubSettingsSection() {
     void load();
   }, [load]);
 
-  // Home's "Check GitHub access" links here as /settings#github; the section loads after the page.
+  // Home's "Check GitHub access" links here as #github; the card loads after the page.
   const loaded = g !== null;
   useEffect(() => {
     if (loaded && window.location.hash === '#github') document.getElementById('github')?.scrollIntoView();
   }, [loaded]);
+
+  const verb = g?.tokenSet === true ? 'Edit' : 'Add a token';
 
   return (
     <Section
       id="github"
       title="GitHub"
       description="How Shipyard reads your repos: new commits, whether CI passed, and what changed. The agent checks GitHub again with its own token before every deploy."
+      actions={
+        g === null || g.source === 'env' ? undefined : (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            aria-expanded={open}
+            aria-controls="shp-github-form"
+            aria-label={verb === 'Edit' ? 'Edit GitHub token' : 'Add a GitHub token'}
+            onClick={() => {
+              setOpen(!open);
+            }}
+          >
+            {verb}
+          </Button>
+        )
+      }
     >
       <Stack gap="16">
         {refusal === null ? null : (
@@ -284,18 +305,20 @@ export function GitHubSettingsSection() {
                 GITHUB_TOKEN_SERVER in server.env wins over this screen. To change it, edit server.env and restart; to manage the token here
                 instead, remove it there.
               </Alert>
-            ) : (
-              <TokenForm
-                key={`${g.source}:${g.updatedAt ?? ''}`}
-                g={g}
-                onDone={(next, what) => {
-                  setG(next);
-                  setDone(what);
-                }}
-              />
-            )}
+            ) : open ? (
+              <div id="shp-github-form">
+                <TokenForm
+                  key={`${g.source}:${g.updatedAt ?? ''}`}
+                  g={g}
+                  onDone={(next, what) => {
+                    setG(next);
+                    setDone(what);
+                  }}
+                />
+              </div>
+            ) : null}
             {g.updatedAt === null ? null : (
-              <p>
+              <p className="shp-status__detail">
                 Token last changed {shortDate(g.updatedAt)} ({relativeTime(g.updatedAt)}).
               </p>
             )}

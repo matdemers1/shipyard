@@ -10,8 +10,6 @@ import {
   FormActions,
   FormField,
   Input,
-  Page,
-  PageHeader,
   Section,
   Select,
   Spinner,
@@ -34,9 +32,10 @@ import { RefusalError, unreachableRefusal, type Role } from '../lib/api';
 import { useCan, useMe } from '../lib/auth';
 
 /**
- * S13 Users (SHP-REQ-067, SHP-REQ-101): who has an account, and how people join — by invitation
- * only, as a deployer or a viewer. The invite link is shown once. An admin changes roles and
- * disables accounts; nobody changes their own. A viewer sees no action (SHP-REQ-105).
+ * Settings › People › Users (SHP-REQ-067, SHP-REQ-101): who has an account, and how people join —
+ * by invitation only, as a deployer or a viewer. The invite link is shown once. An admin changes
+ * roles and disables accounts; nobody changes their own. A viewer sees no action (SHP-REQ-105),
+ * and the People section does not show this part to a viewer at all.
  */
 
 const ROLE_OPTIONS: { value: Role; label: string }[] = [
@@ -116,7 +115,7 @@ function InviteForm({ onCreated }: { onCreated: (i: InviteCreated) => void }) {
   };
 
   return (
-    <Section title="Invite someone" description="There is no public sign-up: people join only by invitation.">
+    <Section headingLevel={3} title="Invite someone" description="There is no public sign-up: people join only by invitation.">
       <Stack as="form" gap="16" noValidate onSubmit={submit}>
         {refusal === null ? null : (
           <Alert tone="danger" title={refusal.message} dynamic>
@@ -220,13 +219,8 @@ export function Users() {
   };
 
   return (
-    <Page width="narrow">
-      <Stack gap="24">
-        <PageHeader
-          title="Users"
-          description="Who can sign in, and with which role."
-          {...(list !== null ? { count: list.length } : {})}
-        />
+    <Section surface="plain" title="Users" description="Who can sign in, and with which role.">
+      <Stack gap="16">
         {refusal === null ? null : (
           <Alert tone="danger" title={refusal.message} dynamic>
             {refusal.fix}
@@ -250,9 +244,9 @@ export function Users() {
         ) : null}
         {list === null && refusal === null ? <Spinner label="Loading users" /> : null}
         {list !== null ? (
-          <Section title="Accounts">
+          <Section headingLevel={3} title={`Accounts (${String(list.length)})`}>
             {list.length <= 1 ? (
-              <EmptyState kind="empty" size="inline" heading="Just you" headingLevel={3}>
+              <EmptyState kind="empty" size="inline" heading="Just you" headingLevel={4}>
                 Invite a deployer or a viewer above to share this server.
               </EmptyState>
             ) : null}
@@ -306,7 +300,7 @@ export function Users() {
           </Section>
         ) : null}
         {pending.length > 0 ? (
-          <Section title="Pending invites">
+          <Section headingLevel={3} title="Pending invites">
             <DataList aria-label="Pending invites">
               {pending.map((i) => (
                 <DataListRow
@@ -335,6 +329,6 @@ export function Users() {
           </Section>
         ) : null}
       </Stack>
-    </Page>
+    </Section>
   );
 }

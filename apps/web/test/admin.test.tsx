@@ -8,15 +8,24 @@ import { isHeartbeatStale, mcpSnippet, type AgentSummary, type TokenSummary, typ
 import type { Role } from '../src/lib/api';
 import { AuthProvider } from '../src/lib/auth';
 import { AcceptInvite } from '../src/screens/AcceptInvite';
-import { Agent } from '../src/screens/Agent';
-import { Tokens } from '../src/screens/Tokens';
+import { AgentEnrolment } from '../src/screens/settings/AgentEnrolment';
+import { ClaudeTokensSection } from '../src/screens/settings/ClaudeTokensSection';
+import { HostSection } from '../src/screens/settings/HostSection';
+import { useSystemStatus } from '../src/screens/settings/shared';
 import { Users } from '../src/screens/Users';
 import { meReply, mockFetch, type Reply } from './fetch';
 
 /**
- * The admin screens (SHP-T-3.8). Rendered directly, without the route guard, so "a viewer sees no
- * actions" is a property of the screens themselves (SHP-REQ-105).
+ * The admin parts of Settings (SHP-T-3.8, SHP-T-13.6): agent enrolment on Host, tokens on Claude &
+ * tokens, and Users on People. Rendered directly, without the section gate, so "a viewer sees no
+ * actions" is a property of the components themselves (SHP-REQ-105).
  */
+
+/** Host as the Settings frame renders it: the frame reads `/api/system` and hands it down. */
+function Host() {
+  const system = useSystemStatus(true);
+  return <HostSection system={system} />;
+}
 
 function wrap(children: ReactNode, path = '/') {
   return render(
@@ -83,10 +92,11 @@ const OOB: Reply = {
 const NO_SYSTEM: Reply = {
   status: 200,
   body: {
-    versions: { server: 'dev', agent: null, compose: null, engineApi: null },
+    versions: { server: 'dev', agent: '0.3.0', compose: '5.0.1', engineApi: '1.51' },
     agent: null,
     outbox: { unsent: 0, unsentOverHour: 0, oldestUnsentAt: null, lastError: null },
     backups: { lastBackup: null, lastDrill: null },
+    buildCache: null,
   },
 };
 
@@ -96,6 +106,7 @@ function agentRoutes(role: Role, agents: AgentSummary[], system: Reply = NO_SYST
     'GET /api/agent': { status: 200, body: agents },
     'GET /api/stats/out-of-band': OOB,
     'GET /api/system': system,
+    'GET /api/apps': { status: 200, body: { apps: [] } },
   };
 }
 
@@ -131,9 +142,15 @@ function userRoutes(role: Role) {
 }
 
 describe('a viewer sees no actions', () => {
-  it('Agent: no confirm or revoke, for confirmed and unconfirmed agents', async () => {
-    mockFetch(agentRoutes('viewer', [agent(), agent({ id: 'a2', confirmed: false, confirmedAt: null, confirmedBy: null })]));
-    wrap(<Agent />);
+  it('Agent enrolment: no confirm or revoke, for confirmed and unconfirmed agents', async () => {
+    mockFetch({ 'GET /api/auth/me': meReply('viewer') });
+    const noop = () => undefined;
+    wrap(
+      <>
+        <AgentEnrolment agent={agent()} can={false} isAdmin={false} now={Date.now()} onChanged={noop} />
+        <AgentEnrolment agent={agent({ id: 'a2', confirmed: false, confirmedAt: null, confirmedBy: null })} can={false} isAdmin={false} now={Date.now()} onChanged={noop} />
+      </>,
+    );
     expect(await screen.findAllByText('Fingerprint')).toHaveLength(2);
     expect(screen.queryByRole('button', { name: /confirm/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /revoke/i })).not.toBeInTheDocument();
@@ -141,14 +158,14 @@ describe('a viewer sees no actions', () => {
     expect(screen.queryAllByRole('button')).toHaveLength(0);
   });
 
-  it('Tokens: no create or revoke', async () => {
-    mockFetch(tokenRoutes('viewer'));
-    wrap(<Tokens />);
-    expect(await screen.findByText('matdemers1/bindery')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /create/i })).not.toBeInTheDocument();
+  it('Claude & tokens: no token form, no token list, and no token read', async () => {
+    const calls = mockFetch(tokenRoutes('viewer'));
+    wrap(<ClaudeTokensSection />);
+    expect(await screen.findByText('A deployer makes the token')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Make the token' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'API tokens' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /revoke/i })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Label')).not.toBeInTheDocument();
-    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    expect(calls.some((c) => c.path === '/api/tokens')).toBe(false);
   });
 
   it('Users: no invite, change-role, disable or revoke', async () => {
@@ -163,7 +180,8 @@ describe('a viewer sees no actions', () => {
 
   it('while a deployer does see them, and an admin sees change-role', async () => {
     mockFetch(agentRoutes('admin', [agent(), agent({ id: 'a2', confirmed: false, confirmedAt: null, confirmedBy: null })]));
-    const { unmount } = wrap(<Agent />);
+    const { unmount } = wrap(<Host />);
+    // An agent awaiting confirmation opens the enrolment row by itself.
     expect(await screen.findByRole('button', { name: 'Confirm agent' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revoke agent' })).toBeInTheDocument();
     unmount();
@@ -188,72 +206,83 @@ describe('a viewer sees no actions', () => {
     unmount();
 
     mockFetch(agentRoutes('deployer', [agent()]));
-    wrap(<Agent />);
+    wrap(<Host />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Show enrolment' }));
     expect(await screen.findByText('Fingerprint')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Revoke agent' })).not.toBeInTheDocument();
   });
 });
 
 describe('agent heartbeat', () => {
-  it('a heartbeat six minutes old shows a stale badge and banner', async () => {
+  it('a heartbeat six minutes old turns the Agent row red, says why, and marks the agent stale', async () => {
     mockFetch(agentRoutes('deployer', [agent({ lastHeartbeatAt: minutesAgo(6) })]));
-    wrap(<Agent />);
-    expect(await screen.findByText('Stale')).toBeInTheDocument();
-    expect(screen.getByText('The agent has not checked in for over five minutes')).toBeInTheDocument();
-    expect(screen.getByText('6 minutes ago')).toBeInTheDocument();
+    wrap(<Host />);
+    expect(await screen.findByText(/Not checked in since 6 minutes ago/)).toBeInTheDocument();
+    expect(screen.getByText(/Deploys wait until it is back/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Show enrolment' }));
+    expect(screen.getByText('Stale')).toBeInTheDocument();
   });
 
   it('a heartbeat one minute old shows none', async () => {
     mockFetch(agentRoutes('deployer', [agent({ lastHeartbeatAt: minutesAgo(1) })]));
-    wrap(<Agent />);
-    expect(await screen.findByText('1 minute ago')).toBeInTheDocument();
+    wrap(<Host />);
+    expect(await screen.findByText('Checked in 1 minute ago')).toBeInTheDocument();
+    expect(screen.queryByText(/Not checked in/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Show enrolment' }));
     expect(screen.queryByText('Stale')).not.toBeInTheDocument();
-    expect(screen.queryByText(/has not checked in/)).not.toBeInTheDocument();
   });
 
-  it('shows versions, the out-of-band count, and the empty state', async () => {
+  it('shows versions once, the out-of-band count, and the empty state', async () => {
     mockFetch(agentRoutes('deployer', [agent()]));
-    const { unmount } = wrap(<Agent />);
-    expect(await screen.findByText('0.3.0')).toBeInTheDocument();
-    expect(screen.getByText('5.0.1')).toBeInTheDocument();
-    expect(screen.getByText('1.51')).toBeInTheDocument();
-    expect(screen.getByText('Out-of-band changes')).toBeInTheDocument();
+    const { unmount } = wrap(<Host />);
+    await screen.findByText('Checked in 1 minute ago');
+    const versions = await screen.findByText(/^Versions:/);
+    expect(versions).toHaveTextContent('agent 0.3.0 · compose 5.0.1 · engine API 1.51');
+    // Nowhere else on the page: the enrolment row no longer repeats them (SHP-REQ-170).
+    await userEvent.click(screen.getByRole('button', { name: 'Show enrolment' }));
+    expect(screen.getAllByText(/0\.3\.0/)).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Show months' }));
     expect(screen.getByText('3')).toBeInTheDocument();
     unmount();
 
     mockFetch(agentRoutes('deployer', []));
-    wrap(<Agent />);
-    expect(await screen.findByText('No agent — see the install runbook')).toBeInTheDocument();
+    wrap(<Host />);
+    await new Promise((r) => setTimeout(r, 500));
+    screen.debug(screen.getByRole('list', { name: 'Host health' }), 100000);
+    expect(await screen.findByText('No agent enrolled')).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Install runbook' })[0]).toHaveAttribute('href', expect.stringMatching(/install\.md$/));
+    await userEvent.click(screen.getByRole('button', { name: 'Show enrolment' }));
+    expect(screen.getByText('No agent — see the install runbook')).toBeInTheDocument();
   });
 
-  it('shows a warning when the agent\'s PAT expires within 30 days, and an error once expired (SHP-REQ-106)', async () => {
+  it('warns when the agent\'s PAT expires within 30 days, errors once expired, and offers Renew (SHP-REQ-106)', async () => {
     const soloAgent = agent();
     const expiringSystem: Reply = {
       status: 200,
       body: {
-        versions: { server: 'dev', agent: null, compose: null, engineApi: null },
-        agent: { fingerprint: soloAgent.fingerprint, lastHeartbeatAt: soloAgent.lastHeartbeatAt, stale: false, patExpiresAt: minutesAgo(-10 * 24 * 60), patWarning: 'expiring', unstartedTargets: 0 },
-        outbox: { unsent: 0, unsentOverHour: 0, oldestUnsentAt: null, lastError: null },
-        backups: { lastBackup: null, lastDrill: null },
+        ...(NO_SYSTEM.body as Record<string, unknown>),
+        agent: { fingerprint: soloAgent.fingerprint, lastHeartbeatAt: soloAgent.lastHeartbeatAt, stale: false, patExpiresAt: minutesAgo(-10 * 24 * 60 + 5), patWarning: 'expiring', unstartedTargets: 0 },
       },
     };
     mockFetch(agentRoutes('deployer', [soloAgent], expiringSystem));
-    const { unmount } = wrap(<Agent />);
-    expect(await screen.findByText('Expiring')).toBeInTheDocument();
-    expect(screen.getByText("The agent's GitHub token expires within 30 days")).toBeInTheDocument();
+    const { unmount } = wrap(<Host />);
+    expect(await screen.findByText(/^Expires in 10 days · /)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Renew…' }));
+    expect(await screen.findByRole('dialog', { name: "Renew the agent's GitHub token" })).toBeInTheDocument();
     unmount();
 
     const expiredSystem: Reply = {
       ...expiringSystem,
       body: {
         ...(expiringSystem.body as Record<string, unknown>),
-        agent: { ...(expiringSystem.body as { agent: Record<string, unknown> }).agent, patWarning: 'expired' },
+        agent: { ...(expiringSystem.body as { agent: Record<string, unknown> }).agent, patExpiresAt: minutesAgo(60), patWarning: 'expired' },
       },
     };
     mockFetch(agentRoutes('deployer', [soloAgent], expiredSystem));
-    wrap(<Agent />);
-    expect(await screen.findByText('Expired')).toBeInTheDocument();
-    expect(screen.getByText("The agent's GitHub token has expired")).toBeInTheDocument();
+    wrap(<Host />);
+    expect(await screen.findByText(/^Expired · /)).toBeInTheDocument();
+    expect(screen.getByText(/cannot read commit history or check runs until it is replaced/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Renew…' })).toBeInTheDocument();
   });
 
   it('a fingerprint mismatch shows the refusal and its fix', async () => {
@@ -271,7 +300,8 @@ describe('agent heartbeat', () => {
         },
       },
     });
-    wrap(<Agent />);
+    wrap(<Host />);
+    expect(await screen.findByText('Waiting for its fingerprint to be confirmed')).toBeInTheDocument();
     const field = await screen.findByLabelText(/type the fingerprint/i);
     await userEvent.type(field, 'SHA256:wrong');
     await userEvent.click(screen.getByRole('button', { name: 'Confirm agent' }));
@@ -289,7 +319,7 @@ describe('agent heartbeat', () => {
 });
 
 describe('tokens', () => {
-  it('shows a new token once, with the MCP snippet, and hides it after dismissal', async () => {
+  it('makes a token in the one form, shows it once with its command, and hides it after', async () => {
     const secret = `shp_${'a'.repeat(43)}`;
     const calls = mockFetch({
       ...tokenRoutes('deployer'),
@@ -298,22 +328,25 @@ describe('tokens', () => {
         body: { id: 'new', label: 'ci', prefix: secret.slice(0, 12), apps: ['foreman'], token: secret },
       },
     });
-    wrap(<Tokens />);
-    await userEvent.type(await screen.findByLabelText('Label'), 'ci');
+    wrap(<ClaudeTokensSection />);
+    const name = await screen.findByLabelText('Name');
+    await userEvent.clear(name);
+    await userEvent.type(name, 'ci');
     await userEvent.click(screen.getByRole('checkbox', { name: 'foreman' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Create token' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Make the token' }));
 
     expect(await screen.findByText(secret)).toBeInTheDocument();
-    expect(screen.getByText(/Authorization/)).toHaveTextContent(`Bearer ${secret}`);
-    expect(screen.getByText(/\/mcp"/)).toBeInTheDocument();
+    const command = screen.getByText(/--header "Authorization: Bearer/, { selector: 'code' });
+    expect(command).toHaveTextContent(`Bearer ${secret}`);
+    expect(command).toHaveTextContent(/\/mcp --header/);
     expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ label: 'ci', apps: ['foreman'] });
 
-    await userEvent.click(screen.getByRole('button', { name: 'I have copied it' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Make another token' }));
     await waitFor(() => {
       expect(screen.queryByText(secret)).not.toBeInTheDocument();
     });
     expect(screen.queryByText(new RegExp(secret))).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Create token' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Make the token' })).toBeInTheDocument();
   });
 
   it('revokes only after confirming', async () => {
@@ -321,18 +354,28 @@ describe('tokens', () => {
       ...tokenRoutes('deployer'),
       [`DELETE /api/tokens/${token.id}`]: { status: 200, body: { ...token, revokedAt: new Date().toISOString() } },
     });
-    wrap(<Tokens />);
+    wrap(<ClaudeTokensSection />);
     await userEvent.click(await screen.findByRole('button', { name: `Revoke ${token.label}` }));
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false);
     await userEvent.click(await screen.findByRole('button', { name: 'Revoke token' }));
     expect(await screen.findByText('Revoked')).toBeInTheDocument();
     expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Tokens (0 active)' })).toBeInTheDocument();
   });
 
   it('empty state', async () => {
     mockFetch({ ...tokenRoutes('deployer'), 'GET /api/tokens': { status: 200, body: [] } });
-    wrap(<Tokens />);
-    expect(await screen.findByText('No tokens — create one per repo')).toBeInTheDocument();
+    wrap(<ClaudeTokensSection />);
+    expect(await screen.findByText('No tokens yet')).toBeInTheDocument();
+  });
+
+  it('marks a token nobody has used for thirty days', async () => {
+    const stale = { ...token, id: 'old', label: 'old-laptop', createdAt: minutesAgo(90 * 24 * 60), lastUsedAt: minutesAgo(40 * 24 * 60) };
+    mockFetch({ ...tokenRoutes('deployer'), 'GET /api/tokens': { status: 200, body: [token, stale] } });
+    wrap(<ClaudeTokensSection />);
+    expect(await screen.findByText('old-laptop')).toBeInTheDocument();
+    expect(screen.getAllByText('Unused for 30 days')).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Tokens (2 active)' })).toBeInTheDocument();
   });
 
   it('mcpSnippet names /mcp and a bearer header', () => {

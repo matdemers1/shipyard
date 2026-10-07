@@ -1,5 +1,22 @@
-import { Alert, Badge, Button, DataList, DataListRow, EmptyState, FormField, Input, Link, Modal, Page, PageHeader, Section, Skeleton, Stack } from '@d3cloud/ui';
-import { useCallback, useEffect, useState, type SyntheticEvent } from 'react';
+import {
+  Alert,
+  Badge,
+  Button,
+  DataList,
+  DataListRow,
+  EmptyState,
+  FormActions,
+  FormField,
+  Input,
+  Link,
+  Modal,
+  Page,
+  PageHeader,
+  Section,
+  Skeleton,
+  Stack,
+} from '@d3cloud/ui';
+import { useCallback, useEffect, useId, useState, type SyntheticEvent } from 'react';
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
 import { RefusalError, unreachableRefusal } from '../lib/api';
 import { sha7, when } from '../lib/appdetail';
@@ -34,6 +51,7 @@ function ConfirmRestore({ app, candidate, onClose, onStarted }: ConfirmProps) {
   const [busy, setBusy] = useState(false);
   const [refused, setRefused] = useState<RefusalError | null>(null);
   const matches = confirmMatches(typed, app);
+  const formId = useId();
 
   useEffect(() => {
     setTyped('');
@@ -63,6 +81,17 @@ function ConfirmRestore({ app, candidate, onClose, onStarted }: ConfirmProps) {
       }}
       title={`Restore ${app}`}
       destructive
+      // The action rides the sheet's footer, pinned on a phone while the form scrolls (SHP-REQ-173).
+      footer={
+        <FormActions>
+          <Button type="button" variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} variant="danger" disabled={!matches} loading={busy}>
+            Restore {app}
+          </Button>
+        </FormActions>
+      }
       description={
         candidate === null ? undefined : (
           <>
@@ -78,7 +107,7 @@ function ConfirmRestore({ app, candidate, onClose, onStarted }: ConfirmProps) {
         )
       }
     >
-      <Stack as="form" gap="16" onSubmit={(e) => void submit(e)} noValidate>
+      <Stack as="form" id={formId} gap="16" onSubmit={(e) => void submit(e)} noValidate>
         <FormField label={`Type ${app} to confirm`} help="Exactly as written: this cannot be undone by Shipyard.">
           <Input
             value={typed}
@@ -95,11 +124,6 @@ function ConfirmRestore({ app, candidate, onClose, onStarted }: ConfirmProps) {
             {refused.fix}
           </Alert>
         ) : null}
-        <Stack gap="8" align="end">
-          <Button type="submit" variant="danger" disabled={!matches} loading={busy}>
-            Restore {app}
-          </Button>
-        </Stack>
       </Stack>
     </Modal>
   );

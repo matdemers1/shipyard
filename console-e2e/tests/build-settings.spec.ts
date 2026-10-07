@@ -1,19 +1,21 @@
 import { generateKeyPairSync, randomBytes, sign, type KeyObject } from 'node:crypto';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Browser, type Page } from '@playwright/test';
 import { axeViolations, expectTheme, forceTheme, settle, type Theme } from '../harness/a11y.js';
+import { expectPhoneFit, useWidth, type Width } from '../harness/console.js';
 import { withDb } from '../harness/db.js';
-import { storageStateFor } from '../harness/env.js';
+import { BASE_URL, storageStateFor } from '../harness/env.js';
 import { fixture } from '../harness/seed.js';
 import { fingerprintOf, signingString } from '../../packages/schema/src/index.js';
 
 /**
  * SHP-T-7.11, SHP-REQ-131/132/133 — against the real server:
  *
- * - Settings → Builds: an admin edits the CPU, memory and cache-cap limits and saves them; they
- *   persist across a reload.
- * - The System screen's build cache: "not yet reported" before any agent has, then the size, cap,
- *   last GC time and applied limits once an agent reports one — axe-clean in light and dark, at
- *   375 px and at desktop width.
+ * - Settings › Builds: an admin opens the limits (collapsed behind "Edit limits" while no app
+ *   builds with Shipyard, SHP-T-13.6), edits the CPU, memory and cache-cap limits and saves them;
+ *   they persist across a reload.
+ * - Settings › Host's Disk row, the build cache: "not yet reported" before any agent has, then the
+ *   size, cap, last GC time and applied limits once an agent reports one — axe-clean in light and
+ *   dark, at 390 px on a touch phone and at 1440 px.
  *
  * No agent runs in this harness (see builds.spec.ts). The seeded confirmed agent's key pair is a
  * placeholder with no matching private key, so proving the real, signed report path needs a real
@@ -62,15 +64,32 @@ async function restoreSeededAgentKey(): Promise<void> {
   );
 }
 
-async function axeCleanAt(page: Page, url: string, theme: Theme, phone: boolean): Promise<void> {
-  await forceTheme(page, theme);
-  if (phone) await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto(url);
-  await h1(page, 'System');
-  await expectTheme(page, theme);
-  await settle(page);
-  const { blocking } = await axeViolations(page);
-  expect(blocking, blocking.join('\n')).toEqual([]);
+/** The Disk row of Settings › Host's health checklist, where the build cache is reported. */
+const diskRow = (page: Page) => page.getByRole('list', { name: 'Host health' }).getByRole('listitem').filter({ hasText: 'Build cache' });
+
+/** Settings › Builds starts collapsed while no app builds with Shipyard: open the limits. */
+async function openLimits(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Edit limits' }).click();
+  await expect(page.getByRole('form', { name: 'Builds' })).toBeVisible();
+}
+
+/** Host in a fresh browser at one width and theme, signed in as the admin: no serious axe finding. */
+async function axeCleanAt(browser: Browser, theme: Theme, width: Width): Promise<void> {
+  const context = await browser.newContext({ ...useWidth(width), baseURL: BASE_URL, storageState: storageStateFor('admin') });
+  try {
+    const page = await context.newPage();
+    await forceTheme(page, theme);
+    await page.goto('/settings/host');
+    await h1(page, 'Host');
+    await expect(diskRow(page)).toContainText('1.50 GB');
+    await expectTheme(page, theme);
+    await settle(page);
+    const { blocking } = await axeViolations(page);
+    expect(blocking, blocking.join('\n')).toEqual([]);
+    if (width === 'phone') await expectPhoneFit(page, `Settings › Host (${theme}, 390 px)`);
+  } finally {
+    await context.close();
+  }
 }
 
 test.afterAll(async () => {
@@ -82,7 +101,8 @@ test.describe('S16 settings → Builds as an admin', () => {
 
   test('edit and save the CPU, memory and cache-cap limits; they persist across a reload', async ({ page }) => {
     await page.goto('/settings/builds');
-    await h1(page, 'Settings');
+    await h1(page, 'Builds');
+    await openLimits(page);
 
     const form = page.getByRole('form', { name: 'Builds' });
     await expect(form.getByRole('spinbutton', { name: 'CPUs' })).toHaveValue('2');
@@ -96,7 +116,8 @@ test.describe('S16 settings → Builds as an admin', () => {
     await expect(page.getByText('Build limits saved', { exact: true })).toBeVisible();
 
     await page.reload();
-    await h1(page, 'Settings');
+    await h1(page, 'Builds');
+    await openLimits(page);
     const reloaded = page.getByRole('form', { name: 'Builds' });
     await expect(reloaded.getByRole('spinbutton', { name: 'CPUs' })).toHaveValue('4');
     await expect(reloaded.getByRole('spinbutton', { name: /^Memory/ })).toHaveValue('8192');
@@ -108,7 +129,8 @@ test.describe('S16 settings → Builds as an admin', () => {
 
   test('a CPU value that is not a half-CPU step disables Save', async ({ page }) => {
     await page.goto('/settings/builds');
-    await h1(page, 'Settings');
+    await h1(page, 'Builds');
+    await openLimits(page);
     const form = page.getByRole('form', { name: 'Builds' });
     await form.getByRole('spinbutton', { name: 'CPUs' }).fill('1.3');
     await expect(page.getByRole('button', { name: 'Save build limits', exact: true })).toBeDisabled();
@@ -124,18 +146,20 @@ test.describe('S16 settings → Builds as a viewer', () => {
   });
 });
 
-test.describe('S15 System → build cache', () => {
+test.describe('S15 Settings › Host → build cache', () => {
   test.use({ storageState: storageStateFor('admin') });
 
-  test('says "Not yet reported" before any agent has reported one', async ({ page }) => {
-    await page.goto('/system');
-    await h1(page, 'System');
-    await expect(page.getByText('Build cache', { exact: true })).toBeVisible();
-    await expect(page.getByText('Not yet reported')).toBeVisible();
+  test('says "not yet reported" before any agent has reported one', async ({ page }) => {
+    await page.goto('/settings/host');
+    await h1(page, 'Host');
+    await expect(page.getByRole('list', { name: 'Host health' }).getByRole('listitem').filter({ hasText: 'Disk' })).toContainText(
+      'Build cache not yet reported',
+    );
   });
 
   test('shows the size, cap, last GC and applied limits after a real signed agent report — axe-clean in both themes, phone and desktop', async ({
     page,
+    browser,
   }) => {
     const key = makeKey();
     await withDb((db) => db.agent.update({ where: { id: fixture().agentId }, data: { publicKey: key.b64, fingerprint: key.fingerprint } }));
@@ -160,15 +184,16 @@ test.describe('S15 System → build cache', () => {
     });
     expect(reportRes.ok(), await reportRes.text()).toBe(true);
 
-    await page.goto('/system');
-    await h1(page, 'System');
-    await expect(page.getByText('1.50 GB')).toBeVisible();
-    await expect(page.getByText('21.5 GB')).toBeVisible();
-    await expect(page.getByText(/4 CPUs, 8192 MiB/)).toBeVisible();
+    await page.goto('/settings/host');
+    await h1(page, 'Host');
+    const disk = diskRow(page);
+    await expect(disk).toContainText('1.50 GB');
+    await expect(disk).toContainText('21.5 GB');
+    await expect(disk).toContainText(/4 CPUs, 8192 MiB/);
 
     for (const theme of ['light', 'dark'] as const) {
-      for (const phone of [false, true]) {
-        await axeCleanAt(page, '/system', theme, phone);
+      for (const width of ['desktop', 'phone'] as const) {
+        await axeCleanAt(browser, theme, width);
       }
     }
 

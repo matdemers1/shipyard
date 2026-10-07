@@ -41,3 +41,12 @@ pnpm --filter console-e2e test
   step is spent once per user.
 - **Theme and axe:** `forceTheme(page, 'dark')` before `goto`, `settle(page)`, then
   `axeViolations(page)`.
+- **The redesigned console (`harness/console.ts`):** `h1`, `dialog`, `appRow(page, app)` (Apps ›
+  All apps), `needsYouRow(page, app)`, `alertBox`, `hold()` and `fakeDryRun()` for a held or faked
+  call, and the two widths every screen is checked at — `test.use({ viewport: DESKTOP })` (1440 px)
+  and `test.use(PHONE)` (390 px, `isMobile` and `hasTouch`, so `(pointer: coarse)` matches and
+  @d3cloud/ui's 44 px touch targets apply).
+- **The phone rules:** `expectPhoneFit(page, where)` fails when the document scrolls sideways
+  (SHP-REQ-172) or a visible primary button is under 44 px (SHP-REQ-166), naming the culprits. The
+  axe sweep runs it on every screen state at 390 px; `tests/phone.spec.ts` walks the main screens
+  and proves every sheet opens from the bottom edge with its footer pinned (SHP-REQ-173).

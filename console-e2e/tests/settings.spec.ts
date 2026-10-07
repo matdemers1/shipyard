@@ -4,15 +4,24 @@ import { storageStateFor } from '../harness/env.js';
 import { clearMailSetting, startFakeRelay, type FakeRelay } from '../harness/mail.js';
 
 /**
- * S16 Settings → Sign in with D3 Auth (SHP-T-6.8, SHP-REQ-110), against the real server: an admin
- * tests an issuer, saves it with a secret, and the sign-in page offers D3 Auth at once — no restart;
- * turning it off takes the button away again. The secret never comes back to the page. A viewer is
- * refused. Password sign-in is untouched throughout (the harness's own sign-ins prove that).
+ * S16 Settings › Integrations › Sign in with D3 Auth (SHP-T-6.8, SHP-REQ-110), against the real
+ * server: an admin opens the card's form in place, tests an issuer, saves it with a secret, and the
+ * sign-in page offers D3 Auth at once — no restart; turning it off takes the button away again. The
+ * secret never comes back to the page. A viewer is refused. Password sign-in is untouched throughout
+ * (the harness's own sign-ins prove that).
  */
 
 const SECRET = 'console-e2e-d3auth-client-secret';
 const RELAY_TOKEN = 'console-e2e-mail-relay-token';
 const h1 = (page: Page, name: string) => expect(page.getByRole('heading', { level: 1, name })).toBeVisible();
+
+/** Integrations shows each service as a card; its form opens in place (SHP-D-090). */
+async function openCard(page: Page, button: RegExp, form: string): Promise<void> {
+  await page.getByRole('button', { name: button }).click();
+  await expect(page.getByRole('form', { name: form })).toBeVisible();
+}
+const openD3Auth = (page: Page) => openCard(page, /^(Set up|Edit) Sign in with D3 Auth$/, 'Sign in with D3 Auth');
+const openAlertEmail = (page: Page) => openCard(page, /^(Set up|Edit) alert email$/, 'Alert email');
 
 let fake: FakeIssuer;
 let relay: FakeRelay;
@@ -62,8 +71,11 @@ test.describe('S16 settings as an admin', () => {
 
     // Sign in with D3 Auth lives in Settings › Integrations since SHP-ADR-006 (SHP-D-090).
     await page.goto('/settings/integrations');
-    await h1(page, 'Settings');
+    await h1(page, 'Integrations');
     await expect(page.getByText('Off', { exact: true })).toBeVisible();
+    // Closed until asked for: the card says what is set, and Set up opens the form in place.
+    await expect(page.getByRole('form', { name: 'Sign in with D3 Auth' })).toHaveCount(0);
+    await openD3Auth(page);
     await expect(page.getByText('http://127.0.0.1:').first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Download app manifest', exact: true })).toBeVisible();
 
@@ -80,7 +92,8 @@ test.describe('S16 settings as an admin', () => {
 
     // The secret is write-only: not in the page, not in what the API returns.
     await page.reload();
-    await h1(page, 'Settings');
+    await h1(page, 'Integrations');
+    await openD3Auth(page);
     await expect(page.getByRole('textbox', { name: 'Issuer' })).toHaveValue(fake.issuer);
     expect(await page.content()).not.toContain(SECRET);
     const read = await page.request.get('/api/settings/d3auth');
@@ -105,7 +118,8 @@ test.describe('S16 settings as an admin', () => {
 
   test('an issuer that does not answer is saved, the button stays off, and the screen says why', async ({ page, browser }) => {
     await page.goto('/settings/integrations');
-    await h1(page, 'Settings');
+    await h1(page, 'Integrations');
+    await openD3Auth(page);
     await page.getByRole('textbox', { name: 'Issuer' }).fill('http://127.0.0.1:9');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByText('Configured, but the D3 Auth button is off')).toBeVisible();
@@ -119,11 +133,12 @@ test.describe('S16 settings → alert email as an admin', () => {
 
   test('save the relay, send a test email through it, and turn it off — the token never comes back', async ({ page }) => {
     await page.goto('/settings/integrations');
-    await h1(page, 'Settings');
+    await h1(page, 'Integrations');
     await expect(page.getByText('Alerts off', { exact: true })).toBeVisible();
     await expect(page.getByText(/agent has been silent for more than five minutes/)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Send test email', exact: true })).toBeDisabled();
 
+    await openAlertEmail(page);
     const form = page.getByRole('form', { name: 'Alert email' });
     await form.getByRole('textbox', { name: /^Relay URL/ }).fill(relay.url);
     await form.getByLabel(/^Relay token/).fill(RELAY_TOKEN);
@@ -135,7 +150,8 @@ test.describe('S16 settings → alert email as an admin', () => {
 
     // Write-only: not in the page after a reload, not in what the API returns.
     await page.reload();
-    await h1(page, 'Settings');
+    await h1(page, 'Integrations');
+    await openAlertEmail(page);
     await expect(page.getByRole('textbox', { name: /^Relay URL/ })).toHaveValue(relay.url);
     await expect(page.getByText(/A token is stored/)).toBeVisible();
     expect(await page.content()).not.toContain(RELAY_TOKEN);
@@ -160,7 +176,8 @@ test.describe('S16 settings → alert email as an admin', () => {
 
   test("a relay that refuses the token: the test says so, with the relay's answer", async ({ page }) => {
     await page.goto('/settings/integrations');
-    await h1(page, 'Settings');
+    await h1(page, 'Integrations');
+    await openAlertEmail(page);
     const form = page.getByRole('form', { name: 'Alert email' });
     await form.getByRole('textbox', { name: /^Relay URL/ }).fill(relay.url);
     await form.getByLabel(/^Relay token/).fill('not-the-relay-secret');

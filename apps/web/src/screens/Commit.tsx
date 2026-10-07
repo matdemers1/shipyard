@@ -69,9 +69,13 @@ const firstLine = (message: string): string => message.split('\n')[0] ?? message
 /** The commit's own page, which a row anywhere in the console links to. */
 export const commitPath = (app: string, sha: string): string => `/apps/${encodeURIComponent(app)}/commits/${sha}`;
 
-function External({ href, children }: { href: string; children: React.ReactNode }) {
+/**
+ * A link to GitHub, in a new tab. `inline` underlines it, for one that sits inside running text: a
+ * link told apart from the words around it by colour alone fails WCAG 1.4.1 (axe, SHP-T-13.14).
+ */
+function External({ href, inline = false, children }: { href: string; inline?: boolean; children: React.ReactNode }) {
   return (
-    <Link href={href} target="_blank" rel="noreferrer">
+    <Link href={href} target="_blank" rel="noreferrer" {...(inline ? { variant: 'inline' as const } : {})}>
       {children} ↗
     </Link>
   );
@@ -306,7 +310,7 @@ export function Commit() {
               {detail.repo === null ? null : (
                 <>
                   {' · '}
-                  <External href={`https://github.com/${detail.repo}/commit/${sha}`}>View on GitHub</External>
+                  <External inline href={`https://github.com/${detail.repo}/commit/${sha}`}>View on GitHub</External>
                 </>
               )}
             </>
@@ -354,7 +358,7 @@ export function Commit() {
               {detail.repo === null ? null : (
                 <>
                   {' '}
-                  <External href={`https://github.com/${detail.repo}/commit/${sha}`}>View on GitHub</External>
+                  <External inline href={`https://github.com/${detail.repo}/commit/${sha}`}>View on GitHub</External>
                 </>
               )}
             </p>
@@ -503,7 +507,7 @@ function RiderRow({
           {run?.url ? (
             <>
               {' · '}
-              <External href={run.url}>run #{String(run.id)}</External>
+              <External inline href={run.url}>run #{String(run.id)}</External>
             </>
           ) : null}
           {source === 'shipyard' && entry.buildId !== undefined ? (
@@ -585,7 +589,7 @@ function CiSection({
           {entryRun?.url ? (
             <>
               {' '}
-              <External href={entryRun.url}>Open run #{String(entryRun.id)}</External>
+              <External inline href={entryRun.url}>Open run #{String(entryRun.id)}</External>
             </>
           ) : null}
         </Alert>

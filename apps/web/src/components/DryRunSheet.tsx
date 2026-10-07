@@ -237,7 +237,13 @@ export function DryRunSheet({ open, onOpenChange, action: requested, onStarted }
       open={open}
       onOpenChange={onOpenChange}
       title={titleFor(action)}
-      description={subtitleFor(commits, action.sha, shipped.length)}
+      description={
+        // A rollback goes back to an earlier release: there is no list of commits ahead of live to
+        // count, so it says where it goes from and to (SHP-T-13.10 verification).
+        action.kind === 'rollback'
+          ? rollbackSubtitle(commitsLive(commits), action.sha)
+          : subtitleFor(commits, action.sha, shipped.length)
+      }
       size="lg"
       footer={
         <>
@@ -278,7 +284,7 @@ export function DryRunSheet({ open, onOpenChange, action: requested, onStarted }
             ))
           : null}
 
-        {commits === null ? (
+        {action.kind === 'rollback' ? null : commits === null ? (
           <Alert tone="info">Commits unavailable.</Alert>
         ) : commits === 'loading' ? null : (
           <Section title="What deploys" surface="plain" headingLevel={3}>
@@ -428,6 +434,10 @@ function checkingWords(phase: DryRunPhase): string {
     return 'Waiting for the agent to pick this up';
   }
   return 'The agent is running the checks';
+}
+
+function rollbackSubtitle(live: string | null, target: string): string {
+  return `${live === null ? 'Live' : shortSha(live)} → back to ${shortSha(target)}`;
 }
 
 function commitsLive(commits: CommitsResponse | null | 'loading'): string | null {

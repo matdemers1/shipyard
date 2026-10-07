@@ -600,4 +600,26 @@ describe('DryRunSheet', () => {
       expect(await screen.findByText(`The checks did not finish within ${String(DRY_RUN_DEADLINE_SECONDS)}s`)).toBeInTheDocument();
     });
   });
+
+  it('a rollback says where it goes back to and lists no commits ahead of live', async () => {
+    mockFetch({
+      'GET /api/auth/me': meReply('deployer'),
+      'GET /api/apps/web': APP_REPLY,
+      'GET /api/apps/web/commits': COMMITS_REPLY,
+      'POST /api/deploys': { status: 201, body: { deployId: DEPLOY_ID, state: 'queued' } },
+      [`GET /api/deploys/${DEPLOY_ID}`]: {
+        status: 200,
+        body: {
+          deployId: DEPLOY_ID, kind: 'rollback', app: 'web', sha: 'e'.repeat(40), dryRun: true, state: 'succeeded',
+          currentStep: null, requester: { label: 'me', repo: null, branch: null }, images: [], schemaRevision: null,
+          refusal: null, gates: [{ gate: 'G8', pass: true, reason: 'digests found' }],
+          createdAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+        },
+      },
+    });
+    render(<Harness action={{ kind: 'rollback', app: 'web', sha: 'e'.repeat(40), toDeployId: 'old-1' }} />);
+    expect(await screen.findByText('bbbbbbb → back to eeeeeee')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'What deploys' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/commits?$/)).not.toBeInTheDocument();
+  });
 });

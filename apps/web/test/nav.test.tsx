@@ -202,4 +202,12 @@ describe('retired routes', () => {
     expect(await screen.findByText('This page needs the deployer role')).toBeInTheDocument();
     expect(window.location.pathname).toBe('/settings/people');
   });
+
+  it('opens Settings on People for a viewer, whose account is there, not on a refusal', async () => {
+    mockFetch({ 'GET /api/auth/me': meReply('viewer') });
+    renderAt('/settings');
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/settings/people');
+    });
+  });
 });

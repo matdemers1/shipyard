@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { Shell } from './components/Shell';
 import { EntryHeading, EntryShell } from './entry/EntryShell';
-import { useAuth } from './lib/auth';
+import { useAuth, useCan } from './lib/auth';
 import { Activity } from './screens/Activity';
 import { AcceptInvite } from './screens/AcceptInvite';
 import { AppDetail } from './screens/AppDetail';
@@ -101,6 +101,15 @@ function SetupRoute() {
   return <Setup onSignedIn={refresh} onClosed={refresh} />;
 }
 
+/**
+ * Settings opens on the first section the role may see: Host for a deployer or admin, People for a
+ * viewer — whose own account lives there — rather than a refusal (SHP-T-13.5 verification).
+ */
+function SettingsHome() {
+  const can = useCan();
+  return <Navigate to={can ? '/settings/host' : '/settings/people'} replace />;
+}
+
 export function AppRoutes() {
   const { state, refresh } = useAuth();
 
@@ -160,7 +169,7 @@ export function AppRoutes() {
         <Route path="rollouts/:id" element={<RolloutProgress />} />
         <Route path="builds/:id" element={<BuildDetail />} />
         <Route path="activity" element={<Activity />} />
-        <Route path="settings" element={<Navigate to="/settings/host" replace />} />
+        <Route path="settings" element={<SettingsHome />} />
         <Route path="settings/:section" element={<SettingsSection />} />
         {/* The ten-item nav's addresses, each now a page or a section of one (SHP-REQ-169). */}
         {RETIRED_ROUTES.map(({ from, to }) => (

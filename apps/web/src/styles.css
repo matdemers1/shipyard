@@ -1184,3 +1184,167 @@
     }
   }
 }
+
+/* SHP-T-13.13: the Activity feed — filters, the Upcoming card, day groups, rows and a rollout's
+   expandable row. Phone first: nothing here widens a 390 px page. */
+@layer shipyard {
+  .shp-feed-filters {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    min-width: 0;
+  }
+  /* The chips scroll sideways inside their own row rather than widening the page. */
+  .shp-feed-filters__chips {
+    display: flex;
+    gap: var(--space-8);
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: var(--space-2);
+  }
+  .shp-feed-filters__chips > * {
+    flex: none;
+  }
+  .shp-feed-filters__fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8);
+    min-width: 0;
+  }
+  .shp-feed-filters__fields > * {
+    flex: 1 1 calc(var(--space-64) * 2);
+    min-width: 0;
+  }
+
+  .shp-upcoming__head {
+    margin-bottom: var(--space-8);
+  }
+  .shp-upcoming__list,
+  .shp-feed-list,
+  .shp-feed-rollout {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-upcoming__row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-8) var(--space-16);
+    padding: var(--space-8) 0;
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-upcoming__row:first-child {
+    border-top: 0;
+  }
+  .shp-upcoming__text {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+  .shp-upcoming__what {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .shp-feed {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-24);
+    min-width: 0;
+  }
+  .shp-feed-day {
+    margin: 0 0 var(--space-4);
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-13);
+    font-weight: 600;
+  }
+  .shp-feed-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-12);
+    min-width: 0;
+    padding: var(--space-8) 0;
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-feed-row[data-nested] {
+    padding-left: var(--space-24);
+  }
+  .shp-feed-row--rollout {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+  .shp-feed-row__rollhead {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-12);
+    min-width: 0;
+  }
+  .shp-feed-row__link {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+    text-decoration: none;
+    color: inherit;
+  }
+  .shp-feed-row__line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-4) var(--space-8);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .shp-feed-row__line code {
+    font-family: var(--font-mono);
+    font-size: var(--text-13);
+  }
+  .shp-feed-row__sub {
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-13);
+    overflow-wrap: anywhere;
+  }
+  .shp-feed-row__time {
+    flex: none;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-13);
+    white-space: nowrap;
+  }
+  .shp-feed-row__toggle {
+    display: flex;
+    flex: 1;
+    align-items: flex-start;
+    gap: var(--space-4);
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .shp-feed-row__chevron {
+    flex: none;
+    margin-top: var(--space-2);
+    color: var(--color-fg-muted);
+  }
+  .shp-feed-row__chevron[data-open] {
+    transform: rotate(90deg);
+  }
+  .shp-feed-foot {
+    margin: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-13);
+  }
+}

@@ -39,7 +39,7 @@ function builtByShipyard(manifestYaml: string): boolean {
 export async function reconcileBuilds(deps: ServiceDeps, options: ReconcileOptions): Promise<ReconcileAppResult[]> {
   const { db, logger } = deps;
   const apps = await db.app.findMany({
-    where: { repo: { not: null }, defaultBranch: { not: null } },
+    where: { repo: { not: null }, defaultBranch: { not: null }, retiredAt: null },
     select: { id: true, name: true, repo: true, defaultBranch: true, manifestYaml: true },
     orderBy: { name: 'asc' },
   });

@@ -204,14 +204,28 @@ export async function detectDrift(
 }
 
 /**
+ * `unknown_app` for an app whose manifest has left the host (SHP-REQ-174): the agent no longer
+ * reports it, so it could not deploy it. Its history stays readable; nothing new is accepted.
+ */
+export function retiredRefusal(appName: string, retiredAt: Date): Refusal {
+  return refusal(
+    'unknown_app',
+    `${appName} was retired ${retiredAt.toISOString()}: the agent no longer reports a manifest for it.`,
+    "Put its manifest back in the agent's apps directory; the app returns on the agent's next report.",
+  );
+}
+
+/**
  * The deploy API's pre-check for one app (SHP-REQ-037, SHP-REQ-054): `unknown_app` if the agent has
- * never reported it, `drift_unresolved` (G3) while it has an open drift event, else null.
+ * never reported it or has retired it (SHP-REQ-174), `drift_unresolved` (G3) while it has an open
+ * drift event, else null.
  */
 export async function assertDeployable(db: DbClient, appName: string): Promise<Refusal | null> {
-  const app = await db.app.findUnique({ where: { name: appName }, select: { id: true, reportedAt: true, driftedAt: true } });
+  const app = await db.app.findUnique({ where: { name: appName }, select: { id: true, reportedAt: true, driftedAt: true, retiredAt: true } });
   if (app === null || app.reportedAt === null) {
     return refusal('unknown_app', `The agent has not reported an app named ${appName}.`);
   }
+  if (app.retiredAt !== null) return retiredRefusal(appName, app.retiredAt);
   if (app.driftedAt !== null) {
     const open = await db.driftEvent.findFirst({
       where: { appId: app.id, resolvedAt: null },

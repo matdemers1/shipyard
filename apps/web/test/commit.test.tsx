@@ -39,6 +39,7 @@ function detail(overrides: Partial<AppDetail> = {}): AppDetail {
     running: null,
     drift: null,
     reportedAt: at(-60),
+    retiredAt: null,
     soakSeconds: 30,
     approvalPolicy: 'none',
     canary: false,

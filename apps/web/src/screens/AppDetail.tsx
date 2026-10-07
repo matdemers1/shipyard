@@ -168,6 +168,8 @@ export function AppDetail() {
   }
 
   const { detail, drift, freeze: activeFreeze } = load;
+  // A retired app (SHP-REQ-174) is history only: nothing on it can be acted on.
+  const canAct = can && detail.retiredAt === null;
   const neverDeployed = detail.liveSha === null;
   const showBuilds = builtByShipyard(detail.manifest) || (load.builds ?? []).length > 0;
   const status = appStatus({ ...detail, commits: load.commits, approval: load.approval, frozen: activeFreeze !== null });
@@ -191,12 +193,20 @@ export function AppDetail() {
             status={status}
             freeze={activeFreeze}
             approval={load.approval}
-            can={can}
+            can={canAct}
             heldSha={heldSha}
             onSheet={setSheet}
             onChanged={reload}
           />
         </Stack>
+
+        {detail.retiredAt !== null ? (
+          // The agent no longer reports a manifest for it (SHP-REQ-174): history only, nothing to act on.
+          <Alert tone="info" title={`Retired ${when(detail.retiredAt)}`}>
+            The agent no longer reports a manifest for {detail.name}, so it is out of its group, the app list and Needs you, and
+            new deploys are refused. Its history stays here. Put the manifest back on the host and it returns on the next report.
+          </Alert>
+        ) : null}
 
         {activeFreeze !== null ? (
           // A freeze is a deliberate hold, not a fault: information, with who and why (SHP-D-094).
@@ -215,7 +225,7 @@ export function AppDetail() {
             detectedAt={drift.open.detectedAt}
             services={drift.open.services}
             pending={drift.open.pending}
-            canAct={can}
+            canAct={canAct}
             onResolved={(deployId) => {
               if (deployId !== undefined) void navigate(`/deploys/${deployId}/live`);
               else reload();
@@ -226,7 +236,7 @@ export function AppDetail() {
         {load.approval !== undefined ? (
           <Alert tone="warning" title="A deploy is waiting on approval">
             {load.approval.requester.label} asked to deploy <code>{sha7(load.approval.sha)}</code>. It holds no lock and expires{' '}
-            {when(load.approval.expiresAt)}. {can ? 'Review it from the header.' : 'A deployer approves it.'}
+            {when(load.approval.expiresAt)}. {canAct ? 'Review it from the header.' : 'A deployer approves it.'}
           </Alert>
         ) : null}
 
@@ -248,7 +258,7 @@ export function AppDetail() {
                 kind="empty"
                 heading="Never deployed through Shipyard"
                 headingLevel={2}
-                {...(can
+                {...(canAct
                   ? {
                       action: (
                         <AdoptLiveButton
@@ -268,7 +278,7 @@ export function AppDetail() {
             <NextUp detail={detail} status={status} commits={load.commits} approval={load.approval} />
 
             {load.commits !== null && load.commits.source === 'github' && summary.ahead > 0 ? (
-              <Waiting app={detail.name} branch={branch} commits={load.commits} status={status} can={can} onDeploy={deploy} />
+              <Waiting app={detail.name} branch={branch} commits={load.commits} status={status} can={canAct} onDeploy={deploy} />
             ) : null}
 
             <Tabs aria-label={`${detail.name} records`} defaultValue="deploys" items={TABS}>
@@ -278,7 +288,7 @@ export function AppDetail() {
                   drift={drift}
                   builds={load.builds}
                   showBuilds={showBuilds}
-                  can={can}
+                  can={canAct}
                   onRollBack={(target) => {
                     setSheet({ kind: 'rollback', app: detail.name, sha: target.sha, toDeployId: target.deployId });
                   }}

@@ -51,6 +51,7 @@ function detail(overrides: Partial<AppDetail> = {}): AppDetail {
     running: { web: digest('9') },
     drift: null,
     reportedAt: '2026-09-24T00:00:00.000Z',
+    retiredAt: null,
     soakSeconds: 30,
     approvalPolicy: 'none',
     canary: false,

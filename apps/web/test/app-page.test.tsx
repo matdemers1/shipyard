@@ -41,6 +41,7 @@ function detail(overrides: Partial<AppDetail> = {}): AppDetail {
     running: { api: digest('f'), web: digest('e') },
     drift: null,
     reportedAt: '2026-10-06T00:00:00.000Z',
+    retiredAt: null,
     soakSeconds: 60,
     approvalPolicy: 'none',
     canary: false,
@@ -241,6 +242,16 @@ describe('the header (SHP-REQ-163, SHP-D-094)', () => {
     routes('viewer');
     renderAt('/apps/bindery');
     await screen.findByText('Ready to deploy bbbbbbb', {}, { timeout: 4000 });
+    const { group, primaries } = await headerActions();
+    expect(primaries).toEqual([]);
+    expect(within(group).queryByRole('button', { name: 'Freeze' })).not.toBeInTheDocument();
+  });
+
+  it('says a retired app is retired and offers a deployer nothing to act on (SHP-REQ-174)', async () => {
+    routes('deployer', {}, detail({ retiredAt: '2026-10-07T00:00:00.000Z' }));
+    renderAt('/apps/bindery');
+    expect(await screen.findByText(/^Retired /, {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(screen.getByText(/no longer reports a manifest for bindery/)).toBeInTheDocument();
     const { group, primaries } = await headerActions();
     expect(primaries).toEqual([]);
     expect(within(group).queryByRole('button', { name: 'Freeze' })).not.toBeInTheDocument();

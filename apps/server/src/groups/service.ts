@@ -26,7 +26,8 @@ import {
 /**
  * Group deploys (SHP-T-5.2, SHP-T-5.3; SHP-REQ-078, SHP-REQ-079, SHP-D-047).
  *
- * - **Members** are the apps whose reported manifest names the group. The canary, if one is
+ * - **Members** are the apps whose reported manifest names the group, less any the agent has
+ *   retired (SHP-REQ-174): a manifest that left the host takes its app out of the group. The canary, if one is
  *   declared, is shipped first; the rest follow by app name. More than one canary is refused.
  * - **One transaction locks every member.** Every member's target is inserted in `locked` by one
  *   nested create, so the one-active-target index either grants all the locks or none: if any
@@ -86,7 +87,7 @@ export function orderMembers<T extends { name: string; canary: boolean }>(member
 
 async function membersOf(db: Db, group: string): Promise<MemberRow[]> {
   const rows = await db.app.findMany({
-    where: { groupName: group },
+    where: { groupName: group, retiredAt: null },
     select: { id: true, name: true, canary: true, approvalPolicy: true },
   });
   return orderMembers(rows);
@@ -95,7 +96,7 @@ async function membersOf(db: Db, group: string): Promise<MemberRow[]> {
 /** Every group the agent has reported, with its members in deploy order. */
 export async function listGroups(db: Db): Promise<GroupSummary[]> {
   const rows = await db.app.findMany({
-    where: { groupName: { not: null } },
+    where: { groupName: { not: null }, retiredAt: null },
     select: { name: true, canary: true, groupName: true },
   });
   const byGroup = new Map<string, { name: string; canary: boolean }[]>();

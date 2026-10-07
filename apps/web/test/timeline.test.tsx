@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { App } from '../src/App';
@@ -7,7 +7,11 @@ import { meReply, mockFetch } from './fetch';
 import type { TimelinePage } from '../src/lib/timeline';
 import { stateWords } from '../src/lib/words';
 
-/** SHP-T-3.7: the timeline (S8, SHP-REQ-062). */
+/**
+ * SHP-T-3.7: the timeline (S8, SHP-REQ-062) — now the deploy half of Activity (SHP-T-13.13), which
+ * `/timeline` redirects to. The feed's own behaviour is tested in activity.test.tsx; these keep the
+ * timeline's filters honest against its endpoint.
+ */
 
 function renderAt(path: string) {
   window.history.replaceState(null, '', path);
@@ -44,106 +48,52 @@ const API_REFUSED = {
   refusalCode: 'app_frozen',
 };
 
-describe('Timeline (S8)', () => {
-  it('shows "No deploys yet" when there are none and no filters are set', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': page([]),
-    });
+function routes(timeline: ReturnType<typeof page> | ReturnType<typeof page>[]) {
+  return mockFetch({
+    'GET /api/auth/me': meReply('viewer'),
+    'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
+    'GET /api/deploys/timeline': timeline,
+    'GET /api/builds': { status: 200, body: { items: [], nextCursor: null } },
+    'GET /api/schedules': { status: 200, body: { upcoming: [], past: [] } },
+  });
+}
+
+describe('Timeline, inside Activity (S8)', () => {
+  it('/timeline lands on the feed and lists deploys with their outcome, app, sha and requester', async () => {
+    routes(page([WEB_SUCCEEDED, API_REFUSED]));
     renderAt('/timeline');
-    expect(await screen.findByText('No deploys yet')).toBeInTheDocument();
+    expect(await screen.findByText('Deployed')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/activity');
+    expect(screen.getByText(/Refused — app frozen/)).toBeInTheDocument();
+    expect(screen.getByText('bbbbbbb')).toBeInTheDocument();
+    expect(screen.getByText(/Bob/)).toBeInTheDocument();
   });
 
-  it('lists deploys newest first, with an outcome badge, app, sha and requester', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': page([WEB_SUCCEEDED, API_REFUSED]),
-    });
-    renderAt('/timeline');
-    const list = await screen.findByRole('list', { name: 'Deploys' });
-    const rows = within(list).getAllByRole('listitem');
-    expect(rows).toHaveLength(2);
-    expect(within(rows[0] as HTMLElement).getByText('Succeeded')).toBeInTheDocument();
-    expect(within(rows[0] as HTMLElement).getByText(/web/)).toBeInTheDocument();
-    expect(within(rows[1] as HTMLElement).getByText('Refused')).toBeInTheDocument();
-    expect(within(rows[1] as HTMLElement).getByText(/app_frozen/)).toBeInTheDocument();
-  });
-
-  it('reads app, outcome and kind straight from the URL on load', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': page([WEB_SUCCEEDED]),
-    });
+  it('keeps the old Timeline address\'s filters: app, outcome and kind reach the endpoint', async () => {
+    const calls = routes(page([WEB_SUCCEEDED]));
     renderAt('/timeline?app=web&outcome=succeeded&kind=deploy');
-    await screen.findByText('Succeeded');
+    await screen.findByText('Deployed');
     expect(await screen.findByRole('combobox', { name: 'Outcome' })).toHaveTextContent('Succeeded');
-    expect(screen.getByRole('combobox', { name: 'Kind' })).toHaveTextContent('Deploy');
-  });
-
-  it('the app filter select shows the app chosen in the URL', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': page([WEB_SUCCEEDED]),
-    });
-    renderAt('/timeline?app=web');
-    await screen.findByText('Succeeded');
-    expect(await screen.findByRole('combobox', { name: 'App' })).toHaveTextContent('web');
+    expect(screen.getByRole('combobox', { name: 'App' })).toHaveTextContent('web');
+    expect(screen.getByRole('button', { name: 'Deploys' })).toHaveAttribute('aria-pressed', 'true');
+    expect(calls.some((c: Call) => c.path === '/api/deploys/timeline')).toBe(true);
   });
 
   it('typing a requester and pressing Enter narrows the list (mocked) and updates the URL', async () => {
-    const calls = mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': [page([WEB_SUCCEEDED, API_REFUSED]), page([API_REFUSED])],
-    });
+    const calls = routes([page([WEB_SUCCEEDED, API_REFUSED]), page([API_REFUSED])]);
     const user = userEvent.setup();
-    renderAt('/timeline');
-    await screen.findByText('Succeeded');
+    renderAt('/activity');
+    await screen.findByText('Deployed');
 
-    const requester = screen.getByRole('textbox', { name: 'Requester' });
-    await user.type(requester, 'Bob{Enter}');
+    await user.type(screen.getByRole('textbox', { name: 'Requester' }), 'Bob{Enter}');
 
     await waitFor(() => {
-      expect(screen.queryByText('Succeeded')).not.toBeInTheDocument();
+      expect(screen.queryByText('Deployed')).not.toBeInTheDocument();
     });
-    expect(screen.getByText('Refused')).toBeInTheDocument();
+    expect(screen.getByText(/Refused/)).toBeInTheDocument();
     expect(new URLSearchParams(window.location.search).get('requester')).toBe('Bob');
-    const requesterCalls = calls.filter((c: Call) => c.path === '/api/deploys/timeline' && c.method === 'GET');
-    expect(requesterCalls.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('shows "No deploys match" with a clear-filters action for a filtered empty result', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }, { name: 'api' }] } },
-      'GET /api/deploys/timeline': [page([]), page([WEB_SUCCEEDED, API_REFUSED])],
-    });
-    const user = userEvent.setup();
-    renderAt('/timeline?app=web&outcome=cancelled');
-    expect(await screen.findByText('No deploys match')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
-    await screen.findByText('Succeeded');
-    expect(window.location.search).toBe('');
-  });
-
-  it('shows a Load more control when there is a next page, and appends on click', async () => {
-    mockFetch({
-      'GET /api/auth/me': meReply('viewer'),
-      'GET /api/apps': { status: 200, body: { apps: [{ name: 'web' }] } },
-      'GET /api/deploys/timeline': [page([WEB_SUCCEEDED], 'cursor-1'), page([API_REFUSED], null)],
-    });
-    const user = userEvent.setup();
-    renderAt('/timeline');
-    await screen.findByText('Succeeded');
-    const more = screen.getByRole('button', { name: 'Load more' });
-    await user.click(more);
-    await screen.findByText('Refused');
-    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    const timelineCalls = calls.filter((c: Call) => c.path === '/api/deploys/timeline' && c.method === 'GET');
+    expect(timelineCalls.length).toBeGreaterThanOrEqual(2);
   });
 });
 

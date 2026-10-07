@@ -2,9 +2,9 @@
    token — the usage gate refuses a hex, a shadow or an invented name. Kept in a layer so a
    component's own rules are never overridden by accident. */
 @layer shipyard {
-  /* Buttons in an Alert's action slot, allowed to wrap: the slot itself is a single non-wrapping
-     row, which pushed two long labels off a 390 px screen (SHP-DA-018). */
-  .shp-alert-actions {
+  /* A row of actions or links outside an Alert's own action slot, wrapping at 390 px. (Inside the
+     slot, @d3cloud/ui 1.7 wraps them itself — D-090.) */
+  .shp-action-row {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-8);

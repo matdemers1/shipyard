@@ -631,7 +631,7 @@ function CiSection({
       <Stack gap="12">
         {failing !== null ? (
           <Alert tone="danger" title={`Failed at ${failing.name} · ${jobSpan(failing)}`}>
-            <span className="shp-alert-actions">
+            <span className="shp-action-row">
               {run.url ? <External href={run.url}>Open run #{String(run.id)}</External> : null}
               {failing.url ? <External href={failing.url}>Full log on GitHub</External> : null}
             </span>

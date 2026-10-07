@@ -191,9 +191,8 @@ export function DriftBanner({ app, eventId, detectedAt, services, pending = null
       title={`${app} is running something other than its recorded release`}
       actions={
         canAct ? (
-          // Its own wrapping row: the alert's action slot does not wrap, and at 390 px the two
-          // buttons ran off the right edge (SHP-DA-018).
-          <div className="shp-alert-actions">
+          // The Alert's action row wraps on a phone since @d3cloud/ui 1.7 (D-090, SHP-DA-018).
+          <>
             <AdoptLiveButton
               app={app}
               driftEventId={eventId}
@@ -203,7 +202,7 @@ export function DriftBanner({ app, eventId, detectedAt, services, pending = null
               }}
             />
             <RedeployButton app={app} driftEventId={eventId} onStarted={onResolved} />
-          </div>
+          </>
         ) : undefined
       }
     >

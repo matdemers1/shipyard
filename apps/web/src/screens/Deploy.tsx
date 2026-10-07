@@ -446,7 +446,7 @@ function ApprovalActions({ status, canAct }: ApprovalProps) {
           {error.fix}
         </Alert>
       ) : null}
-      <div className="shp-alert-actions">
+      <div className="shp-action-row">
         <Button
           type="button"
           variant="primary"

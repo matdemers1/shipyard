@@ -4,8 +4,10 @@ import { STATUS_WORDS, stateWords } from './words';
 
 /**
  * One app's state in plain words (SHP-T-3.10): what it is doing and why, derived from what the
- * server already answers. Home's cards and app detail's status panel both read this, so the two
- * never tell a different story about the same app.
+ * server already answers. Apps' rows, its Needs you list and app detail's status panel all read
+ * this, so they never tell a different story about the same app. Apps lists rows alphabetically and
+ * never by status (SHP-D-089): a row that moved under the thumb on refresh would be a mis-tap on a
+ * deploy console.
  *
  * The case this exists for: "10 waiting" with nothing ready. Waiting counts every commit on the
  * default branch ahead of the recorded release, but GitHub runs the image workflow once per push,
@@ -68,7 +70,7 @@ export interface CommitSummary {
   afterShip: number;
 }
 
-/** What the status needs to know about an app. Home and app detail both have these facts. */
+/** What the status needs to know about an app. Apps and app detail both have these facts. */
 export interface StatusInput {
   repo: string | null;
   liveSha: string | null;
@@ -138,9 +140,10 @@ export function summarizeCommits(commits: CommitsInfo | null): CommitSummary {
 
 /**
  * The newest commit that has a CI run at all: that run decides whether the latest push is
- * deployable. Commits after it without a run belong to the same push.
+ * deployable. Commits after it without a run belong to the same push. Exported so a CI-failed row
+ * links to the run that failed, the same commit the status names.
  */
-function newestWithRun(entries: CommitEntry[]): CommitEntry | undefined {
+export function newestWithRun(entries: CommitEntry[]): CommitEntry | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry !== undefined && entry.ci !== 'none') return entry;
@@ -319,23 +322,4 @@ export function appStatus(input: StatusInput): AppStatus {
       : `GitHub builds images once per push, for its newest commit, and none of these has a finished build on ${branch} yet. A new push's build shows up here within a minute; if none ever does, check the manifest's workflow name.`,
     shipSha: null,
   };
-}
-
-/** Where Home puts an app: what needs you first, then what is quietly fine. */
-export function statusRank(kind: StatusKind): number {
-  const order: StatusKind[] = [
-    'approval',
-    'drift',
-    'deploying',
-    'ready',
-    'ci-failed',
-    'ci-running',
-    'frozen',
-    'no-images',
-    'github-unavailable',
-    'never-deployed',
-    'no-repo',
-    'up-to-date',
-  ];
-  return order.indexOf(kind);
 }

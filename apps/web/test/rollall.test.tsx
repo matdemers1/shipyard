@@ -152,7 +152,7 @@ describe('Deploy all ready on Home', () => {
     });
     window.history.replaceState(null, '', '/');
     render(<App />);
-    await screen.findByRole('heading', { level: 1, name: 'Home' });
+    await screen.findByRole('heading', { level: 1, name: 'Apps' });
 
     // Three ready apps — the frozen one and the up-to-date one are left out.
     const user = userEvent.setup();

@@ -13,10 +13,11 @@ import {
   useTheme,
 } from '@d3cloud/ui';
 import { Moon, Sun } from 'lucide-react';
-import { useSyncExternalStore, type ReactNode } from 'react';
+import { useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { ShipyardMark } from '../brand/ShipyardMark';
 import { useAuth, useCan, useMe } from '../lib/auth';
+import { AppsStoreContext, createAppsStore } from '../lib/home';
 import { useNeedsYou } from '../lib/needsyou';
 import { NAV_ITEMS, isNavCurrent } from '../nav';
 
@@ -88,13 +89,17 @@ export function Shell({ children }: { children?: ReactNode }) {
   const isAdmin = me?.role === 'admin';
   const items = NAV_ITEMS.filter((item) => (!item.needsStateChange || can) && (item.needsAdmin !== true || isAdmin));
   const wide = useWide();
-  const needsYou = useNeedsYou(can);
+  // One store for the signed-in console: Apps reads the same snapshot the badge counts, so the
+  // browser polls the apps, approvals and commits once rather than twice (SHP-T-13.8).
+  const [store] = useState(createAppsStore);
+  const needsYou = useNeedsYou(store, can);
   // countLabel replaces a link's whole accessible name, so it must still say where it goes.
   const countFor = (to: string) =>
     to === '/' && needsYou.count > 0 ? { count: needsYou.count, countLabel: `Apps, ${String(needsYou.count)} need you` } : {};
   const email = me?.email ?? '';
 
   return (
+    <AppsStoreContext value={store}>
     <AppShell
       storageKey="shipyard.nav"
       mainId="main"
@@ -173,5 +178,6 @@ export function Shell({ children }: { children?: ReactNode }) {
         </>
       )}
     </AppShell>
+    </AppsStoreContext>
   );
 }

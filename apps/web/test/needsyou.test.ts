@@ -1,7 +1,8 @@
 import type { SystemStatus } from '@shipyard/schema';
-import { describe, expect, it } from 'vitest';
-import type { AppRow, CommitsInfo, PendingApproval } from '../src/lib/home';
-import { hostWarnings, needsYouItems, type NeedsYouApp } from '../src/lib/needsyou';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createAppsStore, type AppRow, type CommitsInfo, type PendingApproval } from '../src/lib/home';
+import { hostWarnings, needsYouFrom, needsYouItems, SHELL_POLL_MS, type NeedsYouApp } from '../src/lib/needsyou';
+import { mockFetch, type Reply } from './fetch';
 
 /** The one list behind the Apps badge (SHP-ADR-006): its order, and what it leaves out. */
 
@@ -118,5 +119,122 @@ describe('hostWarnings', () => {
     const lines = hostWarnings(status({ stale: true, patWarning: 'expired', unstartedTargets: 2 }, 3));
     expect(lines).toHaveLength(4);
     expect(lines[0]).toBe('The agent has stopped reporting');
+  });
+});
+
+describe('needsYouFrom', () => {
+  it('counts exactly the items it lists, so the badge and the rows agree', () => {
+    const result = needsYouFrom({
+      apps: [app('failing', { commits: failedCommits() })],
+      approvals: [approval('blog')],
+      system: status({ patWarning: 'expired' }, 2),
+    });
+    expect(result.count).toBe(result.items.length);
+    expect(result.items.map((i) => i.kind)).toEqual(['approval', 'ci-failed', 'agent-token']);
+    expect(result.hostWarnings).toEqual(['The GitHub token has expired', 'Deploys are waiting to reach Foreman']);
+  });
+});
+
+describe('the shared apps store (SHP-T-13.8)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SYSTEM: Reply = { status: 200, body: status({}) };
+
+  function routes() {
+    return mockFetch({
+      'GET /api/apps': { status: 200, body: { apps: [app('blog')] } },
+      'GET /api/approvals': { status: 200, body: [] },
+      'GET /api/agent': { status: 200, body: [] },
+      'GET /api/system': SYSTEM,
+      'GET /api/apps/blog/commits': { status: 200, body: failedCommits() },
+    });
+  }
+
+  const reads = (calls: { method: string; path: string }[], path: string) => calls.filter((c) => c.path === path).length;
+
+  it('serves two watchers from one read', async () => {
+    const calls = routes();
+    const store = createAppsStore();
+    const stopHome = store.watch(30_000, true);
+    const stopShell = store.watch(SHELL_POLL_MS, true);
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().status).toBe('ready');
+    });
+    expect(reads(calls, '/api/apps')).toBe(1);
+    expect(reads(calls, '/api/apps/blog/commits')).toBe(1);
+    expect(reads(calls, '/api/system')).toBe(1);
+    expect(needsYouFrom(store.getSnapshot()).count).toBe(1);
+    stopHome();
+    stopShell();
+  });
+
+  it('reads again for a watcher that needs the host status the last read did not ask for', async () => {
+    const calls = routes();
+    const store = createAppsStore();
+    const stopViewer = store.watch(SHELL_POLL_MS, false);
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().status).toBe('ready');
+    });
+    expect(reads(calls, '/api/system')).toBe(0);
+    const stopDeployer = store.watch(SHELL_POLL_MS, true);
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().system).not.toBeNull();
+    });
+    expect(reads(calls, '/api/apps')).toBe(2);
+    stopViewer();
+    stopDeployer();
+  });
+
+  it('polls at the shortest pace anyone is watching at, and stops when nobody is', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const calls = routes();
+    const store = createAppsStore();
+    const stopShell = store.watch(SHELL_POLL_MS, false);
+    const stopHome = store.watch(30_000, false);
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().status).toBe('ready');
+    });
+    expect(reads(calls, '/api/apps')).toBe(1);
+
+    vi.advanceTimersByTime(30_000);
+    await vi.waitFor(() => {
+      expect(reads(calls, '/api/apps')).toBe(2);
+    });
+
+    // Apps closes: the shell alone reads every five minutes, not every thirty seconds.
+    stopHome();
+    vi.advanceTimersByTime(60_000);
+    expect(reads(calls, '/api/apps')).toBe(2);
+
+    stopShell();
+    vi.advanceTimersByTime(SHELL_POLL_MS);
+    expect(reads(calls, '/api/apps')).toBe(2);
+  });
+
+  it('keeps the last answer when a read fails', async () => {
+    let fail = false;
+    mockFetch({
+      'GET /api/apps': () => {
+        if (fail) throw new TypeError('Failed to fetch');
+        return { status: 200, body: { apps: [app('blog')] } };
+      },
+      'GET /api/approvals': { status: 200, body: [approval('blog')] },
+      'GET /api/agent': { status: 200, body: [] },
+      'GET /api/apps/blog/commits': { status: 200, body: failedCommits() },
+    });
+    const store = createAppsStore();
+    const stop = store.watch(SHELL_POLL_MS, false);
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().status).toBe('ready');
+    });
+    fail = true;
+    store.refresh();
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().status).toBe('error');
+    });
+    expect(needsYouFrom(store.getSnapshot()).count).toBe(1);
+    stop();
   });
 });

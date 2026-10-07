@@ -11,7 +11,7 @@ import {
 import type { Actor } from '../audit.js';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
-import { assertDeployable } from '../apps/drift.js';
+import { assertDeployable, retiredRefusal } from '../apps/drift.js';
 import { assertNotFrozen } from '../freeze/service.js';
 import { callerCanActOn, isUniqueViolation, lockRefusal, type DeployCaller } from '../deploys/service.js';
 
@@ -205,10 +205,11 @@ export async function createSchedule(
     byUserId = actor.id;
   }
 
-  const app = await db.app.findUnique({ where: { name: input.app }, select: { id: true, reportedAt: true, approvalPolicy: true } });
+  const app = await db.app.findUnique({ where: { name: input.app }, select: { id: true, reportedAt: true, retiredAt: true, approvalPolicy: true } });
   if (app === null || app.reportedAt === null) {
     return refusal('unknown_app', `The agent has not reported an app named ${input.app}.`);
   }
+  if (app.retiredAt !== null) return retiredRefusal(input.app, app.retiredAt);
 
   // SHP-REQ-081: an approval-required app's schedule carries its approval from the start. A console
   // user's scheduling is the approval (as confirming the dry-run sheet is, for a deploy now); a

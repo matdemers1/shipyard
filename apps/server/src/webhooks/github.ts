@@ -271,7 +271,7 @@ export function githubWebhookRouter(deps: ServiceDeps): Router {
         push.repo === null
           ? []
           : await db.app.findMany({
-              where: { repo: { equals: push.repo, mode: 'insensitive' } },
+              where: { repo: { equals: push.repo, mode: 'insensitive' }, retiredAt: null },
               select: { name: true, defaultBranch: true, manifestYaml: true },
               orderBy: { name: 'asc' },
             });

@@ -140,8 +140,12 @@ describe('GET /api/apps', () => {
         images: { create: [{ service: 'web', repo: 'ghcr.io/matdemers1/web', sha: SHA, digest: DIGEST_A }] },
       },
     });
-    // An SSH change: the next report flags it.
-    await reportApps([{ manifest: manifest('web'), manifestSha256: 'a'.repeat(64), running: { web: DIGEST_B } }]);
+    // An SSH change: the next report flags it. A report always names every app on the host.
+    await reportApps([
+      { manifest: manifest('web'), manifestSha256: 'a'.repeat(64), running: { web: DIGEST_B } },
+      { manifest: manifest('api'), manifestSha256: 'b'.repeat(64), running: { web: DIGEST_A } },
+      { manifest: manifest('billing'), manifestSha256: 'c'.repeat(64), running: { web: null } },
+    ]);
     const api = await db.app.findUniqueOrThrow({ where: { name: 'api' } });
     const running = await db.deploy.create({ data: { requestedSha: SHA, requesterLabel: 'token claude' } });
     await db.deployTarget.create({ data: { deployId: running.id, appId: api.id, state: 'pulling', currentStep: 'pull web' } });

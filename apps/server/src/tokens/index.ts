@@ -107,7 +107,7 @@ export function tokensRouter(deps: ServiceDeps): Router {
     }
     const label = parsed.data.label;
     const names = [...new Set(parsed.data.apps)].sort();
-    const apps = await db.app.findMany({ where: { name: { in: names } }, select: { id: true, name: true } });
+    const apps = await db.app.findMany({ where: { name: { in: names }, retiredAt: null }, select: { id: true, name: true } });
     const known = new Set(apps.map((a) => a.name));
     const missing = names.find((n) => !known.has(n));
     if (missing !== undefined) {

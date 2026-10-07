@@ -88,7 +88,8 @@ export async function appStatuses(
   const github =
     options.github ?? liveGitHub(deps);
   const apps = await db.app.findMany({
-    where: { name: { in: [...names] } },
+    // A retired app (SHP-REQ-174) has no status to report: its manifest is gone from the host.
+    where: { name: { in: [...names] }, retiredAt: null },
     orderBy: { name: 'asc' },
     select: { id: true, name: true, repo: true, defaultBranch: true, reportedAt: true, manifestYaml: true },
   });

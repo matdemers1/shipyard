@@ -138,7 +138,7 @@ async function plan(
 
   const shaByApp = new Map(input.items.map((i) => [i.app, i.sha]));
   const rows = await db.app.findMany({
-    where: { name: { in: [...shaByApp.keys()] } },
+    where: { name: { in: [...shaByApp.keys()] }, retiredAt: null },
     select: { id: true, name: true, groupName: true, canary: true, approvalPolicy: true },
   });
   for (const item of input.items) {

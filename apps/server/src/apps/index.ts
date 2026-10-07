@@ -29,6 +29,7 @@ const APP_SELECT = {
   runningDigests: true,
   driftedAt: true,
   manifestSha256: true,
+  retiredAt: true,
 } satisfies Prisma.AppSelect;
 
 type AppRow = Prisma.AppGetPayload<{ select: typeof APP_SELECT }>;
@@ -51,6 +52,8 @@ interface AppSummary {
   manifestSha256: string;
   /** A freeze holds now (SHP-REQ-077): Home leaves the app out of Roll all (SHP-REQ-154). */
   frozen: boolean;
+  /** When the agent stopped reporting it (SHP-REQ-174); only ever set on `GET /api/apps/:app`. */
+  retiredAt: string | null;
   active: { targetId: string; deployId: string; state: string; holder: string; currentStep: string | null } | null;
 }
 
@@ -87,6 +90,7 @@ async function summarise(db: Db, app: AppRow): Promise<AppSummary> {
     group: app.groupName,
     manifestSha256: app.manifestSha256,
     frozen: freeze !== null,
+    retiredAt: app.retiredAt?.toISOString() ?? null,
     active:
       active === null
         ? null
@@ -123,7 +127,8 @@ export function appsRouter(deps: ServiceDeps): Router {
     if (!readerOrRefuse(req, res)) return;
     const scope = scopeOf(req);
     const rows = await db.app.findMany({
-      where: scope === undefined ? {} : { name: { in: [...scope] } },
+      // A retired app (SHP-REQ-174) is left out of the list; GET /api/apps/:app still answers for it.
+      where: scope === undefined ? { retiredAt: null } : { retiredAt: null, name: { in: [...scope] } },
       orderBy: { name: 'asc' },
       select: APP_SELECT,
     });

@@ -76,6 +76,8 @@ export interface AppDetail {
   running: Record<string, string | null> | null;
   drift: { id: string; detectedAt: string } | null;
   reportedAt: string | null;
+  /** When the agent stopped reporting it (SHP-REQ-174); null while it is reported. */
+  retiredAt: string | null;
   soakSeconds: number | null;
   approvalPolicy: string | null;
   canary: boolean;

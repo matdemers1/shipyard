@@ -245,6 +245,9 @@ model App {
   runningDigests     Json?     @map("running_digests")
   /// Set while observed digests differ from the recorded release and no resolution was made.
   driftedAt          DateTime? @map("drifted_at") @db.Timestamptz(3)
+  /// Set when the owning agent's report stops naming the app (its manifest left the host), cleared
+  /// when a report names it again (SHP-REQ-174). A retired app keeps its row and deploy history.
+  retiredAt          DateTime? @map("retired_at") @db.Timestamptz(3)
 
   agent           Agent            @relation(fields: [agentId], references: [id])
   targets         DeployTarget[]

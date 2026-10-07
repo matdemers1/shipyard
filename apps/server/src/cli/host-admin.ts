@@ -54,7 +54,7 @@ export async function issueToken(db: Db, input: IssueTokenInput): Promise<{ id: 
   if (user.disabledAt !== null) throw new HostAdminError(`${input.email} is disabled`);
   if (input.label.trim() === '' || input.label.length > 100) throw new HostAdminError('label must be 1–100 characters');
   if (input.apps.length === 0) throw new HostAdminError('at least one --apps name is required');
-  const apps = await db.app.findMany({ where: { name: { in: input.apps } }, select: { id: true, name: true } });
+  const apps = await db.app.findMany({ where: { name: { in: input.apps }, retiredAt: null }, select: { id: true, name: true } });
   const missing = input.apps.filter((name) => !apps.some((a) => a.name === name));
   if (missing.length > 0) throw new HostAdminError(`not reported by the agent yet: ${missing.join(', ')}`);
 

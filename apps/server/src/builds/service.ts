@@ -11,6 +11,7 @@ import {
   type BuildTrigger,
   type Refusal,
 } from '@shipyard/schema';
+import { retiredRefusal } from '../apps/drift.js';
 import type { Actor, AuditEventInput } from '../audit.js';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
@@ -299,10 +300,11 @@ async function insertBuild(deps: ServiceDeps, input: EnqueueBuildInput): Promise
       outcome: refusal('invalid_request', 'sha must be a full 40-character lowercase commit SHA.', 'Send the full commit SHA, not a short one.'),
     };
   }
-  const app = await db.app.findUnique({ where: { name: name.data }, select: { id: true, name: true, manifestYaml: true } });
+  const app = await db.app.findUnique({ where: { name: name.data }, select: { id: true, name: true, manifestYaml: true, retiredAt: true } });
   if (app === null) {
     return { appName: name.data, outcome: refusal('unknown_app', `No app named ${name.data} has been reported by the agent.`) };
   }
+  if (app.retiredAt !== null) return { appName: app.name, outcome: retiredRefusal(app.name, app.retiredAt) };
   let source: string;
   try {
     source = parseManifestYaml(app.manifestYaml).build?.source ?? 'github';

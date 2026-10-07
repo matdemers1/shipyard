@@ -24,8 +24,15 @@ export function lastReportedBuildCache(agentId: string): AgentBuildCache | null 
  * manifests with content hashes and the digests it sees running; the server mirrors them.
  *
  * **This module (with drift.ts beside it) is the only code that writes `app` rows.** A guard test
- * greps the server source and fails if anything else does. Apps absent from a report are left as
- * they were — their `reportedAt` simply ages; nothing is ever deleted.
+ * greps the server source and fails if anything else does. Nothing is ever deleted.
+ *
+ * Retirement (SHP-REQ-174, SHP-T-3.14): an app the reporting agent owns but no longer names is
+ * marked `retiredAt` — its manifest has left the host, so the agent could not deploy it anyway. The
+ * agent's report is all-or-nothing (`loadManifests` throws on any invalid manifest and nothing is
+ * sent), so an omission means the file is gone, not that it failed to parse. A retired app drops
+ * out of groups, lists, approvals and new deploys; its row and deploy history stay readable. A
+ * later report naming it again clears `retiredAt`. A report naming no apps at all retires nothing:
+ * an empty apps directory looks like a lost mount, not every stack retired at once.
  *
  * Ledger sync (SHP-REQ-111): the report also carries the agent ledger's verified releases. Each
  * one the server does not hold — a deploy made on the host with the CLI — is recorded as a
@@ -175,6 +182,9 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     // Ledger releases recorded by this report, and apps whose drift an imported release explained.
     const imported: ImportedRelease[] = [];
     const importClosed: string[] = [];
+    // Apps this report retired (owned by this agent, no longer named) or brought back.
+    const retired: { id: string; name: string }[] = [];
+    const revived: { id: string; name: string }[] = [];
 
     await db.$transaction(async (tx) => {
       for (const entry of report.apps) {
@@ -193,9 +203,10 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
           groupName: m.group ?? null,
           canary: m.canary ?? false,
           reportedAt: now,
+          retiredAt: null,
           runningDigests: entry.running as Prisma.InputJsonValue,
         };
-        const before = await tx.app.findUnique({ where: { name: m.name }, select: { manifestSha256: true, agentId: true } });
+        const before = await tx.app.findUnique({ where: { name: m.name }, select: { manifestSha256: true, agentId: true, retiredAt: true } });
         if (before !== null && before.agentId !== agentId) {
           // An app belongs to the agent that first reported it. Another agent naming it is refused,
           // not merged: moving an app between hosts is a deliberate act, never a side effect.
@@ -211,6 +222,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
           update: fields,
           select: { id: true },
         });
+        if (before !== null && before.retiredAt !== null) revived.push({ id: row.id, name: m.name });
         const ownReleases = (report.releases ?? []).filter((r) => r.app === m.name);
         const importedHere = await importReleases(tx, row.id, ownReleases, logger);
         imported.push(...importedHere);
@@ -218,6 +230,19 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
         if (outcome.closedByImport) importClosed.push(m.name);
         if (outcome.opened) drifted.push({ app: m.name, services: outcome.services });
         if (outcome.resolved) redeployed.push(m.name);
+      }
+      if (names.length > 0) {
+        const gone = await tx.app.findMany({
+          where: { agentId, retiredAt: null, name: { notIn: names } },
+          select: { id: true, name: true },
+          orderBy: { name: 'asc' },
+        });
+        if (gone.length > 0) {
+          await tx.app.updateMany({ where: { id: { in: gone.map((a) => a.id) } }, data: { retiredAt: now } });
+          retired.push(...gone);
+        }
+      } else {
+        logger.warn({ agentId }, 'agent report names no apps; retiring nothing');
       }
       await tx.agent.update({
         where: { id: agentId },
@@ -257,9 +282,18 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       logger.info({ app: name }, 'drift resolved: the recorded release is running again after a redeploy');
     }
 
+    for (const a of retired) {
+      logger.info({ app: a.name }, 'app retired: the agent no longer reports a manifest for it');
+      await req.audit({ action: 'app.retired', entityType: 'app', entityId: a.id, after: { app: a.name, retiredAt: now.toISOString() } });
+    }
+    for (const a of revived) {
+      logger.info({ app: a.name }, 'app revived: the agent reports a manifest for it again');
+      await req.audit({ action: 'app.revived', entityType: 'app', entityId: a.id, after: { app: a.name } });
+    }
+
     // A periodic report that changed nothing is a heartbeat, not an event.
     if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0 && redeployed.length === 0 && importClosed.length === 0) {
-      if (imported.length === 0) req.noAuditNeeded('unchanged report');
+      if (imported.length === 0 && retired.length === 0 && revived.length === 0) req.noAuditNeeded('unchanged report');
     } else {
       await req.audit({
         action: 'agent.report',
@@ -277,8 +311,17 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       });
     }
 
-    for (const name of names) bus.publish(`app:${name}`);
+    for (const name of [...names, ...retired.map((a) => a.name)]) bus.publish(`app:${name}`);
 
-    res.status(200).json({ apps: names.length, created, changed, drifted: drifted.map((d) => d.app), refused: refusedApps, imported: imported.map((r) => r.deployId) });
+    res.status(200).json({
+      apps: names.length,
+      created,
+      changed,
+      drifted: drifted.map((d) => d.app),
+      refused: refusedApps,
+      imported: imported.map((r) => r.deployId),
+      retired: retired.map((a) => a.name),
+      revived: revived.map((a) => a.name),
+    });
   });
 }

@@ -317,6 +317,8 @@ export async function listPendingApprovals(deps: ServiceDeps, now: Date = new Da
       deniedAt: null,
       expiredAt: null,
       expiresAt: { gt: now },
+      // A retired app's held deploy (SHP-REQ-174) is not waiting on anyone: approving it is refused.
+      deploy: { targets: { none: { app: { retiredAt: { not: null } } } } },
       // A scheduled deploy's approval is pending only while the schedule is still upcoming.
       OR: [{ deploy: { schedule: { is: null } } }, { deploy: { schedule: { is: { firedAt: null, cancelledAt: null } } } }],
     },

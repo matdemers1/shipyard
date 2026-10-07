@@ -150,7 +150,7 @@ describe('POST /api/agent/report', () => {
     expect(audit[0]?.actorAgentId).toBe(agentId);
   });
 
-  it('updates the rows on a second report, and leaves an unreported app alone', async () => {
+  it('updates the rows on a second report, and retires an unreported app without touching the rest of its row (SHP-REQ-174)', async () => {
     await send(report([
       { manifest: manifest('web'), manifestSha256: 'a'.repeat(64), running: { web: DIGEST_A } },
       { manifest: manifest('api'), manifestSha256: 'c'.repeat(64), running: { web: DIGEST_A } },
@@ -159,12 +159,13 @@ describe('POST /api/agent/report', () => {
 
     const res = await send(report([{ manifest: manifest('web', { soakSeconds: 120, approval: 'required' }), manifestSha256: 'b'.repeat(64), running: { web: DIGEST_B } }], '0.2.0'));
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ changed: ['web'], created: [] });
+    expect(res.body).toMatchObject({ changed: ['web'], created: [], retired: ['api'] });
 
     const web = await db.app.findUniqueOrThrow({ where: { name: 'web' } });
     expect(web).toMatchObject({ manifestSha256: 'b'.repeat(64), soakSeconds: 120, approvalPolicy: 'required', runningDigests: { web: DIGEST_B } });
     const apiAfter = await db.app.findUniqueOrThrow({ where: { name: 'api' } });
-    expect(apiAfter).toEqual(apiBefore);
+    expect(apiAfter.retiredAt).not.toBeNull();
+    expect({ ...apiAfter, retiredAt: null }).toEqual(apiBefore);
     expect(await db.app.count()).toBe(2);
     expect((await db.agent.findUniqueOrThrow({ where: { id: agentId } })).agentVersion).toBe('0.2.0');
   });

@@ -4,9 +4,9 @@ import { enterZeroUserWorld, restoreAccounts } from '../harness/accounts.js';
 import { DEPLOY_SHA, appRow, dialog, expectPhoneFit, h1, needsYou, needsYouRow, useWidth, type Width } from '../harness/console.js';
 import { clearD3AuthSetting } from '../harness/d3auth.js';
 import { clearMailSetting } from '../harness/mail.js';
-import { withDb } from '../harness/db.js';
+import { withDb, type Db } from '../harness/db.js';
 import { USERS, storageStateFor, type RoleName } from '../harness/env.js';
-import { fixture, reseedWorld, sha, type Fixture } from '../harness/seed.js';
+import { enterAllClearWorld, fixture, reseedWorld, sha, type Fixture } from '../harness/seed.js';
 
 /**
  * SHP-T-6.2 and SHP-T-13.14, SHP-REQ-090: every screen of the redesigned console, in both themes and
@@ -43,6 +43,8 @@ interface Screen {
   only?: Width;
   /** Runs in a server with no account at all (first-run setup), then puts the accounts back. */
   zeroUsers?: boolean;
+  /** Changes the seeded world first; the baseline is put back after the test. */
+  world?: (db: Db) => Promise<void>;
 }
 
 /** The held d3auth deploy's SHA (seed.ts: the approval app's second commit). */
@@ -96,6 +98,19 @@ const SCREENS: Screen[] = [
       await h1(p, 'Apps');
       await expect(needsYou(p)).toBeVisible();
       await expect(appRow(p, fx.apps.history).getByRole('button', { name: DEPLOY_SHA })).toBeVisible();
+    },
+  },
+  {
+    name: 'S2 apps — all clear',
+    as: 'admin',
+    world: (db) => enterAllClearWorld(db),
+    path: () => '/',
+    ready: async (p, { fx }) => {
+      await h1(p, 'Apps');
+      // Nothing waits on a person: one calm line instead of the Needs you list (SHP-D-089).
+      await expect(p.getByText(/^Nothing needs you\. \d+ up to date, \d+ ready\.$/)).toBeVisible();
+      await expect(needsYou(p)).toHaveCount(0);
+      await expect(appRow(p, fx.apps.history)).toBeVisible();
     },
   },
   {
@@ -805,10 +820,13 @@ for (const width of ['desktop', 'phone'] as const satisfies readonly Width[]) {
 
           test(`${screen.name} has no serious or critical violations`, async ({ page }) => {
             const snapshot = screen.zeroUsers === true ? await withDb((db) => enterZeroUserWorld(db)) : undefined;
+            const world = screen.world;
+            if (world !== undefined) await withDb((db) => world(db));
             try {
               await check(page, screen, theme, width);
             } finally {
               if (snapshot !== undefined) await withDb((db) => restoreAccounts(db, snapshot));
+              if (world !== undefined) await withDb((db) => reseedWorld(db));
             }
           });
         });

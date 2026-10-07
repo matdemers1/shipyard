@@ -1,5 +1,5 @@
-import { expect, type Locator, type Page, type Route } from '@playwright/test';
-import { USERS } from './env.js';
+import { expect, request, type Locator, type Page, type Route } from '@playwright/test';
+import { BASE_URL, USERS, storageStateFor } from './env.js';
 
 /**
  * What the specs share about the redesigned console (SHP-P-13): the two widths every screen is
@@ -123,6 +123,22 @@ export function dryRunStatus(app: string, at: string, overrides: Record<string, 
     endedAt: new Date().toISOString(),
     ...overrides,
   };
+}
+
+// ── Settings the specs store ───────────────────────────────────────────────
+
+/**
+ * Clears the server's GitHub token setting through the API as the admin — which also makes the
+ * server forget the token it holds in memory (a TRUNCATE would not).
+ */
+export async function clearGitHubSetting(): Promise<void> {
+  const api = await request.newContext({ baseURL: BASE_URL, storageState: storageStateFor('admin') });
+  try {
+    const res = await api.delete('/api/settings/github');
+    if (!res.ok()) throw new Error(`clearing the GitHub setting failed: HTTP ${String(res.status())} ${await res.text()}`);
+  } finally {
+    await api.dispose();
+  }
 }
 
 // ── The phone checks ───────────────────────────────────────────────────────

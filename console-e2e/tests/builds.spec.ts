@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 import { axeViolations, expectTheme, forceTheme, settle, type Theme } from '../harness/a11y.js';
+import { expectPhoneFit, useWidth, type Width } from '../harness/console.js';
 import { withDb, type Db } from '../harness/db.js';
 import { storageStateFor } from '../harness/env.js';
 import { MINUTE, ago, digest, fixture, sha } from '../harness/seed.js';
 
 /**
- * SHP-T-7.12, SHP-REQ-142, SHP-REQ-143: the Builds list and a build's detail, against the real
- * server. A deployer goes list → detail, watches the log grow over SSE, cancels the build (it
- * stops at its next stage boundary), and rebuilds it; a viewer sees neither button. Both screens
- * are axe-clean in light and dark, at 375 px and at desktop width.
+ * SHP-T-7.12, SHP-REQ-142, SHP-REQ-143: builds in Activity (the Builds list became Activity's
+ * Builds view, SHP-T-13.13) and a build's own page, against the real server. A deployer goes
+ * Activity › Builds → a build, watches the log grow over SSE, cancels the build (it stops at its
+ * next stage boundary), and rebuilds it; a viewer sees neither button. Both screens are axe-clean
+ * in light and dark, at 390 px on a touch phone and at 1440 px.
  *
  * No agent runs in this harness, so a build's progress is written the way the agent's reports
  * would leave it — straight through the server's Prisma client. The live stream re-reads the
@@ -183,6 +185,8 @@ const stage = (page: Page, name: string) =>
   page.getByRole('list', { name: 'Build stages' }).getByRole('listitem').filter({ has: page.locator('strong').getByText(name, { exact: true }) });
 const buildLog = (page: Page) => page.getByTestId('build-log');
 const title = (s: string) => `Build ${APP} ${s.slice(0, 7)}`;
+/** A build's row in the Activity feed: the row is one link, "<app> <sha7> <what happened> …". */
+const feedBuild = (page: Page, s: string) => page.locator('.shp-feed').getByRole('link', { name: new RegExp(`^${APP} ${s.slice(0, 7)} `) });
 
 test.describe('a deployer', () => {
   test.use({ storageState: storageStateFor('admin') });
@@ -190,20 +194,23 @@ test.describe('a deployer', () => {
   test('list → detail → live log → cancel → rebuild', async ({ page }) => {
     test.setTimeout(120_000);
 
-    // The list, reached from the navigation, filtered to the app.
+    // The list, reached from the navigation: Builds is a view of Activity since SHP-ADR-006.
     await page.goto('/');
-    // Builds is a view of Activity since SHP-ADR-006.
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: /^Activity/ }).click();
-    await page.getByRole('link', { name: 'Builds', exact: true }).first().click();
-    await h1(page, 'Builds');
-    const list = page.getByRole('list', { name: 'Builds' });
-    await expect(list.getByRole('link', { name: `${APP} · ${built.flowSha.slice(0, 7)}` })).toBeVisible();
-    await expect(list.getByText('Running').first()).toBeVisible();
-    await expect(list.getByText('Succeeded').first()).toBeVisible();
-    await expect(list.getByText('Failed').first()).toBeVisible();
+    await h1(page, 'Activity');
+    await page.getByRole('button', { name: 'Builds', exact: true }).click();
+    await expect(page).toHaveURL(/\/activity\?kind=build$/);
+    await expect(page.getByRole('button', { name: 'Builds', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    const feed = page.locator('.shp-feed');
+    await expect(feedBuild(page, built.flowSha)).toBeVisible();
+    await expect(feedBuild(page, built.flowSha)).toContainText('Building');
+    await expect(feedBuild(page, sha(9003))).toContainText('Build passed');
+    await expect(feedBuild(page, sha(9004))).toContainText('Build failed at test');
+    // Builds alone: no deploy of the seeded apps is in this view.
+    await expect(feed.getByText(fixture().apps.history)).toHaveCount(0);
 
     // The detail: five stages in order, what ran so far, and the log over the live stream.
-    await list.getByRole('link', { name: `${APP} · ${built.flowSha.slice(0, 7)}` }).click();
+    await feedBuild(page, built.flowSha).click();
     await h1(page, title(built.flowSha));
     await expect(page).toHaveURL(new RegExp(`/builds/${built.flow}$`));
     await expect(page.getByRole('list', { name: 'Build stages' }).getByRole('listitem')).toHaveText([
@@ -289,18 +296,21 @@ test.describe('a deployer', () => {
     await expect(page.getByText('The test stage exited 1.')).toBeVisible();
     await expect(page.getByText('Fix the failing test and push again.')).toBeVisible();
 
+    // The app page's Deploys tab lists its recent builds, and links to all of them in Activity.
     await page.goto(`/apps/${APP}`);
     await h1(page, APP);
     await expect(page.getByRole('list', { name: 'Recent builds' }).getByRole('link', { name: `${APP} · ${sha(9003).slice(0, 7)}` })).toBeVisible();
     await page.getByRole('link', { name: `All builds of ${APP}` }).click();
-    await expect(page).toHaveURL(new RegExp(`/builds\\?app=${APP}$`));
-    await h1(page, 'Builds');
+    await expect(page).toHaveURL(new RegExp(`/activity\\?kind=build&app=${APP}$`));
+    await h1(page, 'Activity');
+    await expect(feedBuild(page, sha(9003))).toBeVisible();
   });
 
-  test('an app with no builds says so when filtered, and an unknown build is not found', async ({ page }) => {
+  test('an app with no builds matches nothing when filtered, and an unknown build is not found', async ({ page }) => {
     const fx = fixture();
     await page.goto(`/builds?app=${fx.apps.history}`);
-    await expect(page.getByRole('heading', { name: `No builds of ${fx.apps.history}` })).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/activity\\?kind=build&app=${fx.apps.history}$`));
+    await expect(page.getByRole('heading', { name: 'Nothing matches' })).toBeVisible();
     await page.goto('/builds/00000000-0000-4000-8000-000000000000');
     await expect(page.getByRole('heading', { name: 'No such build.' })).toBeVisible();
   });
@@ -311,7 +321,8 @@ test.describe('a viewer', () => {
 
   test('sees builds and their logs but no Rebuild or Cancel', async ({ page }) => {
     await page.goto('/builds');
-    await h1(page, 'Builds');
+    await h1(page, 'Activity');
+    await expect(feedBuild(page, sha(9002))).toBeVisible();
     await page.goto(`/builds/${built.live}`);
     await h1(page, title(sha(9002)));
     await expect(buildLog(page)).toContainText('RUN pnpm test');
@@ -336,11 +347,11 @@ interface Screen {
 
 const SCREENS: Screen[] = [
   {
-    name: 'builds list',
-    path: () => '/builds',
+    name: 'activity › builds',
+    path: () => '/activity?kind=build',
     ready: async (p) => {
-      await h1(p, 'Builds');
-      await expect(p.getByRole('list', { name: 'Builds' }).getByRole('listitem').first()).toBeVisible();
+      await h1(p, 'Activity');
+      await expect(feedBuild(p, sha(9003))).toBeVisible();
     },
   },
   {
@@ -377,15 +388,11 @@ const SCREENS: Screen[] = [
   },
 ];
 
-const VIEWPORTS = [
-  { label: '375 px', viewport: { width: 375, height: 812 } },
-  { label: 'desktop', viewport: { width: 1280, height: 800 } },
-] as const;
-
 for (const theme of ['light', 'dark'] as const satisfies readonly Theme[]) {
-  for (const { label, viewport } of VIEWPORTS) {
+  for (const width of ['phone', 'desktop'] as const satisfies readonly Width[]) {
+    const label = width === 'phone' ? '390 px' : '1440 px';
     test.describe(`axe — ${theme}, ${label}`, () => {
-      test.use({ storageState: storageStateFor('admin'), viewport });
+      test.use({ storageState: storageStateFor('admin'), ...useWidth(width) });
 
       for (const screen of SCREENS) {
         test(`${screen.name} has no serious or critical violations`, async ({ page }) => {
@@ -398,12 +405,14 @@ for (const theme of ['light', 'dark'] as const satisfies readonly Theme[]) {
             await screen.act(page);
             await settle(page);
           }
-          // Nothing scrolls sideways at phone width: the log wraps inside its own box.
-          const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-          expect(overflow).toBeLessThanOrEqual(0);
           const { blocking, other } = await axeViolations(page);
           if (other.length > 0) test.info().annotations.push({ type: 'axe (moderate/minor)', description: other.join('\n') });
           expect(blocking, `${screen.name} (${theme}, ${label}):\n  ${blocking.join('\n  ')}`).toEqual([]);
+          // Nothing scrolls sideways at either width — the log wraps inside its own box — and on the
+          // phone every primary action is a touch target.
+          const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+          expect(overflow).toBeLessThanOrEqual(0);
+          if (width === 'phone') await expectPhoneFit(page, `${screen.name} (${theme}, ${label})`);
         });
       }
     });

@@ -664,4 +664,56 @@
     border-top: var(--border-width) solid var(--color-border);
     background: var(--color-bg);
   }
+
+  /* SHP-T-13.5: the sidebar's host-health line and the phone's bottom tab bar. */
+  .shp-host {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+    margin-bottom: var(--space-8);
+    padding: var(--space-6) var(--space-8);
+    border-radius: var(--radius-md);
+    color: inherit;
+    text-decoration: none;
+  }
+  .shp-host:hover {
+    background: var(--color-surface-hover);
+  }
+  .shp-host__line {
+    padding-left: var(--space-16);
+    color: var(--color-fg-muted);
+    font-size: var(--text-12);
+    line-height: var(--leading-12);
+  }
+  /* A collapsed sidebar keeps the dot and drops the words, which stay for a screen reader. */
+  .d3-shell[data-collapsed] .shp-host__label,
+  .d3-shell[data-collapsed] .shp-host__line {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* The tab bar rides the foot of the screen, where a thumb is; the clearing block below the page
+     is as tall as the bar (an item, its padding and the home indicator's inset). */
+  .shp-tabbar {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+  }
+  .shp-tabbar-clear {
+    height: calc(var(--space-64) + env(safe-area-inset-bottom));
+  }
+  /* The deploy page's next-action bar is pinned to the screen's foot too; on a phone it sits above the tab bar. */
+  @media (max-width: 1023.98px) {
+    .shp-deploy-next {
+      bottom: calc(var(--space-64) + env(safe-area-inset-bottom));
+    }
+  }
 }

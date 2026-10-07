@@ -7,26 +7,24 @@ import {
   MenuSeparator,
   SideNav,
   SideNavItem,
+  StatusDot,
+  TabBar,
   ThemeSwitch,
   useTheme,
 } from '@d3cloud/ui';
 import { Moon, Sun } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useSyncExternalStore, type ReactNode } from 'react';
 import { Link as RouterLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { ShipyardMark } from '../brand/ShipyardMark';
 import { useAuth, useCan, useMe } from '../lib/auth';
-import { NAV_ITEMS } from '../nav';
-import { system } from '../lib/system';
+import { useNeedsYou } from '../lib/needsyou';
+import { NAV_ITEMS, isNavCurrent } from '../nav';
 
 /**
  * The signed-in frame: the design system's AppShell. At `lg` and up a sidebar; below it (every
- * phone, 375 px included) a top bar with a menu button, and the nav in a drawer — no horizontal
- * scroll. The nav shows only what the role may use (SHP-REQ-105).
+ * phone, 375 px included) a top bar and a bottom tab bar — no horizontal scroll. The three
+ * destinations are the same in both (SHP-REQ-159).
  */
-
-function isCurrent(pathname: string, to: string): boolean {
-  return to === '/' ? pathname === '/' || pathname.startsWith('/apps/') : pathname.startsWith(to);
-}
 
 /** Light ↔ dark in one tap. The account menu also offers "system". */
 export function ThemeToggle() {
@@ -44,34 +42,40 @@ export function ThemeToggle() {
   );
 }
 
+/** True from `lg` up, the AppShell's own line between sidebar and drawer, which is also where the tab bar hides. */
+const WIDE = '(min-width: 1024px)';
+
+function subscribeWide(onChange: () => void): () => void {
+  const query = window.matchMedia(WIDE);
+  query.addEventListener('change', onChange);
+  return () => {
+    query.removeEventListener('change', onChange);
+  };
+}
+
+function useWide(): boolean {
+  return useSyncExternalStore(
+    subscribeWide,
+    () => window.matchMedia(WIDE).matches,
+    () => true,
+  );
+}
+
 /**
- * What the System screen would warn about, counted for the nav, so a deployer sees it without
- * going there: deploys unsent to Foreman for over an hour (SHP-REQ-095), a GitHub token expiring
- * within 30 days or expired (SHP-REQ-106), a stale agent, and one that heartbeats without taking work. Read once per sign-in and every
- * five minutes; a failed read counts nothing rather than inventing a warning.
+ * The sidebar's footer line: whether the host needs a look, linking to where it is shown. It reads
+ * the same status the Apps badge does, so a deployer sees a stale agent or an expiring token
+ * without opening Settings. One line says what; more than one says how many.
  */
-function useSystemWarnings(enabled: boolean): number {
-  const [count, setCount] = useState(0);
-  useEffect(() => {
-    if (!enabled) return;
-    let live = true;
-    const read = () => {
-      system
-        .status()
-        .then((s) => {
-          if (!live) return;
-          setCount((s.outbox.unsentOverHour > 0 ? 1 : 0) + (s.agent !== null && s.agent.patWarning !== 'none' ? 1 : 0) + (s.agent?.stale === true ? 1 : 0) + ((s.agent?.unstartedTargets ?? 0) > 0 ? 1 : 0));
-        })
-        .catch(() => undefined);
-    };
-    read();
-    const timer = setInterval(read, 5 * 60 * 1000);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [enabled]);
-  return count;
+function HostHealth({ warnings }: { warnings: readonly string[] }) {
+  const first = warnings[0];
+  return (
+    <RouterLink to="/settings/host" className="shp-host">
+      <StatusDot tone={first === undefined ? 'idle' : 'warning'} size="sm">
+        <span className="shp-host__label">{first === undefined ? 'Host healthy' : `Host · ${String(warnings.length)} to look at`}</span>
+      </StatusDot>
+      {first === undefined ? null : <span className="shp-host__line">{first}</span>}
+    </RouterLink>
+  );
 }
 
 export function Shell({ children }: { children?: ReactNode }) {
@@ -83,7 +87,11 @@ export function Shell({ children }: { children?: ReactNode }) {
 
   const isAdmin = me?.role === 'admin';
   const items = NAV_ITEMS.filter((item) => (!item.needsStateChange || can) && (item.needsAdmin !== true || isAdmin));
-  const systemWarnings = useSystemWarnings(can);
+  const wide = useWide();
+  const needsYou = useNeedsYou(can);
+  // countLabel replaces a link's whole accessible name, so it must still say where it goes.
+  const countFor = (to: string) =>
+    to === '/' && needsYou.count > 0 ? { count: needsYou.count, countLabel: `Apps, ${String(needsYou.count)} need you` } : {};
   const email = me?.email ?? '';
 
   return (
@@ -95,28 +103,25 @@ export function Shell({ children }: { children?: ReactNode }) {
           <RouterLink to="/" />
         </AppShellBrand>
       }
+      // On a phone the tab bar is the navigation, so the drawer keeps only the account and host footer.
       nav={
-        <SideNav aria-label="Main">
-          {items.map(({ to, label, Icon }) => (
-            <SideNavItem
-              key={to}
-              asChild
-              icon={<Icon />}
-              label={label}
-              current={isCurrent(pathname, to)}
-              // countLabel replaces the link's whole accessible name, so it must still say where it goes.
-              {...(to === '/system' && systemWarnings > 0 ? { count: systemWarnings, countLabel: `${label}, ${String(systemWarnings)} needing attention` } : {})}
-            >
-              <RouterLink to={to} />
-            </SideNavItem>
-          ))}
-        </SideNav>
+        wide ? (
+          <SideNav aria-label="Main">
+            {items.map((item) => (
+              <SideNavItem key={item.to} asChild icon={<item.Icon />} label={item.label} current={isNavCurrent(pathname, item)} {...countFor(item.to)}>
+                <RouterLink to={item.to} />
+              </SideNavItem>
+            ))}
+          </SideNav>
+        ) : undefined
       }
       footer={
+        <>
+          {can ? <HostHealth warnings={needsYou.hostWarnings} /> : null}
         <AccountMenu name={me?.displayName ?? email} detail={`${email} · ${me?.role ?? ''}`}>
           <MenuItem
             onSelect={() => {
-              void navigate('/account');
+              void navigate('/settings/people');
             }}
           >
             Account
@@ -132,6 +137,7 @@ export function Shell({ children }: { children?: ReactNode }) {
             Sign out
           </MenuItem>
         </AccountMenu>
+        </>
       }
     >
       <div className="shp-topline">
@@ -142,6 +148,30 @@ export function Shell({ children }: { children?: ReactNode }) {
         <ThemeToggle />
       </div>
       {children ?? <Outlet />}
+      {wide ? null : (
+        <>
+          {/* The bar is fixed to the screen's foot; this keeps the page's last line clear of it. */}
+          <div className="shp-tabbar-clear" aria-hidden="true" />
+          <TabBar aria-label="Primary" className="shp-tabbar">
+            {items.map((item) => (
+              <TabBar.Item
+                key={item.to}
+                href={item.to}
+                icon={<item.Icon />}
+                label={item.label}
+                current={isNavCurrent(pathname, item)}
+                {...countFor(item.to)}
+                // A tab is a plain link; take the click so the page does not reload.
+                onClick={(event) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  void navigate(item.to);
+                }}
+              />
+            ))}
+          </TabBar>
+        </>
+      )}
     </AppShell>
   );
 }

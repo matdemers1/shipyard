@@ -379,7 +379,7 @@ describe('DryRunSheet', () => {
 
       render(<Harness action={{ kind: 'deploy', app: 'web', sha: NEWEST }} />);
 
-      expect(await screen.findByText('ddddddd failed CI. Its code ships with ccccccc.')).toBeInTheDocument();
+      expect(await screen.findByText('ddddddd failed CI. Its code deploys with ccccccc.')).toBeInTheDocument();
       expect(screen.getByText('CI failed')).toBeInTheDocument();
       // The subtitle names the route and the count.
       expect(screen.getByText('bbbbbbb → ccccccc · 3 commits')).toBeInTheDocument();

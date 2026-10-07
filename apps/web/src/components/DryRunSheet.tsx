@@ -281,7 +281,7 @@ export function DryRunSheet({ open, onOpenChange, action: requested, onStarted }
         {commits === null ? (
           <Alert tone="info">Commits unavailable.</Alert>
         ) : commits === 'loading' ? null : (
-          <Section title="What ships" surface="plain" headingLevel={3}>
+          <Section title="What deploys" surface="plain" headingLevel={3}>
             <DataList empty={<span>No commits to show.</span>}>
               {shipped.map((c) => {
                 const ci = commitCi(c.ci, commits.source);

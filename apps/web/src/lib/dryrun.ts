@@ -122,7 +122,7 @@ export interface CommitsResponse {
 }
 
 /**
- * Commits between `live` and the target SHA, for the sheet's "what ships" list. `null` when the
+ * Commits between `live` and the target SHA, for the sheet's "What deploys" list. `null` when the
  * endpoint is unavailable (e.g. it 404s: it is built by a parallel task) — the sheet shows
  * "commits unavailable" rather than failing.
  */
@@ -219,7 +219,7 @@ export function commitCi(
 export function rideAlongWarnings(shipped: readonly CommitInfo[], target: string): string[] {
   return shipped
     .filter((c) => c.ci === 'failure' && c.sha !== target)
-    .map((c) => `${shortSha(c.sha)} failed CI. Its code ships with ${shortSha(target)}.`);
+    .map((c) => `${shortSha(c.sha)} failed CI. Its code deploys with ${shortSha(target)}.`);
 }
 
 /**

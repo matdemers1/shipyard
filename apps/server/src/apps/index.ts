@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { ACTIVE_STATES, refusal } from '@shipyard/schema';
+import { ACTIVE_STATES, Refusal as RefusalSchema, refusal } from '@shipyard/schema';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
@@ -160,6 +160,7 @@ export function appsRouter(deps: ServiceDeps): Router {
           createdAt: true,
           startedAt: true,
           endedAt: true,
+          refusal: true,
           deploy: { select: { kind: true, requestedSha: true, requesterLabel: true, dryRun: true } },
           images: { select: { service: true, repo: true, sha: true, digest: true } },
         },
@@ -199,6 +200,8 @@ export function appsRouter(deps: ServiceDeps): Router {
         startedAt: t.startedAt?.toISOString() ?? null,
         endedAt: t.endedAt?.toISOString() ?? null,
         images: t.images,
+        // The refusal, so the app's Deploys tab can say why in one line (SHP-T-13.12); additive.
+        refusal: parseRefusal(t.refusal),
       })),
     });
   });
@@ -206,4 +209,10 @@ export function appsRouter(deps: ServiceDeps): Router {
   mountDrift(router, deps, readerOrRefuse);
 
   return router;
+}
+
+/** A stored refusal as the console shows it, or null when there is none (or it does not parse). */
+function parseRefusal(raw: unknown): { code: string; gate: string; message: string; fix: string } | null {
+  const parsed = RefusalSchema.safeParse(raw);
+  return parsed.success ? { code: parsed.data.code, gate: parsed.data.gate, message: parsed.data.message, fix: parsed.data.fix } : null;
 }

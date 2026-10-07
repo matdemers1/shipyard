@@ -302,6 +302,12 @@ describe('GET /api/deploys/timeline (SHP-REQ-062)', () => {
 
     const refused = await request(app).get('/api/deploys/timeline?outcome=refused').set('Cookie', cookie);
     expect((refused.body as TimelinePage).items.map((i: TimelineItem) => i.refusalCode).sort()).toEqual(['app_frozen', 'locked']);
+    // Each refused row also carries the check and the message, so Activity can name both (SHP-T-13.13).
+    for (const item of (refused.body as TimelinePage).items) {
+      expect(typeof item.refusalGate).toBe('string');
+      expect(typeof item.refusalMessage).toBe('string');
+      expect(item.rolloutId).toBeNull();
+    }
   });
 
   it('filters by kind', async () => {

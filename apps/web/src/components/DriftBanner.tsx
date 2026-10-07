@@ -1,5 +1,5 @@
-import { Alert, Button, DescriptionItem, DescriptionList, FormField, Input, Link, Modal, Stack } from '@d3cloud/ui';
-import { useState, type SyntheticEvent } from 'react';
+import { Alert, Button, DescriptionItem, DescriptionList, FormActions, FormField, Input, Link, Modal, Stack } from '@d3cloud/ui';
+import { useId, useState, type SyntheticEvent } from 'react';
 import { RefusalError } from '../lib/api';
 import { Link as RouterLink } from 'react-router-dom';
 import { REASON_MAX, appDetail, reasonIsValid, shortDigest, when, type DriftService, type PendingRedeploy } from '../lib/appdetail';
@@ -40,6 +40,7 @@ export function AdoptLiveButton({ app, driftEventId, description, onAdopted }: A
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<Problem | null>(null);
   const valid = reasonIsValid(reason);
+  const formId = useId();
 
   const close = (): void => {
     setOpen(false);
@@ -77,8 +78,19 @@ export function AdoptLiveButton({ app, driftEventId, description, onAdopted }: A
       }
       title={`Adopt what's running on ${app}`}
       description={description}
+      // The action rides the sheet's footer, pinned on a phone while the form scrolls (SHP-REQ-173).
+      footer={
+        <FormActions>
+          <Button type="button" variant="secondary" onClick={close}>
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} variant="primary" disabled={!valid} loading={busy}>
+            Adopt with this reason
+          </Button>
+        </FormActions>
+      }
     >
-      <Stack as="form" gap="16" onSubmit={(e) => void submit(e)} noValidate>
+      <Stack as="form" id={formId} gap="16" onSubmit={(e) => void submit(e)} noValidate>
         <FormField
           label="Reason"
           help={`One line, up to ${String(REASON_MAX)} characters. It is kept with the record.`}
@@ -93,11 +105,6 @@ export function AdoptLiveButton({ app, driftEventId, description, onAdopted }: A
             }}
           />
         </FormField>
-        <Stack gap="8" align="end">
-          <Button type="submit" variant="primary" disabled={!valid} loading={busy}>
-            Adopt with this reason
-          </Button>
-        </Stack>
       </Stack>
     </Modal>
   );

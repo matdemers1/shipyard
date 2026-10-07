@@ -1083,3 +1083,104 @@
     color: var(--color-fg);
   }
 }
+
+/* SHP-T-13.12 — the app page by job: a header whose actions sit beside the name on a desktop and
+   ride the foot of a phone screen above the tab bar; the work and a facts rail side by side from
+   1024 px; waiting commits whose CI state links to its run. Every value is a token or a rem. */
+@layer shipyard {
+  .shp-app-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-12) var(--space-24);
+  }
+  .shp-app-head__lead {
+    flex: 1 1 20rem;
+    min-width: 0;
+  }
+  .shp-app-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4) var(--space-8);
+    overflow-wrap: anywhere;
+  }
+  .shp-app-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-8);
+  }
+  .shp-app-actions__main:empty {
+    display: none;
+  }
+  .shp-app-layout {
+    display: grid;
+    gap: var(--space-24);
+    align-items: start;
+  }
+  .shp-app-layout > * {
+    min-width: 0;
+  }
+  .shp-app-rail {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .shp-app-rail__line {
+    display: block;
+  }
+  .shp-app-rail__list {
+    display: grid;
+    gap: var(--space-6);
+    margin: 0 0 var(--space-12);
+    padding: 0;
+    list-style: none;
+    font-size: var(--text-13);
+    line-height: var(--leading-16);
+  }
+  /* A refused deploy's one-line reason, under its requester and time. */
+  .shp-app-reason {
+    display: block;
+    margin-top: var(--space-2);
+    color: var(--color-danger);
+  }
+  .shp-app-actions-clear {
+    display: none;
+  }
+  @media (min-width: 1024px) {
+    .shp-app-layout {
+      grid-template-columns: minmax(0, 1fr) 18.75rem;
+    }
+  }
+  /* A phone: the actions are a bar pinned above the tab bar, the primary stretching to fill it and
+     Freeze and the menu keeping their own width; the clearing block keeps the page's end readable. */
+  @media (max-width: 1023.98px) {
+    .shp-app-actions {
+      position: fixed;
+      right: 0;
+      bottom: calc(var(--space-64) + env(safe-area-inset-bottom));
+      left: 0;
+      z-index: 1;
+      flex-wrap: nowrap;
+      padding: var(--space-12) var(--space-16);
+      border-top: var(--border-width) solid var(--color-border);
+      background: var(--color-bg);
+    }
+    .shp-app-actions__main {
+      display: flex;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .shp-app-actions__main > * {
+      flex: 1 1 auto;
+    }
+    .shp-app-actions-clear {
+      display: block;
+      height: calc(var(--space-64) + var(--space-8));
+    }
+  }
+}

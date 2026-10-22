@@ -34,4 +34,10 @@ regexes = [
   # replaces fetch. Real tokens are random and shown only once. Pinned to the exact literal, which
   # stays in history at b878595, so it cannot shadow a real token.
   '''shp_live_abc123''',
+
+  # The made-up image tag packages/schema/test/host.test.ts (SHP-T-14.3) gives its sample
+  # container: `sha-` plus an obviously sequential 40-hex string, the shape of Shipyard's own image
+  # tags (`sha-<commit>`), which the generic-api-key rule reads as a key. It names no commit and
+  # no image anyone pushed. Pinned to the exact literal, which stays in history at 0cb9818.
+  '''sha-0123456789abcdef0123456789abcdef01234567''',
 ]

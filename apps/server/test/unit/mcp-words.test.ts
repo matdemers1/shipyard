@@ -19,6 +19,7 @@ const EXPECTED_TOOLS = [
   'shipyard_deploy',
   'shipyard_deploy_status',
   'shipyard_dry_run',
+  'shipyard_host',
   'shipyard_rollback',
   'shipyard_status',
 ];
@@ -39,7 +40,7 @@ afterEach(async () => {
 });
 
 describe('MCP tool descriptions (SHP-REQ-165)', () => {
-  it('keeps the seven tool names, which connected sessions depend on', async () => {
+  it('keeps the eight tool names, which connected sessions depend on', async () => {
     const tools = await listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);
   });
@@ -49,7 +50,9 @@ describe('MCP tool descriptions (SHP-REQ-165)', () => {
     for (const tool of tools) {
       // The input fields' descriptions are read by a connected Claude too, so they are held to it.
       const fields = JSON.stringify(tool.inputSchema).match(/"description":"[^"]*"/g) ?? [];
-      const text = `${tool.title ?? ''} ${tool.description ?? ''} ${fields.join(' ')}`;
+      // "Shipped" is a container tier in the console's Host destination (SHP-ADR-008), the word
+      // shipyard_host must use (SHP-REQ-179); the retired word is "ship" as a verb for a deploy.
+      const text = `${tool.title ?? ''} ${tool.description ?? ''} ${fields.join(' ')}`.replaceAll('Shipped (', '(');
       expect(text, tool.name).not.toMatch(/\bship(s|ped|ping|pable)?\b/i);
       expect(text, tool.name).not.toMatch(/\broll all\b/i);
       expect(text, tool.name).not.toMatch(/\bconfirm\b/i);
@@ -65,5 +68,7 @@ describe('MCP tool descriptions (SHP-REQ-165)', () => {
     expect(byName.get('shipyard_dry_run')).toMatch(/every deploy check/);
     expect(byName.get('shipyard_deploy_status')).toMatch(/rolled\s+back or refused/);
     expect(byName.get('shipyard_rollback')).toMatch(/^Rolls `app` back/);
+    // The Host destination's tier words (SHP-REQ-179).
+    expect(byName.get('shipyard_host')).toMatch(/Shipped \(.*Operated \(.*or Observed \(/);
   });
 });

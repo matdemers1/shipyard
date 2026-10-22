@@ -326,6 +326,14 @@ function buildPaths(): Record<string, unknown> {
   return {
     ...buildPathsForBuilds(),
     ...buildPathsForRollouts(),
+    '/host': {
+      get: {
+        summary: "Every agent's latest host inventory with recent container samples (any signed-in role, any token); read-only",
+        operationId: 'getHost',
+        security: [{ session: [] }, { bearer: [] }],
+        responses: { '200': jsonResponse('One snapshot per agent that has reported an inventory; empty until one has.', 'HostResponse'), '4XX': ERROR_RESPONSE },
+      },
+    },
     '/health': {
       get: {
         summary: 'Health check',

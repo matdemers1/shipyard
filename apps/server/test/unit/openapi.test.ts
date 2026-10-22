@@ -46,6 +46,17 @@ describe('buildOpenApiDocument', () => {
     expect(refusal.required).toEqual(['code', 'gate', 'message', 'fix']);
   });
 
+  it('documents GET /host as a read returning HostResponse, with no write method (SHP-T-14.5)', () => {
+    const doc = buildOpenApiDocument() as ValidatableDoc;
+    const schemas = doc.components?.schemas ?? {};
+    expect(schemas).toHaveProperty('HostResponse');
+    expect(schemas).toHaveProperty('HostSnapshot');
+    const host = doc.paths?.['/host'] as Record<string, { operationId?: string; responses?: Record<string, unknown> }> | undefined;
+    expect(Object.keys(host ?? {})).toEqual(['get']);
+    expect(host?.['get']?.operationId).toBe('getHost');
+    expect(JSON.stringify(host?.['get']?.responses?.['200'])).toContain('#/components/schemas/HostResponse');
+  });
+
   it('every $ref resolves to a component schema key', () => {
     const doc = buildOpenApiDocument() as ValidatableDoc;
     const schemas = doc.components?.schemas ?? {};

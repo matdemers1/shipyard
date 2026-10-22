@@ -4,6 +4,7 @@ import { verifyAgentRequest } from '../agent/verify.js';
 import type { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
+import { storeHostInventory } from '../host/index.js';
 import { detectDrift } from './drift.js';
 
 /**
@@ -260,6 +261,19 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     // Outside the transaction, same as the heartbeat it travels with: a live gauge, not a fact to
     // roll back if something later in this request fails.
     if (report.buildCache !== undefined) lastBuildCache.set(agentId, report.buildCache);
+
+    // The host inventory (SHP-ADR-009, SHP-T-14.5), in its own transaction after the one above, so
+    // it can never cost the agent its heartbeat or app mirroring. Absent (an older agent, or a
+    // failed Engine read) leaves the stored snapshot as it was. Containers in it are shown, never
+    // diffed: drift above comes only from `apps[].running`, so an Observed container changing state
+    // records no drift (SHP-REQ-182) and is visible on the next GET /api/host (SHP-REQ-180).
+    if (report.host !== undefined) {
+      try {
+        await storeHostInventory(db, agentId, report.host, now);
+      } catch (err) {
+        logger.error({ err, agentId }, 'storing the host inventory failed; the previous snapshot stands');
+      }
+    }
 
     for (const d of drifted) {
       logger.warn({ app: d.app, services: d.services }, 'drift detected: running digests differ from the recorded release');

@@ -155,6 +155,90 @@ export interface HealthResponse {
   body: unknown;
 }
 
+// Host inventory reads (SHP-T-14.4, SHP-REQ-175..177). These are plain port types, mapped by the
+// adapter from the Engine's list/inspect/df/stats answers. A container's environment, command,
+// entrypoint and every label other than compose's project and service stop at the adapter: there
+// is no field here that could carry them upstream (SHP-REQ-177).
+
+export interface HostContainerRecord {
+  /** The full 64-hex container ID. */
+  id: string;
+  /** Without Docker's leading slash. */
+  name: string;
+  /** The image reference the container was created with. */
+  image: string;
+  /** `sha256:…`: the image the container runs. */
+  imageId: string;
+  /** Docker's `State` (`running`, `exited`, …). */
+  state: string;
+  health: 'healthy' | 'unhealthy' | 'starting' | 'none';
+  restartCount: number;
+  /** ISO. */
+  createdAt: string;
+  /** ISO; null when it never started or the inspect failed. */
+  startedAt: string | null;
+  /** Compose's `project` and `service` labels, the only labels that cross this port. */
+  compose: { project: string; service: string } | null;
+  ports: { privatePort: number; publicPort: number | null; protocol: string; ip: string | null }[];
+  mounts: { type: string; volume: string | null; source: string | null; destination: string; readOnly: boolean }[];
+  /** IDs of the networks it is attached to, for counting a network's members. */
+  networkIds: string[];
+}
+
+export interface HostVolumeRecord {
+  name: string;
+  driver: string;
+  /** Compose's project label on the volume, the only label that crosses this port. */
+  composeProject: string | null;
+  createdAt: string | null;
+}
+
+export interface HostImageRecord {
+  id: string;
+  /** Without `<none>:<none>`. */
+  repoTags: string[];
+  /** Without `<none>@<none>`. */
+  repoDigests: string[];
+  sizeBytes: number;
+  /** ISO. */
+  createdAt: string;
+}
+
+export interface HostNetworkRecord {
+  id: string;
+  name: string;
+  driver: string;
+  scope: string;
+  internal: boolean;
+  composeProject: string | null;
+}
+
+/** What `/system/df` says that the inventory needs: volume sizes and Docker's builder cache. */
+export interface HostSystemDf {
+  /** By volume name; null where Docker reports -1 (it could not compute it). */
+  volumeSizes: Record<string, number | null>;
+  builderCache: { bytes: number; reclaimableBytes: number };
+}
+
+/** One one-shot stats read. CPU is cumulative counters: a percentage needs two samples. */
+export interface HostStatsSample {
+  /** `cpu_stats.cpu_usage.total_usage`, nanoseconds. */
+  cpuTotal: number;
+  /** `cpu_stats.system_cpu_usage`, nanoseconds. */
+  systemCpu: number;
+  onlineCpus: number;
+  /** Usage minus page cache (`inactive_file`, else `cache`), as `docker stats` shows it. */
+  memoryBytes: number;
+  /** Raw `memory_stats.limit`; null when absent. Docker reports host memory when there is no limit. */
+  memoryLimitBytes: number | null;
+}
+
+export interface DockerRootSpace {
+  path: string;
+  totalBytes: number;
+  freeBytes: number;
+}
+
 /**
  * Docker access. Compose operations go through the pinned `docker compose` v5 CLI and **every**
  * invocation carries explicit `-f` and `-p` (SHP-T-1.6); dockerode is for inspect and networks only.
@@ -191,6 +275,20 @@ export interface DockerPort {
    * Optional for the same reason as `loadImage`; `verifyBuildNetwork` refuses clearly when absent.
    */
   inspectNetwork?(name: string): Promise<BuildNetworkInfo | null>;
+
+  // Host inventory (SHP-T-14.4): read-only list/inspect/df/stats calls, every one optional for the
+  // same reason as `loadImage`. The agent reports no inventory when the configured port lacks them.
+  /** Every container Docker knows about, running or not (`all=1`). One that fails its inspect is degraded, not dropped. */
+  hostContainers?(): Promise<HostContainerRecord[]>;
+  hostVolumes?(): Promise<HostVolumeRecord[]>;
+  /** `GET /system/df`: can take tens of seconds on a host with large volumes, so callers cache it. */
+  systemDf?(): Promise<HostSystemDf>;
+  hostImages?(): Promise<HostImageRecord[]>;
+  hostNetworks?(): Promise<HostNetworkRecord[]>;
+  /** One one-shot stats sample, or null when the container is gone or Docker returned none. */
+  containerStats?(id: string): Promise<HostStatsSample | null>;
+  /** Total and free bytes on the Docker root, through the same read-only helper as `freeBytes`. */
+  dockerRootSpace?(): Promise<DockerRootSpace>;
 }
 
 // ─── BuildKit (SHP-T-7.7) ────────────────────────────────────────────────────

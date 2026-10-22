@@ -29,6 +29,7 @@ import { loadAgentConfig } from './config.js';
 import { waitForConfirmation } from './enrol.js';
 import { loadOrCreateIdentity } from './identity.js';
 import { POLL_TIMEOUT_MS, createTargetRunner, fileTargetStore, reportLeftovers, runLoop, targetStorePath, trackInFlight } from './loop.js';
+import { createInventoryCollector } from './inventory.js';
 import { buildReport, manifestsHash, startReporting } from './report.js';
 
 /**
@@ -134,6 +135,10 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // exists) always reads whatever it is by the time a report is actually sent (SHP-T-7.11).
   let cacheManager: CacheManager | undefined;
 
+  // Holds the df and Docker-root caches and each container's previous stats sample across reports
+  // (SHP-T-14.4), so it is made once.
+  const inventory = createInventoryCollector({ docker: ports.docker, dataRoot: config.dataRoot, log: logger });
+
   const reporting = startReporting(
     client,
     () =>
@@ -144,6 +149,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
           engineApiVersion: () => engineApiVersion(config.dockerHost),
           ledger,
           buildCache: () => cacheManager?.snapshot(),
+          inventory,
           log: logger,
         },
         config.dataRoot,

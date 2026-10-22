@@ -105,8 +105,11 @@ bind mount for `<app>`'s directory (e.g. `/DATA/<app>:/DATA/<app>`) to the `agen
 `/DATA/shipyard/docker-compose.yml`, then:
 
 ```bash
-docker compose -p shipyard up -d agent
+docker compose -p shipyard up -d --no-deps agent
 ```
+
+`--no-deps` restarts only the agent. Without it, Compose also recreates `postgres` if its moving
+`postgres:16` tag has advanced, and restarts the server with it (`upgrade-agent.md` §4).
 
 Confirm the agent picked up the manifest and reports the app:
 

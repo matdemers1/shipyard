@@ -58,10 +58,16 @@ in the same edit; upgrade one service at a time so a problem is easy to attribut
 ## 4. Bring it up
 
 ```bash
-docker compose -p shipyard up -d agent
+docker compose -p shipyard up -d --no-deps agent
 ```
 
-Compose recreates only the `agent` container; `server` and `postgres` are untouched.
+`--no-deps` is what keeps this to the `agent` container. Without it, Compose also reconciles every
+service `agent` depends on, and recreates any whose image has changed underneath it. `postgres` is
+pinned to a moving tag (`postgres:16`), so once anything on the host has pulled a newer 16.x, a plain
+`up -d agent` recreates Postgres on the new image and restarts `server` with it. That happened on
+2026-10-22: Postgres went to 16.15 and the server restarted mid-upgrade. No data was lost, but it was
+an outage nobody asked for. Postgres and the server are upgraded on purpose, never as a side effect
+of this runbook.
 
 ## 5. Confirm it reconnects
 

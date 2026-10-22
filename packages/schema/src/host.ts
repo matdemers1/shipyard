@@ -158,7 +158,10 @@ export const HostNetwork = z
   .meta({ id: 'HostNetwork', description: 'A Docker network and how many containers it carries' });
 export type HostNetwork = z.infer<typeof HostNetwork>;
 
-/** One filesystem's space, from statfs. */
+/**
+ * One filesystem's space: statfs for the data root, which the agent mounts; `df` in the agent's
+ * short-lived helper for the Docker root, which it does not.
+ */
 export const HostFilesystem = z
   .strictObject({
     path: z.string().min(1).max(4096),

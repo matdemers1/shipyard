@@ -89,21 +89,32 @@ const PORT_PROTOCOLS = new Set(['tcp', 'udp', 'sctp']);
 const MOUNT_TYPES = new Set(['volume', 'bind', 'tmpfs', 'npipe', 'cluster', 'image']);
 const STATES = new Set(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']);
 
+/**
+ * Docker Hub's spellings of one repository, made one: `docker.io/library/nginx`,
+ * `index.docker.io/library/nginx` and `library/nginx` are all `nginx`, which is how the Engine
+ * writes RepoDigests, while a compose file may write any of them.
+ */
+function normalizeRepository(repo: string): string {
+  const hubless = repo.replace(/^(?:index\.)?docker\.io\//, '');
+  return hubless.startsWith('library/') ? hubless.slice('library/'.length) : hubless;
+}
+
 /** `repo` of `repo[:tag][@digest]`; a port in the registry host is not a tag. */
 function imageRepository(reference: string): string {
   const withoutDigest = reference.split('@')[0] ?? reference;
   const lastSlash = withoutDigest.lastIndexOf('/');
   const colon = withoutDigest.lastIndexOf(':');
-  return colon > lastSlash ? withoutDigest.slice(0, colon) : withoutDigest;
+  return normalizeRepository(colon > lastSlash ? withoutDigest.slice(0, colon) : withoutDigest);
 }
 
 /** The image's RepoDigest for the container's own repository; null for a local build or an image ID. */
-function containerDigest(reference: string, image: HostImageRecord | undefined): Digest | null {
+export function containerDigest(reference: string, image: Pick<HostImageRecord, 'repoDigests'> | undefined): Digest | null {
   if (image === undefined || reference.startsWith('sha256:')) return null;
-  const prefix = `${imageRepository(reference)}@`;
+  const repo = imageRepository(reference);
   for (const ref of image.repoDigests) {
-    if (!ref.startsWith(prefix)) continue;
-    const parsed = Digest.safeParse(ref.slice(prefix.length));
+    const at = ref.lastIndexOf('@');
+    if (at < 0 || normalizeRepository(ref.slice(0, at)) !== repo) continue;
+    const parsed = Digest.safeParse(ref.slice(at + 1));
     if (parsed.success) return parsed.data;
   }
   return null;

@@ -35,8 +35,20 @@ export interface ReportPorts {
    * Absent, or resolving undefined: the report carries no `host`, and the server keeps its last one.
    */
   inventory?: (manifests: readonly Manifest[]) => Promise<HostInventory | undefined>;
+  /** How long a report waits for the inventory; default `INVENTORY_DEADLINE_MS`. Tests shorten it. */
+  inventoryDeadlineMs?: number;
   log?: ReportLog;
 }
+
+/**
+ * How long a report waits for the host inventory before going without it. Reports are serialised,
+ * so a hung Engine read (not an error, which is caught) would otherwise hold every later report and
+ * the agent would look dead to the server. Well inside the server's heartbeat staleness window.
+ */
+export const INVENTORY_DEADLINE_MS = 20_000;
+
+/** A collection still running from an earlier report, per collector: never started twice at once. */
+const inFlight = new WeakMap<object, Promise<HostInventory | undefined>>();
 
 export interface ReportVersions {
   agentVersion: string;
@@ -120,16 +132,41 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
 }
 
 /**
- * The host inventory, or undefined. An Engine failure while collecting is logged and the report
- * goes without it: the report is the agent's heartbeat and must still reach the server.
+ * The host inventory, or undefined. An Engine failure while collecting, or a collection that has
+ * not finished by the deadline, is logged and the report goes without it: the report is the
+ * agent's heartbeat and must still reach the server. A collection that outlives its report keeps
+ * running, and the next report waits on that one rather than starting another beside it.
  */
 async function hostInventory(ports: ReportPorts, loaded: LoadedManifest[]): Promise<HostInventory | undefined> {
-  if (ports.inventory === undefined) return undefined;
+  const collect = ports.inventory;
+  if (collect === undefined) return undefined;
+  let pending = inFlight.get(collect);
+  if (pending === undefined) {
+    const started = collect(loaded.map((m) => m.manifest)).finally(() => inFlight.delete(collect));
+    // Abandoned at the deadline, it may still reject later; that is already logged below or moot.
+    started.catch(() => undefined);
+    inFlight.set(collect, started);
+    pending = started;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout');
+    }, ports.inventoryDeadlineMs ?? INVENTORY_DEADLINE_MS);
+    timer.unref();
+  });
   try {
-    return await ports.inventory(loaded.map((m) => m.manifest));
+    const result = await Promise.race([pending, deadline]);
+    if (result === 'timeout') {
+      ports.log?.warn({}, 'host inventory did not finish in time; reporting without it');
+      return undefined;
+    }
+    return result;
   } catch (err) {
     ports.log?.warn({ err: err instanceof Error ? err.message : String(err) }, 'host inventory failed; reporting without it');
     return undefined;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

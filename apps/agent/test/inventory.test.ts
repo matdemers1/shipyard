@@ -14,6 +14,7 @@ import {
   DF_TTL_MS,
   DOCKER_ROOT_TTL_MS,
   FAILURE_RETRY_MS,
+  containerDigest,
   cpuPercent,
   createInventoryCollector,
   deriveTier,
@@ -122,6 +123,23 @@ describe('deriveTier (SHP-REQ-175)', () => {
     expect(deriveTier(null, manifests)).toEqual({ tier: 'observed', app: null });
     expect(deriveTier('somebody-elses', manifests)).toEqual({ tier: 'observed', app: null });
     expect(deriveTier('toy-x1', [])).toEqual({ tier: 'observed', app: null });
+  });
+});
+
+describe('containerDigest', () => {
+  const nginx = { repoDigests: [`nginx@${DIGEST}`, `ghcr.io/o/other@sha256:${'1'.repeat(64)}`] };
+
+  it.each(['nginx:1', 'docker.io/library/nginx:1', 'index.docker.io/library/nginx', 'library/nginx:1.27@sha256:abc'])(
+    'matches Docker Hub spelling %s to the Engine’s RepoDigest',
+    (reference) => {
+      expect(containerDigest(reference, nginx)).toBe(DIGEST);
+    },
+  );
+
+  it('keeps a registry port apart from a tag, and never takes another repository’s digest', () => {
+    expect(containerDigest('localhost:5000/toy:1', { repoDigests: [`localhost:5000/toy@${DIGEST}`] })).toBe(DIGEST);
+    expect(containerDigest('ghcr.io/o/web:1', nginx)).toBeNull();
+    expect(containerDigest(IMG('2'), nginx)).toBeNull();
   });
 });
 
@@ -370,6 +388,22 @@ describe('buildReport with an inventory (SHP-REQ-175)', () => {
     );
     expect('host' in report).toBe(false);
     expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it('goes without host when the inventory hangs, and does not start a second collection beside it', async () => {
+    const warn = vi.fn();
+    let started = 0;
+    const hung = () => {
+      started++;
+      return new Promise<undefined>(() => undefined);
+    };
+    const ports = { ...base(), inventory: hung, inventoryDeadlineMs: 20, log: { info: vi.fn(), warn } };
+    const first = await buildReport(ports, ROOT, versions);
+    const second = await buildReport(ports, ROOT, versions);
+    expect('host' in first).toBe(false);
+    expect('host' in second).toBe(false);
+    expect(started).toBe(1);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 
   it('has no host key without an inventory port, or when it resolves undefined', async () => {

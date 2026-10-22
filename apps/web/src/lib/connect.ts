@@ -65,4 +65,5 @@ export const TOOLS: readonly { name: string; does: string }[] = [
   { name: 'shipyard_rollback', does: 'Rolls back to an earlier successful release, from the agent’s own ledger.' },
   { name: 'shipyard_build', does: 'Queues a Shipyard build of a commit, for an app whose images Shipyard builds.' },
   { name: 'shipyard_build_status', does: 'Follows a build and says when its images are ready to deploy.' },
+  { name: 'shipyard_host', does: 'Everything running on the host — every container with its tier, and the volumes, images and disk. Changes nothing.' },
 ];

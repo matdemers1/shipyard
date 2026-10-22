@@ -1,0 +1,6 @@
+{
+  "privatePort": 8000,
+  "publicPort": null,
+  "protocol": "tcp",
+  "ip": null
+}

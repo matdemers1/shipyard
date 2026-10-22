@@ -1,0 +1,8 @@
+{
+  "id": "eeeeeeeeeeee",
+  "driver": "bridge",
+  "scope": "local",
+  "internal": false,
+  "containers": 3,
+  "composeProject": "bindery"
+}

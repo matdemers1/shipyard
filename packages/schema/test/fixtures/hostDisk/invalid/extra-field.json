@@ -1,0 +1,13 @@
+{
+  "dataRoot": {
+    "path": "/DATA",
+    "freeBytes": 100,
+    "totalBytes": 200
+  },
+  "dockerRoot": {
+    "path": "/var/lib/docker",
+    "freeBytes": 5,
+    "totalBytes": 10
+  },
+  "smart": {}
+}

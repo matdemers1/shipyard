@@ -1,0 +1,177 @@
+{
+  "agentVersion": "0.1.0",
+  "composeVersion": "v5.2.1",
+  "engineApiVersion": "1.47",
+  "patExpiresAt": "2027-01-01T00:00:00.000Z",
+  "apps": [
+    {
+      "manifest": {
+        "name": "bindery",
+        "repo": "matdemers1/bindery",
+        "defaultBranch": "main",
+        "workflow": "ci.yml",
+        "compose": {
+          "files": [
+            "/DATA/apps/bindery/docker-compose.yml"
+          ],
+          "project": "bindery"
+        },
+        "services": {
+          "server": {
+            "image": "ghcr.io/matdemers1/bindery/server"
+          }
+        },
+        "health": {
+          "service": "server",
+          "path": "/health",
+          "port": 3000
+        },
+        "soakSeconds": 60,
+        "approval": "none"
+      },
+      "manifestSha256": "5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd",
+      "running": {
+        "server": "sha256:5233a03ffe82658c92cdccb4721c5a0e129a49e09b6d7ed8d265d6673a723fbd"
+      }
+    }
+  ],
+  "host": {
+    "sampledAt": "2026-10-21T12:00:00.000Z",
+    "containers": [
+      {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "bindery-api-1",
+        "image": "ghcr.io/matdemers1/bindery/api:sha-0000000000000000000000000000000000000000",
+        "imageId": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "running",
+        "health": "healthy",
+        "restartCount": 0,
+        "createdAt": "2026-10-21T12:00:00.000Z",
+        "startedAt": "2026-10-21T12:00:00.000Z",
+        "compose": {
+          "project": "bindery",
+          "service": "api"
+        },
+        "tier": "shipped",
+        "app": "bindery",
+        "ports": [
+          {
+            "privatePort": 8000,
+            "publicPort": 8080,
+            "protocol": "tcp",
+            "ip": "0.0.0.0"
+          }
+        ],
+        "mounts": [
+          {
+            "type": "volume",
+            "volume": "bindery_data",
+            "source": null,
+            "destination": "/data",
+            "readOnly": false
+          }
+        ],
+        "stats": {
+          "cpuPercent": 2.5,
+          "memoryBytes": 1048576,
+          "memoryLimitBytes": null
+        },
+        "env": [
+          "SECRET=x"
+        ]
+      },
+      {
+        "id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "name": "plex",
+        "image": "ghcr.io/matdemers1/bindery/api:sha-0000000000000000000000000000000000000000",
+        "imageId": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "digest": null,
+        "state": "exited",
+        "health": "none",
+        "restartCount": 0,
+        "createdAt": "2026-10-21T12:00:00.000Z",
+        "startedAt": null,
+        "compose": null,
+        "tier": "observed",
+        "app": null,
+        "ports": [],
+        "mounts": [],
+        "stats": null
+      }
+    ],
+    "volumes": [
+      {
+        "name": "bindery_data",
+        "driver": "local",
+        "sizeBytes": 2048,
+        "mountedBy": [
+          "bindery-api-1"
+        ],
+        "composeProject": "bindery",
+        "orphan": false,
+        "createdAt": "2026-10-21T12:00:00.000Z"
+      },
+      {
+        "name": "old",
+        "driver": "local",
+        "sizeBytes": null,
+        "mountedBy": [],
+        "composeProject": null,
+        "orphan": true,
+        "createdAt": null
+      }
+    ],
+    "images": [
+      {
+        "id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "repoTags": [
+          "postgres:16"
+        ],
+        "repoDigests": [
+          "postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "sizeBytes": 400000000,
+        "createdAt": "2026-10-21T12:00:00.000Z",
+        "containers": 1,
+        "dangling": false
+      },
+      {
+        "id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "repoTags": [],
+        "repoDigests": [],
+        "sizeBytes": 400000000,
+        "createdAt": "2026-10-21T12:00:00.000Z",
+        "containers": 0,
+        "dangling": true
+      }
+    ],
+    "networks": [
+      {
+        "id": "eeeeeeeeeeee",
+        "name": "bindery_default",
+        "driver": "bridge",
+        "scope": "local",
+        "internal": false,
+        "containers": 3,
+        "composeProject": "bindery"
+      }
+    ],
+    "builderCache": {
+      "bytes": 4096,
+      "reclaimableBytes": 1024
+    },
+    "disk": {
+      "dataRoot": {
+        "path": "/DATA",
+        "freeBytes": 100,
+        "totalBytes": 200
+      },
+      "dockerRoot": {
+        "path": "/var/lib/docker",
+        "freeBytes": 5,
+        "totalBytes": 10
+      }
+    }
+  }
+}

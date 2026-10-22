@@ -1,0 +1,7 @@
+{
+  "type": "bind",
+  "volume": null,
+  "source": "/DATA/AppData/bindery",
+  "destination": "/app",
+  "readOnly": true
+}

@@ -1,0 +1,13 @@
+{
+  "id": "abc",
+  "repoTags": [
+    "postgres:16"
+  ],
+  "repoDigests": [
+    "postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  ],
+  "sizeBytes": 400000000,
+  "createdAt": "2026-10-21T12:00:00.000Z",
+  "containers": 1,
+  "dangling": false
+}

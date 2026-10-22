@@ -6,6 +6,7 @@ import {
   ShipyardDeployInput,
   ShipyardDeployStatusInput,
   ShipyardDryRunInput,
+  ShipyardHostInput,
   ShipyardRollbackInput,
   ShipyardStatusInput,
   refusal,
@@ -26,12 +27,15 @@ import {
   type DeployCaller,
 } from '../deploys/service.js';
 import { getGroupDeployStatus, waitForGroupChange } from '../groups/service.js';
+import { readHostSnapshots } from '../host/index.js';
 import { appStatuses } from './status.js';
 
 /**
- * The seven MCP tools (SHP-REQ-041, SHP-REQ-144). Every tool is a thin shell over the deploy or
- * build service: no deploy or build logic lives here, and no tool accepts a command, a path or an
- * image reference (SHP-REQ-053) — only app names, 40-hex SHAs, deploy/build IDs and who is asking.
+ * The eight MCP tools (SHP-REQ-041, SHP-REQ-144, SHP-REQ-179). Every tool is a thin shell over the
+ * deploy, build or host service: no deploy or build logic lives here, and no tool accepts a command,
+ * a path or an image reference (SHP-REQ-053) — only app names, 40-hex SHAs, deploy/build IDs and who
+ * is asking. `shipyard_host` takes nothing at all and is not scoped to an app: the host inventory
+ * is the same read-only snapshot for any token (SHP-ADR-009, SHP-REQ-181).
  * Freeze, schedule, restore and approval are console-only (SHP-D-072).
  */
 
@@ -326,6 +330,24 @@ export function buildMcpServer(
       if (denied !== null) return refused(denied);
       return ok({ ...build, deployable: build.state === 'succeeded' });
     },
+  );
+
+  server.registerTool(
+    'shipyard_host',
+    {
+      title: 'Host inventory',
+      description:
+        'Read-only. Everything Docker runs on the Shipyard host, per agent, as of `reportedAt` (when the agent ' +
+        'last reported): every container with its tier — Shipped (a D3 app Shipyard deploys), Operated (a ' +
+        'third-party stack adopted with a manifest) or Observed (seen only) — state, health, restarts, compose ' +
+        'project, ports, mounts and sampled CPU/memory; volumes with size, who mounts them and orphans; images ' +
+        'with size and use; Docker\'s build cache; free space on the data root and Docker root; and recent ' +
+        'CPU/memory samples per container. `hosts` is empty until an agent has reported an inventory. Takes no ' +
+        'input and works for any token whatever apps it is scoped to. Changes nothing.',
+      inputSchema: toolInput(ShipyardHostInput),
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async () => ok(await readHostSnapshots(deps.db, deps.logger)),
   );
 
   return server;

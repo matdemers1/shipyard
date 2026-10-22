@@ -1,0 +1,18 @@
+{
+  "id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "name": "plex",
+  "image": "ghcr.io/matdemers1/bindery/api:sha-0000000000000000000000000000000000000000",
+  "imageId": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "digest": null,
+  "state": "exited",
+  "health": "none",
+  "restartCount": 0,
+  "createdAt": "2026-10-21T12:00:00.000Z",
+  "startedAt": null,
+  "compose": null,
+  "tier": "observed",
+  "app": null,
+  "ports": [],
+  "mounts": [],
+  "stats": null
+}

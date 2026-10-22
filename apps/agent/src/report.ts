@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Digest, REPORTED_RELEASES_PER_APP, type AgentBuildCache, type AgentReport } from '@shipyard/schema';
+import { Digest, REPORTED_RELEASES_PER_APP, type AgentBuildCache, type AgentReport, type HostInventory, type Manifest } from '@shipyard/schema';
 import { loadManifests, type DockerPort, type FsPort, type LedgerEntry, type LoadedManifest } from '@shipyard/sequence';
 import type { AgentClient } from './client.js';
 
@@ -12,6 +12,10 @@ import type { AgentClient } from './client.js';
  * It also carries the ledger's verified releases, the newest `REPORTED_RELEASES_PER_APP` per app
  * (SHP-REQ-111), so a deploy made on the host with the CLI shows up on the server as the live
  * release and as a rollback target.
+ *
+ * With an inventory port it also carries the host inventory (SHP-T-14.4, SHP-REQ-175): every
+ * container, volume, image and network Docker knows about, read afresh for each report. It is
+ * deliberately not part of `reportHash`, which exists to notice manifest edits.
  */
 
 export interface ReportPorts {
@@ -26,8 +30,25 @@ export interface ReportPorts {
   ledger?: { refresh(): Promise<void>; recent(app: string, n?: number): LedgerEntry[] };
   /** The BuildKit cache manager's snapshot (SHP-T-7.11); absent when builds are disabled. */
   buildCache?: () => AgentBuildCache | undefined;
+  /**
+   * The host inventory, given the manifests just loaded (they decide each container's tier).
+   * Absent, or resolving undefined: the report carries no `host`, and the server keeps its last one.
+   */
+  inventory?: (manifests: readonly Manifest[]) => Promise<HostInventory | undefined>;
+  /** How long a report waits for the inventory; default `INVENTORY_DEADLINE_MS`. Tests shorten it. */
+  inventoryDeadlineMs?: number;
   log?: ReportLog;
 }
+
+/**
+ * How long a report waits for the host inventory before going without it. Reports are serialised,
+ * so a hung Engine read (not an error, which is caught) would otherwise hold every later report and
+ * the agent would look dead to the server. Well inside the server's heartbeat staleness window.
+ */
+export const INVENTORY_DEADLINE_MS = 20_000;
+
+/** A collection still running from an earlier report, per collector: never started twice at once. */
+const inFlight = new WeakMap<object, Promise<HostInventory | undefined>>();
 
 export interface ReportVersions {
   agentVersion: string;
@@ -97,6 +118,7 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
   const engine = (await ports.engineApiVersion()).trim();
   const releases = await ledgerReleases(ports, loaded);
   const buildCache = ports.buildCache?.();
+  const host = await hostInventory(ports, loaded);
   return {
     agentVersion: versions.agentVersion,
     composeVersion: await composeVersion(ports.docker, loaded),
@@ -105,7 +127,47 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
     apps,
     ...(releases === undefined ? {} : { releases }),
     ...(buildCache === undefined ? {} : { buildCache }),
+    ...(host === undefined ? {} : { host }),
   };
+}
+
+/**
+ * The host inventory, or undefined. An Engine failure while collecting, or a collection that has
+ * not finished by the deadline, is logged and the report goes without it: the report is the
+ * agent's heartbeat and must still reach the server. A collection that outlives its report keeps
+ * running, and the next report waits on that one rather than starting another beside it.
+ */
+async function hostInventory(ports: ReportPorts, loaded: LoadedManifest[]): Promise<HostInventory | undefined> {
+  const collect = ports.inventory;
+  if (collect === undefined) return undefined;
+  let pending = inFlight.get(collect);
+  if (pending === undefined) {
+    const started = collect(loaded.map((m) => m.manifest)).finally(() => inFlight.delete(collect));
+    // Abandoned at the deadline, it may still reject later; that is already logged below or moot.
+    started.catch(() => undefined);
+    inFlight.set(collect, started);
+    pending = started;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout');
+    }, ports.inventoryDeadlineMs ?? INVENTORY_DEADLINE_MS);
+    timer.unref();
+  });
+  try {
+    const result = await Promise.race([pending, deadline]);
+    if (result === 'timeout') {
+      ports.log?.warn({}, 'host inventory did not finish in time; reporting without it');
+      return undefined;
+    }
+    return result;
+  } catch (err) {
+    ports.log?.warn({ err: err instanceof Error ? err.message : String(err) }, 'host inventory failed; reporting without it');
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

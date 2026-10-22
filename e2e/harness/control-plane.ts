@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 
 /**
- * A stand-in for the Shipyard server's agent API (`/api/agent/poll|progress|steps|result`, and the
+ * A stand-in for the Shipyard server's agent API (`/api/agent/poll|progress|steps|result|report`, and the
  * build worker's `build-progress|build-result`), for e2e tests that run the real agent loop. It hands out queued targets, records everything the
  * agent sends, and can be taken down and brought back on the same port, the way a broken
  * self-deployed server disappears and a fixed one returns.
@@ -103,8 +103,10 @@ export async function startFakeControlPlane(options: { idlePollMs?: number } = {
         }
         send(res, 200, { ok: true });
         return;
+      // `report` is the agent's periodic report (manifests, releases, host inventory): recorded, always taken.
       case '/api/agent/steps':
       case '/api/agent/result':
+      case '/api/agent/report':
         send(res, 200, { ok: true });
         return;
       // The build worker's reports (SHP-T-7.16): recorded like everything else, never a cancel.

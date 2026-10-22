@@ -1,0 +1,9 @@
+{
+  "name": "bindery_data",
+  "driver": "local",
+  "sizeBytes": null,
+  "mountedBy": [],
+  "composeProject": "bindery",
+  "orphan": true,
+  "createdAt": "2026-10-21T12:00:00.000Z"
+}

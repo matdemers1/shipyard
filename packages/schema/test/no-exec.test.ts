@@ -42,6 +42,7 @@ import {
   ShipyardRollbackInput,
   ShipyardBuildInput,
   ShipyardBuildStatusInput,
+  ShipyardHostInput,
   MCP_TOOLS,
 } from '../src/mcp.js';
 import { Manifest } from '../src/manifest.js';
@@ -79,6 +80,7 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   ShipyardRollbackInput,
   ShipyardBuildInput,
   ShipyardBuildStatusInput,
+  ShipyardHostInput,
   AgentReport,
   PollRequest,
   StepJournal,
@@ -115,6 +117,7 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   ShipyardRollbackInput: 'mcpRollback',
   ShipyardBuildInput: 'mcpBuild',
   ShipyardBuildStatusInput: 'mcpBuildStatus',
+  ShipyardHostInput: 'mcpHost',
   AgentReport: 'agentReport',
   PollRequest: 'pollRequest',
   StepJournal: 'stepJournal',

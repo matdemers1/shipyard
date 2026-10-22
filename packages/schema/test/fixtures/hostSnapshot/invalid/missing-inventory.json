@@ -1,0 +1,16 @@
+{
+  "agent": {
+    "id": "01a1618d-cfae-7334-b900-4db7f8d33985",
+    "fingerprint": "SHA256:abc"
+  },
+  "reportedAt": "2026-10-21T12:00:00.000Z",
+  "samples": {
+    "bindery-api-1": [
+      {
+        "at": "2026-10-21T12:00:00.000Z",
+        "cpuPercent": 1.0,
+        "memoryBytes": 10
+      }
+    ]
+  }
+}

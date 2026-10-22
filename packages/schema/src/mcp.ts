@@ -69,6 +69,12 @@ export const ShipyardBuildStatusInput = z
   .meta({ id: 'ShipyardBuildStatusInput', description: 'Input for the shipyard_build_status tool' });
 export type ShipyardBuildStatusInput = z.infer<typeof ShipyardBuildStatusInput>;
 
+// No fields at all (SHP-ADR-009): nothing reaches the agent, and the tool reads every host.
+export const ShipyardHostInput = z
+  .strictObject({})
+  .meta({ id: 'ShipyardHostInput', description: 'Input for the shipyard_host tool (none: it reads every host)' });
+export type ShipyardHostInput = z.infer<typeof ShipyardHostInput>;
+
 export const MCP_TOOLS = {
   shipyard_status: ShipyardStatusInput,
   shipyard_dry_run: ShipyardDryRunInput,
@@ -77,4 +83,5 @@ export const MCP_TOOLS = {
   shipyard_rollback: ShipyardRollbackInput,
   shipyard_build: ShipyardBuildInput,
   shipyard_build_status: ShipyardBuildStatusInput,
+  shipyard_host: ShipyardHostInput,
 } as const;

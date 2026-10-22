@@ -13,7 +13,10 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   state, CI) · `shipyard_dry_run` · `shipyard_deploy` (an `app`, or a `group`, and a 40-hex `sha`) ·
   `shipyard_deploy_status` · `shipyard_rollback` (to an earlier successful deploy, from the agent's
   own ledger) · `shipyard_build` and `shipyard_build_status` (only for an app whose manifest says
-  `build.source: shipyard` — its images come from Shipyard itself, not GitHub CI).
+  `build.source: shipyard` — its images come from Shipyard itself, not GitHub CI) · `shipyard_host`
+  (read-only inventory of everything on the host: containers with their tier — Shipped, Operated or
+  Observed — volumes, images and disk, as of when the agent last reported; takes no input and works for
+  any token).
 - **What you can deploy:** only a SHA on the default branch whose image workflow is green and that
   is ahead of what is live. For a `build: shipyard` app, "green" means a Shipyard build of that SHA
   has succeeded — queue one with `shipyard_build` if none has, then poll `shipyard_build_status`

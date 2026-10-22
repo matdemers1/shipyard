@@ -1,0 +1,12 @@
+{
+  "id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "repoTags": [
+    "postgres:16"
+  ],
+  "repoDigests": [
+    "postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  ],
+  "createdAt": "2026-10-21T12:00:00.000Z",
+  "containers": 1,
+  "dangling": false
+}

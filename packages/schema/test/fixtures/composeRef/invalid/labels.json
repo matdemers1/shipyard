@@ -1,0 +1,7 @@
+{
+  "project": "bindery",
+  "service": "api",
+  "labels": {
+    "a": "b"
+  }
+}

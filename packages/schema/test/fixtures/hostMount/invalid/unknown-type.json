@@ -1,0 +1,7 @@
+{
+  "type": "nfs",
+  "volume": "bindery_data",
+  "source": null,
+  "destination": "/data",
+  "readOnly": false
+}

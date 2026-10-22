@@ -1,0 +1,23 @@
+{
+  "sampledAt": "2026-10-21T12:00:00.000Z",
+  "containers": [],
+  "volumes": [],
+  "images": [],
+  "networks": [],
+  "builderCache": {
+    "bytes": 4096,
+    "reclaimableBytes": 1024
+  },
+  "disk": {
+    "dataRoot": {
+      "path": "/DATA",
+      "freeBytes": 100,
+      "totalBytes": 200
+    },
+    "dockerRoot": {
+      "path": "/var/lib/docker",
+      "freeBytes": 5,
+      "totalBytes": 10
+    }
+  }
+}

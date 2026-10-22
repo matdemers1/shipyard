@@ -5,6 +5,7 @@ import { Manifest } from './manifest.js';
 import { Refusal } from './errors.js';
 import { BuildJob } from './build.js';
 import { BuildSettings } from './settings.js';
+import { HostInventory } from './host.js';
 
 /**
  * The agent protocol (SHP-REQ-004): what the portless agent reports and what it
@@ -118,6 +119,13 @@ export const AgentReport = z
     /** Absent when builds are disabled on this agent (no BUILDKIT_ADDR); the System screen then
      * shows "not reported" rather than a zeroed cache. */
     buildCache: AgentBuildCache.optional(),
+    /**
+     * Everything Docker runs on the host (SHP-ADR-009). Absent from older agents, and from one whose
+     * Engine read failed this interval: the server then keeps the last snapshot it had. A server
+     * older than this field refuses the whole report (the object is strict), so the server is
+     * always upgraded before the agent.
+     */
+    host: HostInventory.optional(),
   })
   .meta({ id: 'AgentReport', description: 'What the agent reports about itself and the apps it manages' });
 export type AgentReport = z.infer<typeof AgentReport>;

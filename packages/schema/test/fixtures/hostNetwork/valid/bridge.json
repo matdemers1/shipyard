@@ -1,0 +1,9 @@
+{
+  "id": "eeeeeeeeeeee",
+  "name": "bindery_default",
+  "driver": "bridge",
+  "scope": "local",
+  "internal": false,
+  "containers": 3,
+  "composeProject": "bindery"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "bindery_data",
+  "driver": "local",
+  "sizeBytes": 2048,
+  "mountedBy": [
+    "bindery-api-1"
+  ],
+  "composeProject": "bindery",
+  "orphan": false,
+  "createdAt": "2026-10-21T12:00:00.000Z"
+}

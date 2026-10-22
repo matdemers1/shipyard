@@ -1,0 +1,7 @@
+{
+  "dockerRoot": {
+    "path": "/var/lib/docker",
+    "freeBytes": 5,
+    "totalBytes": 10
+  }
+}

@@ -6,7 +6,7 @@ over MCP. Replaces the hand-typed SSH + `sed` + `pull` + `up` ritual.
 **Foreman code: `SHP`.** Foreman is the source of truth — start every session with
 `/start-development shipyard` (one `foreman_brief SHP`). Documents: Overview, Architecture, Data
 Model, API Contract, UX Flows & Screen Inventory, Test Strategy, Research Notes, Discovery &
-Requirements, Discovery Roadmap, Feature Ideas & Future Development. ADRs SHP-ADR-001…003,
+Requirements, Discovery Roadmap, Feature Ideas & Future Development. ADRs SHP-ADR-001…012,
 decisions SHP-D-001…087, risks SHP-R-001…010.
 
 ## The shape (SHP-ADR-002)
@@ -99,7 +99,8 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   `shipyard_deploy` (an `app`, or a `group`, and a 40-hex `sha`) · `shipyard_deploy_status` ·
   `shipyard_rollback` (to an earlier successful deploy, from the agent's own ledger) ·
   `shipyard_build` (queue a build for a `build: shipyard` app and SHA) · `shipyard_build_status`
-  (poll it; see `docs/runbooks/build.md`).
+  (poll it; see `docs/runbooks/build.md`) · `shipyard_host` (read-only inventory of everything on the
+  host: containers with their tier, volumes, images, disk; takes no input and works for any token).
 - **What you can deploy:** only a SHA on the default branch that is ahead of what is live and whose
   images are proven: the image workflow is green, or, for a `build: shipyard` app, Shipyard's own
   build of that SHA succeeded and its digests still match GHCR (`build_not_green` /

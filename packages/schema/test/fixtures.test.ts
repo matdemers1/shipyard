@@ -116,6 +116,7 @@ import {
   ShipyardRollbackInput,
   ShipyardBuildInput,
   ShipyardBuildStatusInput,
+  ShipyardHostInput,
 } from '../src/mcp.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -141,6 +142,7 @@ const SCHEMAS: Record<string, ZodType> = {
   mcpRollback: ShipyardRollbackInput,
   mcpBuild: ShipyardBuildInput,
   mcpBuildStatus: ShipyardBuildStatusInput,
+  mcpHost: ShipyardHostInput,
   appName: AppName,
   sha40: Sha40,
   imageTag: ImageTag,

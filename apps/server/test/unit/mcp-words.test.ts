@@ -50,9 +50,10 @@ describe('MCP tool descriptions (SHP-REQ-165)', () => {
     for (const tool of tools) {
       // The input fields' descriptions are read by a connected Claude too, so they are held to it.
       const fields = JSON.stringify(tool.inputSchema).match(/"description":"[^"]*"/g) ?? [];
-      // "Shipped" is a container tier in the console's Host destination (SHP-ADR-008), the word
-      // shipyard_host must use (SHP-REQ-179); the retired word is "ship" as a verb for a deploy.
-      const text = `${tool.title ?? ''} ${tool.description ?? ''} ${fields.join(' ')}`.replaceAll('Shipped (', '(');
+      // "Shipped" is a container tier (SHP-ADR-008), the word shipyard_host must use (SHP-REQ-179);
+      // the retired word is "ship" as a verb for a deploy. Only that tool's tier name is excused.
+      const raw = `${tool.title ?? ''} ${tool.description ?? ''} ${fields.join(' ')}`;
+      const text = tool.name === 'shipyard_host' ? raw.replaceAll('Shipped (', '(') : raw;
       expect(text, tool.name).not.toMatch(/\bship(s|ped|ping|pable)?\b/i);
       expect(text, tool.name).not.toMatch(/\broll all\b/i);
       expect(text, tool.name).not.toMatch(/\bconfirm\b/i);

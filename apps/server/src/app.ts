@@ -29,6 +29,7 @@ import { rolloutsRouter } from './rollouts/index.js';
 import { schedulesRouter } from './schedules/index.js';
 import { restoreRouter } from './restore/index.js';
 import { systemRouter } from './system/index.js';
+import { hostRouter } from './host/index.js';
 import { setupRouter, type SetupDeps } from './setup/index.js';
 import { settingsRouter } from './settings/index.js';
 import { githubWebhookBody, githubWebhookRouter } from './webhooks/index.js';
@@ -75,16 +76,22 @@ export function createApp(deps: AppDeps): Express {
   // and the JSON parser below never touches it.
   const GITHUB_WEBHOOK_PATH = '/api/webhooks/github';
   app.use(GITHUB_WEBHOOK_PATH, githubWebhookBody());
-  const json = express.json({
-    limit: '256kb',
-    // The agent signs the exact bytes it sent (SHP-D-064); verification needs them, not a re-encoding.
-    verify: (req, _res, buf) => {
-      (req as { rawBody?: Buffer }).rawBody = buf;
-    },
-  });
+  // The agent signs the exact bytes it sent (SHP-D-064); verification needs them, not a re-encoding.
+  const keepRawBody = (req: unknown, _res: unknown, buf: Buffer): void => {
+    (req as { rawBody?: Buffer }).rawBody = buf;
+  };
+  const json = express.json({ limit: '256kb', verify: keepRawBody });
+  // The agent's report carries the whole host inventory (SHP-ADR-009), which on a real host can
+  // pass 256 kB: that one path gets 2 MB, still signed byte for byte. Every other route keeps 256 kB.
+  const AGENT_REPORT_PATH = '/api/agent/report';
+  const reportJson = express.json({ limit: '2mb', verify: keepRawBody });
   app.use((req, res, next) => {
     if (req.path === GITHUB_WEBHOOK_PATH || Buffer.isBuffer(req.body)) {
       next();
+      return;
+    }
+    if (req.path === AGENT_REPORT_PATH) {
+      reportJson(req, res, next);
       return;
     }
     json(req, res, next);
@@ -127,6 +134,8 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/rollouts', rolloutsRouter(serviceDeps));
   app.use('/api/schedules', schedulesRouter(serviceDeps));
   app.use('/api/system', systemRouter(serviceDeps));
+  // Read-only: the host inventory the agent last reported (SHP-T-14.5, SHP-REQ-181).
+  app.use('/api/host', hostRouter(serviceDeps));
   app.use('/api/apps', appsRouter(serviceDeps));
   app.use('/api/deploys', deployEventsRouter(serviceDeps));
   app.use('/api/deploys', approvalsRouter(serviceDeps));

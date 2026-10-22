@@ -216,11 +216,49 @@ model Agent {
   /// agent has no token configured.
   patExpiresAt      DateTime? @map("pat_expires_at") @db.Timestamptz(3)
 
-  confirmedByUser User?        @relation("AgentConfirmedByUser", fields: [confirmedByUserId], references: [id])
+  confirmedByUser User?         @relation("AgentConfirmedByUser", fields: [confirmedByUserId], references: [id])
   apps            App[]
-  auditEvents     AuditEvent[] @relation("AuditActorAgent")
+  auditEvents     AuditEvent[]  @relation("AuditActorAgent")
+  hostSnapshot    HostSnapshot?
+  hostSamples     HostSample[]
 
   @@map("agent")
+}
+
+// ─── Host inventory (read-only mirror written only by agent reports) ─────
+
+/// The latest host inventory an agent reported (SHP-ADR-009, SHP-T-14.5): one row per agent,
+/// replaced by each report that carries one. Persisted, not held in memory, so the console's Host
+/// destination still has it after the server restarts. Read by GET /api/host and shipyard_host,
+/// which never write (SHP-REQ-181). Nothing here is ever a request to the host.
+model HostSnapshot {
+  agentId    String   @id @map("agent_id") @db.Uuid
+  /// The `HostInventory` exactly as the agent reported it.
+  inventory  Json
+  /// When the agent read it from the Engine (the agent's clock).
+  sampledAt  DateTime @map("sampled_at") @db.Timestamptz(3)
+  /// When the server received it (the server's clock).
+  reportedAt DateTime @map("reported_at") @db.Timestamptz(3)
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@map("host_snapshot")
+}
+
+/// One container's CPU and memory at one report (SHP-ADR-009), for the Host view's sparklines.
+/// Keyed by container name, which survives a recreate; pruned to a rolling window on every report.
+model HostSample {
+  id            String   @id @default(uuid()) @db.Uuid
+  agentId       String   @map("agent_id") @db.Uuid
+  containerName String   @map("container_name")
+  at            DateTime @db.Timestamptz(3)
+  cpuPercent    Float    @map("cpu_percent")
+  memoryBytes   BigInt   @map("memory_bytes")
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, containerName, at])
+  @@map("host_sample")
 }
 
 // ─── Apps (read-only mirror written only by agent reports) ────────────────

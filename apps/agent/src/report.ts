@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Digest, REPORTED_RELEASES_PER_APP, type AgentBuildCache, type AgentReport } from '@shipyard/schema';
+import { Digest, REPORTED_RELEASES_PER_APP, type AgentBuildCache, type AgentReport, type HostInventory, type Manifest } from '@shipyard/schema';
 import { loadManifests, type DockerPort, type FsPort, type LedgerEntry, type LoadedManifest } from '@shipyard/sequence';
 import type { AgentClient } from './client.js';
 
@@ -12,6 +12,10 @@ import type { AgentClient } from './client.js';
  * It also carries the ledger's verified releases, the newest `REPORTED_RELEASES_PER_APP` per app
  * (SHP-REQ-111), so a deploy made on the host with the CLI shows up on the server as the live
  * release and as a rollback target.
+ *
+ * With an inventory port it also carries the host inventory (SHP-T-14.4, SHP-REQ-175): every
+ * container, volume, image and network Docker knows about, read afresh for each report. It is
+ * deliberately not part of `reportHash`, which exists to notice manifest edits.
  */
 
 export interface ReportPorts {
@@ -26,6 +30,11 @@ export interface ReportPorts {
   ledger?: { refresh(): Promise<void>; recent(app: string, n?: number): LedgerEntry[] };
   /** The BuildKit cache manager's snapshot (SHP-T-7.11); absent when builds are disabled. */
   buildCache?: () => AgentBuildCache | undefined;
+  /**
+   * The host inventory, given the manifests just loaded (they decide each container's tier).
+   * Absent, or resolving undefined: the report carries no `host`, and the server keeps its last one.
+   */
+  inventory?: (manifests: readonly Manifest[]) => Promise<HostInventory | undefined>;
   log?: ReportLog;
 }
 
@@ -97,6 +106,7 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
   const engine = (await ports.engineApiVersion()).trim();
   const releases = await ledgerReleases(ports, loaded);
   const buildCache = ports.buildCache?.();
+  const host = await hostInventory(ports, loaded);
   return {
     agentVersion: versions.agentVersion,
     composeVersion: await composeVersion(ports.docker, loaded),
@@ -105,7 +115,22 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
     apps,
     ...(releases === undefined ? {} : { releases }),
     ...(buildCache === undefined ? {} : { buildCache }),
+    ...(host === undefined ? {} : { host }),
   };
+}
+
+/**
+ * The host inventory, or undefined. An Engine failure while collecting is logged and the report
+ * goes without it: the report is the agent's heartbeat and must still reach the server.
+ */
+async function hostInventory(ports: ReportPorts, loaded: LoadedManifest[]): Promise<HostInventory | undefined> {
+  if (ports.inventory === undefined) return undefined;
+  try {
+    return await ports.inventory(loaded.map((m) => m.manifest));
+  } catch (err) {
+    ports.log?.warn({ err: err instanceof Error ? err.message : String(err) }, 'host inventory failed; reporting without it');
+    return undefined;
+  }
 }
 
 /**

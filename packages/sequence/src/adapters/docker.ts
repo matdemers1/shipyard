@@ -2,7 +2,21 @@ import { spawn } from 'node:child_process';
 
 import Dockerode from 'dockerode';
 
-import type { BuildNetworkInfo, ComposeTarget, DockerPort, ExecResult, HealthResponse, RunningContainer } from '../ports.js';
+import type {
+  BuildNetworkInfo,
+  ComposeTarget,
+  DockerPort,
+  DockerRootSpace,
+  ExecResult,
+  HealthResponse,
+  HostContainerRecord,
+  HostImageRecord,
+  HostNetworkRecord,
+  HostStatsSample,
+  HostSystemDf,
+  HostVolumeRecord,
+  RunningContainer,
+} from '../ports.js';
 
 /**
  * Docker adapter (SHP-T-1.6). Compose goes through the pinned `docker compose` v5 CLI, and every
@@ -44,7 +58,12 @@ export interface DockerAdapterOptions {
   probeStartupGraceMs?: number;
   /** Called when a non-fatal problem is swallowed (an image in use, or already gone). */
   warn?: (message: string, detail: Record<string, unknown>) => void;
+  /** Per-call limit on the inventory's inspect and stats reads (SHP-T-14.4). Default 5s. */
+  hostCallTimeoutMs?: number;
 }
+
+/** How many inspect or stats reads the inventory has in flight at once. */
+export const HOST_READ_CONCURRENCY = 8;
 
 // ─── Process runner ──────────────────────────────────────────────────────────
 
@@ -173,6 +192,26 @@ export function parseDfAvailableBytes(output: string): number {
   return available * 1024;
 }
 
+/**
+ * Total and available bytes from POSIX `df -Pk <path>` output (columns 2 and 4 of the data row,
+ * in KiB). Counts from the right for the same reason as `parseDfAvailableBytes`.
+ */
+export function parseDfSpace(output: string): { totalBytes: number; availableBytes: number } {
+  const lines = output
+    .trim()
+    .split('\n')
+    .filter((l) => l.trim() !== '');
+  const row = lines.at(-1);
+  if (lines.length < 2 || row === undefined) throw new Error(`unexpected df output: ${JSON.stringify(output)}`);
+  const fields = row.trim().split(/\s+/);
+  const total = Number(fields.at(-5));
+  const available = Number(fields.at(-3));
+  if (fields.length < 6 || !Number.isFinite(total) || !Number.isFinite(available) || total < 0 || available < 0) {
+    throw new Error(`unexpected df row: ${JSON.stringify(row)}`);
+  }
+  return { totalBytes: total * 1024, availableBytes: available * 1024 };
+}
+
 /** Splits Docker's multiplexed (non-TTY) log stream into stdout and stderr. */
 export function demuxDockerStream(buf: Buffer): { stdout: string; stderr: string } {
   const out: Buffer[] = [];
@@ -211,6 +250,77 @@ function dockerodeFor(dockerHost: string | undefined): Dockerode {
   return new Dockerode({ host: url.hostname, port: Number(url.port || '2375'), protocol: 'http' });
 }
 
+/** The compose labels are the only labels the inventory reads (SHP-REQ-177). */
+const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
+const COMPOSE_SERVICE_LABEL = 'com.docker.compose.service';
+
+/**
+ * What the Engine really sends for the fields the inventory reads. Its JSON omits or nulls many of
+ * them (a container with no ports has `Ports: null`; an unpublished port has no `PublicPort`;
+ * `Internal` is absent on old networks), which dockerode's types claim are always present.
+ */
+type RawContainer = Omit<Dockerode.ContainerInfo, 'Labels' | 'Ports' | 'Mounts' | 'NetworkSettings' | 'Status'> & {
+  Labels?: Record<string, string> | null;
+  Status?: string;
+  Ports?: (Omit<Dockerode.Port, 'IP' | 'PublicPort'> & { IP?: string; PublicPort?: number })[] | null;
+  Mounts?: (Omit<Dockerode.ContainerInfo['Mounts'][number], 'Name'> & { Name?: string })[] | null;
+  NetworkSettings?: { Networks?: Record<string, { NetworkID?: string }> | null } | null;
+};
+type RawLabelled = { Labels?: Record<string, string> | null };
+
+/** `docker ps`'s Status text carries the healthcheck result when the image has one. */
+export function healthFromStatus(status: string | undefined): HostContainerRecord['health'] {
+  if (status === undefined) return 'none';
+  if (status.includes('(unhealthy)')) return 'unhealthy';
+  if (status.includes('(healthy)')) return 'healthy';
+  if (status.includes('(health: starting)')) return 'starting';
+  return 'none';
+}
+
+function healthFromInspect(status: unknown): HostContainerRecord['health'] | undefined {
+  return status === 'healthy' || status === 'unhealthy' || status === 'starting' ? status : status === 'none' ? 'none' : undefined;
+}
+
+function isoOrNull(value: unknown): string | null {
+  if (typeof value !== 'string' || value === '') return null;
+  const ms = Date.parse(value);
+  // Docker writes the zero time for "never".
+  return Number.isNaN(ms) || ms < 0 || value.startsWith('0001-') ? null : new Date(ms).toISOString();
+}
+
+function nonEmpty(value: string | undefined): string | null {
+  return value === undefined || value === '' ? null : value;
+}
+
+/** Runs `fn` over `items` with at most `limit` in flight; results keep the input order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${what} timed out after ${String(ms)}ms`));
+    }, ms);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function sleep(ms: number): Promise<'timeout'> {
   return new Promise((r) => {
     setTimeout(() => {
@@ -225,7 +335,12 @@ function sleep(ms: number): Promise<'timeout'> {
  * The concrete adapter always implements `loadImage` and `inspectNetwork` (SHP-T-7.18) — they are
  * optional only on `DockerPort` itself, for object-literal fakes elsewhere that predate them.
  */
-export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerPort & Required<Pick<DockerPort, 'loadImage' | 'inspectNetwork'>> {
+export function createDockerAdapter(
+  options: DockerAdapterOptions = {},
+): DockerPort &
+  Required<
+    Pick<DockerPort, 'loadImage' | 'inspectNetwork' | 'hostContainers' | 'hostVolumes' | 'systemDf' | 'hostImages' | 'hostNetworks' | 'containerStats' | 'dockerRootSpace'>
+  > {
   const docker = options.docker ?? dockerodeFor(options.dockerHost);
   const composeBin = options.composeBin ?? 'docker';
   const probeImage = options.probeImage ?? 'busybox:1.37';
@@ -233,6 +348,7 @@ export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerP
   const fetchImpl = options.fetch ?? fetch;
   const graceMs = options.probeStartupGraceMs ?? 10_000;
   const warn = options.warn ?? ((): void => undefined);
+  const hostCallTimeoutMs = options.hostCallTimeoutMs ?? 5_000;
 
   const composeEnv = (): NodeJS.ProcessEnv => {
     const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env) };
@@ -290,6 +406,17 @@ export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerP
     } finally {
       await container.remove({ force: true });
     }
+  };
+
+  /** `df -Pk` on the Docker root, through the read-only helper `freeBytes` has always used. */
+  const dfDockerRoot = async (): Promise<{ root: string; output: string }> => {
+    const info = (await docker.info()) as { DockerRootDir?: string };
+    const root = info.DockerRootDir;
+    if (root === undefined || root === '') throw new Error('docker info reports no DockerRootDir');
+    const mount = '/shipyard-docker-root';
+    const run = await runHelper(['df', '-Pk', mount], { NetworkMode: 'none', Binds: [`${root}:${mount}:ro`] }, 30_000);
+    if (run.exitCode !== 0) throw new Error(`df on ${root} failed (${String(run.exitCode)}): ${run.stderr.trim()}`);
+    return { root, output: run.stdout };
   };
 
   const containers = async (target: ComposeTarget, service?: string): Promise<RunningContainer[]> => {
@@ -393,17 +520,7 @@ export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerP
     },
 
     async freeBytes() {
-      const info = (await docker.info()) as { DockerRootDir?: string };
-      const root = info.DockerRootDir;
-      if (root === undefined || root === '') throw new Error('docker info reports no DockerRootDir');
-      const mount = '/shipyard-docker-root';
-      const run = await runHelper(
-        ['df', '-Pk', mount],
-        { NetworkMode: 'none', Binds: [`${root}:${mount}:ro`] },
-        30_000,
-      );
-      if (run.exitCode !== 0) throw new Error(`df on ${root} failed (${run.exitCode}): ${run.stderr.trim()}`);
-      return parseDfAvailableBytes(run.stdout);
+      return parseDfAvailableBytes((await dfDockerRoot()).output);
     },
 
     async images(imageRepo) {
@@ -463,6 +580,153 @@ export function createDockerAdapter(options: DockerAdapterOptions = {}): DockerP
         if (statusCodeOf(err) === 404) return null;
         throw err;
       }
+    },
+
+    // ─── Host inventory (SHP-T-14.4): list, inspect, df and stats reads only ───────────────────
+    // Each mapper below names the fields it takes. Env, Cmd, Entrypoint and Labels are never read
+    // except compose's two (SHP-REQ-177), so nothing upstream can leak them.
+
+    async hostContainers(): Promise<HostContainerRecord[]> {
+      const list = (await docker.listContainers({ all: true })) as unknown as RawContainer[];
+      const records = await mapLimit(list, HOST_READ_CONCURRENCY, async (c): Promise<HostContainerRecord | null> => {
+        let restartCount = 0;
+        let startedAt: string | null = null;
+        let health = healthFromStatus(c.Status);
+        try {
+          const info = await withTimeout(docker.getContainer(c.Id).inspect(), hostCallTimeoutMs, `inspect ${c.Id.slice(0, 12)}`);
+          restartCount = typeof info.RestartCount === 'number' ? info.RestartCount : 0;
+          startedAt = isoOrNull(info.State.StartedAt);
+          health = healthFromInspect(info.State.Health?.Status) ?? health;
+        } catch (err) {
+          // Removed since the list: it is no longer a container. Anything else degrades this one.
+          if (statusCodeOf(err) === 404) return null;
+          warn('container inspect failed; reporting it without restart count', { id: c.Id.slice(0, 12), err: err instanceof Error ? err.message : String(err) });
+        }
+        const project = nonEmpty(c.Labels?.[COMPOSE_PROJECT_LABEL]);
+        const service = nonEmpty(c.Labels?.[COMPOSE_SERVICE_LABEL]);
+        const seenPorts = new Set<string>();
+        const portList: HostContainerRecord['ports'] = [];
+        for (const p of c.Ports ?? []) {
+          // Drops exact repeats; a port published on both address families stays as two entries.
+          const key = `${p.IP ?? ''}|${String(p.PrivatePort)}|${String(p.PublicPort ?? '')}|${p.Type}`;
+          if (seenPorts.has(key)) continue;
+          seenPorts.add(key);
+          portList.push({
+            privatePort: p.PrivatePort,
+            publicPort: typeof p.PublicPort === 'number' ? p.PublicPort : null,
+            protocol: p.Type,
+            ip: nonEmpty(p.IP),
+          });
+        }
+        return {
+          id: c.Id,
+          name: ((c.Names as string[] | undefined)?.[0] ?? c.Id.slice(0, 12)).replace(/^\//, ''),
+          image: c.Image,
+          imageId: c.ImageID,
+          state: c.State,
+          health,
+          restartCount,
+          createdAt: new Date(c.Created * 1000).toISOString(),
+          startedAt,
+          compose: project !== null && service !== null ? { project, service } : null,
+          ports: portList,
+          mounts: (c.Mounts ?? []).map((m) => ({
+            type: m.Type,
+            volume: m.Type === 'volume' ? nonEmpty(m.Name) : null,
+            source: m.Type === 'bind' ? nonEmpty(m.Source) : null,
+            destination: m.Destination,
+            readOnly: !m.RW,
+          })),
+          networkIds: Object.values(c.NetworkSettings?.Networks ?? {}).flatMap((n) => (n.NetworkID === undefined || n.NetworkID === '' ? [] : [n.NetworkID])),
+        };
+      });
+      return records.filter((r): r is HostContainerRecord => r !== null);
+    },
+
+    async hostVolumes(): Promise<HostVolumeRecord[]> {
+      const { Volumes } = (await docker.listVolumes()) as { Volumes?: (Omit<Dockerode.VolumeInspectInfo, 'Labels'> & RawLabelled)[] | null };
+      return (Volumes ?? []).map((v) => ({
+        name: v.Name,
+        driver: v.Driver,
+        composeProject: nonEmpty(v.Labels?.[COMPOSE_PROJECT_LABEL]),
+        // The Engine's volume JSON has CreatedAt; dockerode's types predate it.
+        createdAt: isoOrNull((v as { CreatedAt?: unknown }).CreatedAt),
+      }));
+    },
+
+    async systemDf(): Promise<HostSystemDf> {
+      const df = (await docker.df()) as {
+        Volumes?: { Name: string; UsageData?: { Size?: number } | null }[] | null;
+        BuildCache?: { Size?: number; InUse?: boolean }[] | null;
+      };
+      const volumeSizes: Record<string, number | null> = {};
+      for (const v of df.Volumes ?? []) {
+        const size = v.UsageData?.Size;
+        volumeSizes[v.Name] = typeof size === 'number' && size >= 0 ? size : null;
+      }
+      let bytes = 0;
+      let reclaimableBytes = 0;
+      for (const entry of df.BuildCache ?? []) {
+        const size = typeof entry.Size === 'number' && entry.Size > 0 ? entry.Size : 0;
+        bytes += size;
+        if (entry.InUse !== true) reclaimableBytes += size;
+      }
+      return { volumeSizes, builderCache: { bytes, reclaimableBytes } };
+    },
+
+    async hostImages(): Promise<HostImageRecord[]> {
+      const list = await docker.listImages();
+      return list.map((img) => ({
+        id: img.Id,
+        repoTags: (img.RepoTags ?? []).filter((t) => t !== '<none>:<none>'),
+        repoDigests: (img.RepoDigests ?? []).filter((d) => d !== '<none>@<none>'),
+        sizeBytes: Math.max(0, img.Size),
+        createdAt: new Date(img.Created * 1000).toISOString(),
+      }));
+    },
+
+    async hostNetworks(): Promise<HostNetworkRecord[]> {
+      const list = (await docker.listNetworks()) as (Omit<Dockerode.NetworkInspectInfo, 'Internal'> & RawLabelled & { Internal?: boolean })[];
+      return list.map((n) => ({
+        id: n.Id,
+        name: n.Name,
+        driver: n.Driver,
+        scope: n.Scope,
+        internal: n.Internal ?? false,
+        composeProject: nonEmpty(n.Labels?.[COMPOSE_PROJECT_LABEL]),
+      }));
+    },
+
+    async containerStats(id): Promise<HostStatsSample | null> {
+      let stats: Dockerode.ContainerStats;
+      try {
+        stats = await withTimeout(docker.getContainer(id).stats({ stream: false, 'one-shot': true }), hostCallTimeoutMs, `stats ${id.slice(0, 12)}`);
+      } catch (err) {
+        if (statusCodeOf(err) === 404) return null;
+        throw err;
+      }
+      const cpu = stats.cpu_stats as { cpu_usage?: { total_usage?: number }; system_cpu_usage?: number; online_cpus?: number } | undefined;
+      const memory = stats.memory_stats as { usage?: number; limit?: number; stats?: { inactive_file?: number; cache?: number } } | undefined;
+      const total = cpu?.cpu_usage?.total_usage;
+      const system = cpu?.system_cpu_usage;
+      const usage = memory?.usage;
+      if (typeof total !== 'number' || typeof system !== 'number' || typeof usage !== 'number') return null;
+      // `docker stats` shows usage without reclaimable page cache: inactive_file on cgroup v2, cache on v1.
+      const cache = memory?.stats?.inactive_file ?? memory?.stats?.cache;
+      const working = typeof cache === 'number' && cache <= usage ? usage - cache : usage;
+      return {
+        cpuTotal: total,
+        systemCpu: system,
+        onlineCpus: typeof cpu?.online_cpus === 'number' && cpu.online_cpus > 0 ? cpu.online_cpus : 1,
+        memoryBytes: working,
+        memoryLimitBytes: typeof memory?.limit === 'number' && memory.limit > 0 ? memory.limit : null,
+      };
+    },
+
+    async dockerRootSpace(): Promise<DockerRootSpace> {
+      const { root, output } = await dfDockerRoot();
+      const space = parseDfSpace(output);
+      return { path: root, totalBytes: space.totalBytes, freeBytes: space.availableBytes };
     },
   };
 }

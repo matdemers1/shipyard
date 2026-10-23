@@ -6,10 +6,10 @@ store installed — becomes **Operated** (SHP-ADR-008, SHP-ADR-010) when you wri
 it on the host. Adopting is a deliberate host act, like onboarding an app (SHP-D-059): nothing in
 the console or MCP can adopt a stack.
 
-What an Operated stack gets today (`updates: none`): **start, stop, restart, recreate** of the
+What an Operated stack gets with `updates: none`: **start, stop, restart, recreate** of the
 whole stack or one service, from the console's Host view (and start, restart and recreate from a
-Claude session's `shipyard_action`), plus its logs. Updating its images by digest arrives with
-SHP-P-16; until then whatever installed the stack keeps updating it.
+Claude session's `shipyard_action`), plus its logs; whatever installed the stack keeps updating it.
+With `updates: digest`, Shipyard updates it too (below).
 
 ## 1. Find the stack's compose file and project
 
@@ -35,7 +35,7 @@ compose:
     - /var/lib/casaos/apps/freshrss/docker-compose.yml
   project: freshrss       # must equal the running containers' compose project
 envFiles: []              # any env files whose values must be redacted from logs and action output
-updates: none             # until SHP-P-16; something else keeps the images current
+updates: none             # something else keeps the images current; see Digest updates below for Shipyard doing it
 ```
 
 The agent reads every file in `stacks/` together: one invalid file and **no stack loads**. The apps
@@ -63,7 +63,8 @@ stack's directory must be bind-mounted into the agent **at the identical path** 
 ```
 
 Read-only is enough for `updates: none`: start, stop, restart and recreate never write the compose
-file. (Digest updates in SHP-P-16 will need it writable.)
+file. A stack with `updates: digest` (below) needs it **writable**: an update rewrites the tracked
+service's `image:` line.
 
 ## 4. Restart only the agent
 
@@ -85,3 +86,49 @@ action.
 
 Delete its file from `stacks/` (and the mount, if nothing else needs it) and restart the agent with
 `--no-deps`. Its containers drop back to Observed; Shipyard never stops or removes them.
+
+## Digest updates (SHP-P-16)
+
+A stack you own outright — its compose file is yours, not an app store's — can let Shipyard keep it
+current. `docs/manifests/stacks/forgejo.yml` is a worked example:
+
+```yaml
+kind: stack
+name: forgejo
+compose:
+  files: [/DATA/forgejo/compose.yml, /DATA/forgejo/compose.tunnel.yml]
+  project: forgejo
+envFiles: [/DATA/forgejo/forgejo.env, /DATA/forgejo/postgres.env]
+updates: digest
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo   # untagged: Shipyard writes tag@digest
+    track:
+      semver: 17.x                        # or `tag: latest`, or `pinned`
+soakSeconds: 120
+approval: tokens                          # tokens (default) | always | never
+```
+
+- **`services`** names only the services Shipyard updates; the rest of the project (its database, a
+  tunnel) is left as you wrote it. **`track`**: `pinned` never offers an update; `{ tag: latest }`
+  follows what that tag points at; `{ semver: 17.x }` follows the highest release in the range
+  (pre-releases are skipped unless the range names one).
+- **Candidates.** On its report interval the agent asks the registry what each track resolves to
+  and reports it when it differs from what runs; the console shows *Update available* on the stack.
+  A registry it cannot reach is reported as an error, never guessed past.
+- **An update** re-checks the track first and refuses a digest it no longer resolves to
+  (`digest_not_tracked`) or a registry it cannot reach (`registry_unreachable`), then: backup (if
+  `steps.backup`), pull by digest, rewrite the image line to `repo:tag@sha256:…` (the previous file
+  kept), recreate only that service, wait for health — the image's own healthcheck, or `health`
+  (`service`, `port`, `path`) when it has none — and soak. A failure puts the previous digest back:
+  **images only**; anything the new version wrote stays written.
+- **Backups.** `steps.backup` is an argv run in a named service, exactly like an app's, and its
+  artifact must appear in `artifactsDir` on the host. Give a stack with a database one before you
+  rely on updates; Forgejo's example has none yet because its dump would need a host directory the
+  agent can read.
+- **Approval.** With `tokens` a Claude session's update waits in *Needs you* for a deployer; a
+  deployer in the console does not wait for themself. `always` holds every update; `never` none.
+- **Rollback** to any earlier successful update of the stack, from the stack's history — the agent
+  takes the digests from its own ledger, never from the request.
+- **The mount** must be writable (`/DATA/forgejo:/DATA/forgejo`, no `:ro`), then restart only the
+  agent and run `check-manifests` as above.

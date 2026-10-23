@@ -20,7 +20,10 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   service of it, and wait for the result; stop is console-only, and Observed containers can't be acted
   on) · `shipyard_logs` (a redacted tail of one container, up to 500 lines; the token must be issued
   with logs allowed, and reads only containers of the apps and adopted stacks it is scoped to, never
-  Observed ones).
+  Observed ones) · `shipyard_stack_update` (update an adopted Operated stack, by digest, to the
+  newest images its track resolves to; a token's update waits for a deployer to approve it in the
+  console's Needs you, so do not poll for it; image-only rollback if it fails) ·
+  `shipyard_stack_update_status` (the update, its digests and the images before and after).
 - **What you can deploy:** only a SHA on the default branch whose image workflow is green and that
   is ahead of what is live. For a `build: shipyard` app, "green" means a Shipyard build of that SHA
   has succeeded — queue one with `shipyard_build` if none has, then poll `shipyard_build_status`

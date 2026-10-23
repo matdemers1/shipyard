@@ -512,7 +512,7 @@ describe('Activity lists lifecycle actions', () => {
     expect(actionMatches(action({ state: 'running' }), filtersFromParams(new URLSearchParams('outcome=active')))).toBe(true);
     expect(actionMatches(refused, filtersFromParams(new URLSearchParams('kind=refusal')))).toBe(true);
     expect(actionMatches(action(), filtersFromParams(new URLSearchParams('kind=refusal')))).toBe(false);
-    expect(sourcesFor(filtersFromParams(new URLSearchParams('kind=action')))).toEqual({ deploys: false, builds: false, scheduleRows: false, showUpcoming: false, actions: true });
+    expect(sourcesFor(filtersFromParams(new URLSearchParams('kind=action')))).toEqual({ deploys: false, builds: false, scheduleRows: false, showUpcoming: false, actions: true, stackUpdates: false });
   });
 
   it('still shows the rest of the feed when the server has no actions endpoint', async () => {

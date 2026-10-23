@@ -244,6 +244,14 @@ const ALLOWED_COMMAND_LIKE_PATHS = new Set([
   // The backup step itself, and a digest-updated stack's backup (host-local, SHP-P-16).
   'BackupStep.argv',
   'StackManifest.steps.backup.argv',
+  // The agent's report echoes its own host-local manifests (SHP-REQ-036): the server mirrors them for
+  // display and never hands them back as work, which only ever names an app or stack.
+  'AgentReport.apps.manifest.steps.backup.argv',
+  'AgentReport.apps.manifest.steps.migrate.argv',
+  'AgentReport.apps.manifest.steps.restore.argv',
+  'AgentReport.apps.manifest.build.integration.argv',
+  'AgentReport.stacks.manifest.steps.backup.argv',
+  'AgentStack.manifest.steps.backup.argv',
 ]);
 
 /**
@@ -301,9 +309,13 @@ function findCommandLikeFields(schema: JsonSchemaNode, rootName: string): Violat
   const seen = new Set<string>();
 
   function walk(node: JsonSchemaNode, path: string): void {
-    const visitKey = `${path}:${JSON.stringify(node.$ref ?? '')}`;
-    if (seen.has(visitKey)) return;
-    seen.add(visitKey);
+    // Only a $ref can cycle, so only a $ref is deduplicated: inline union branches at one path all
+    // get walked (keying every node by path + ref used to skip every branch after the first).
+    if (node.$ref !== undefined) {
+      const visitKey = `${path}:${node.$ref}`;
+      if (seen.has(visitKey)) return;
+      seen.add(visitKey);
+    }
 
     if (node.$ref !== undefined) {
       walk(resolveRef(node.$ref, defs), path);
@@ -358,9 +370,13 @@ function findNonStrictObjects(schema: JsonSchemaNode, rootName: string): Violati
   const seen = new Set<string>();
 
   function walk(node: JsonSchemaNode, path: string): void {
-    const visitKey = `${path}:${JSON.stringify(node.$ref ?? '')}`;
-    if (seen.has(visitKey)) return;
-    seen.add(visitKey);
+    // Only a $ref can cycle, so only a $ref is deduplicated: inline union branches at one path all
+    // get walked (keying every node by path + ref used to skip every branch after the first).
+    if (node.$ref !== undefined) {
+      const visitKey = `${path}:${node.$ref}`;
+      if (seen.has(visitKey)) return;
+      seen.add(visitKey);
+    }
 
     if (node.$ref !== undefined) {
       walk(resolveRef(node.$ref, defs), path);

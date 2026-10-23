@@ -68,6 +68,8 @@ const MAIN_SCREENS: MainScreen[] = [
   { name: 'Restore', path: (fx) => `/apps/${fx.apps.history}/restore`, ready: (p, fx) => h1(p, `Restore ${fx.apps.history}`) },
   { name: 'Activity', path: () => '/activity', ready: (p) => expect(p.locator('.shp-feed')).toBeVisible() },
   { name: 'Activity › schedules', path: () => '/activity?kind=schedule', ready: (p) => expect(p.getByRole('list', { name: 'Upcoming deploys' })).toBeVisible() },
+  // Host (SHP-T-14.7): the seeded snapshot, its chips row and the open group with a stopped container.
+  { name: 'Host', path: () => '/host', ready: (p) => expect(p.getByRole('list', { name: 'Compose projects' })).toBeVisible() },
   { name: 'Settings › Host', path: () => '/settings/host', ready: (p) => expect(p.getByRole('list', { name: 'Host health' })).toBeVisible() },
   { name: 'Settings › Claude & tokens', path: () => '/settings/tokens', ready: (p) => expect(p.getByRole('list', { name: 'API tokens' })).toBeVisible() },
   { name: 'Settings › People', path: () => '/settings/people', ready: (p) => expect(p.getByRole('heading', { name: 'Your account' })).toBeVisible() },
@@ -88,8 +90,8 @@ test('the phone this file emulates is 390 px wide with a coarse pointer', async 
   }));
   // Without a coarse pointer the 44 px rule never applies, and the checks below would prove nothing.
   expect(env).toEqual({ width: VIEWPORT.width, coarse: true });
-  // On a phone the tab bar is the navigation, with the three destinations (SHP-REQ-159).
-  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link')).toHaveText([/^Apps/, /^Activity/, /^Settings/]);
+  // On a phone the tab bar is the navigation, with the four destinations (SHP-REQ-159, SHP-ADR-009).
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link')).toHaveText([/^Apps/, /^Activity/, /^Host/, /^Settings/]);
 });
 
 test('the phone checks bite: a page too wide, or a primary action too short, is caught', async ({ page }) => {

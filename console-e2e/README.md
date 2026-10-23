@@ -28,6 +28,9 @@ pnpm --filter console-e2e test
 - **IDs:** `fixture()` — app names (`history`, `neverDeployed`, `drifted`, `frozen`, `approval`,
   `canary`, `groupMember`), deploy IDs (`succeeded`, `rolledBack`, `refused`, `inProgress`,
   `awaitingApproval`), the group, the invite token.
+- **The host snapshot (Host, SHP-T-14.7):** the confirmed agent carries one `host_snapshot` and
+  six `host_sample` rows per running container (`harness/host.ts`, names in `HOST_FIXTURE`);
+  `setHostReportedAt` moves its report time to show it fresh or stale.
 - **A different world:** `withDb(async (db) => { await wipeAppData(db); … })` keeps users and
   sessions; build what you need with `createApp`, `createDeploy`, `sha(n)`, `digest(label)`, and
   put the baseline back with `withDb(reseedWorld)` in `afterAll`. Commit SHAs the stub knows are

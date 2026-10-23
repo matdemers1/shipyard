@@ -11,6 +11,7 @@ import { BuildDetail } from './screens/BuildDetail';
 import { Commit } from './screens/Commit';
 import { Deploy, DeployLiveRedirect } from './screens/Deploy';
 import { Home } from './screens/Home';
+import { Host } from './screens/Host';
 import { NotFound } from './screens/NotFound';
 import { Restore } from './screens/Restore';
 import { RolloutProgress } from './screens/RolloutProgress';
@@ -169,6 +170,7 @@ export function AppRoutes() {
         <Route path="rollouts/:id" element={<RolloutProgress />} />
         <Route path="builds/:id" element={<BuildDetail />} />
         <Route path="activity" element={<Activity />} />
+        <Route path="host" element={<Host />} />
         <Route path="settings" element={<SettingsHome />} />
         <Route path="settings/:section" element={<SettingsSection />} />
         {/* The ten-item nav's addresses, each now a page or a section of one (SHP-REQ-169). */}

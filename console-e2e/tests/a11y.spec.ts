@@ -524,6 +524,26 @@ const SCREENS: Screen[] = [
       await dialog(p, /^Cancel the deploy of/);
     },
   },
+  // Host (SHP-T-14.7, SHP-REQ-178): the seeded snapshot, a stopped container's group open; a viewer
+  // sees the same read-only page.
+  {
+    name: 'Host',
+    as: 'admin',
+    path: () => '/host',
+    ready: async (p) => {
+      await h1(p, 'Host');
+      await expect(p.getByRole('list', { name: 'Compose projects' })).toBeVisible();
+    },
+  },
+  {
+    name: 'Host as a viewer, Not running',
+    as: 'viewer',
+    path: () => '/host?state=not-running',
+    ready: async (p) => {
+      await h1(p, 'Host');
+      await expect(p.getByRole('list', { name: 'Compose projects' })).toBeVisible();
+    },
+  },
   // S12 Settings › Host (SHP-T-13.6): the health checklist and, rarely needed, agent enrolment.
   {
     name: 'S12 settings › host',

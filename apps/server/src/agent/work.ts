@@ -1,8 +1,9 @@
 import type { Request, Response, Router } from 'express';
 import type { z } from 'zod';
-import { ActionProgress, ActionResult, LogsChunk, StackUpdateProgress, StackUpdateResult, refusal, type LogsChunkAck } from '@shipyard/schema';
+import { ActionProgress, ActionResult, LogsChunk, MaintenanceProgress, MaintenanceResult, StackUpdateProgress, StackUpdateResult, refusal, type LogsChunkAck } from '@shipyard/schema';
 import { ownAction, recordActionProgress, recordActionResult } from '../actions/service.js';
 import { ownStackUpdate, recordStackUpdateProgress, recordStackUpdateResult } from '../stack-updates/service.js';
+import { ownMaintenance, recordMaintenanceProgress, recordMaintenanceResult } from '../maintenance/service.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { logsHubFor } from '../logs/hub.js';
@@ -22,10 +23,15 @@ import { verifyAgentRequest } from './verify.js';
  * - `POST /stack-updates/:id/progress` and `/result` (SHP-T-16.3, SHP-ADR-010) — a stack update's
  *   step, then its terminal result exactly once with the images before and after (SHP-REQ-200);
  *   only for an update dispatched to this agent.
+ * - `POST /maintenance/:id/progress` and `/result` (SHP-T-17.3, SHP-ADR-012) — a volume backup,
+ *   restore or delete, or a prune: its step, then its terminal result exactly once; only from the
+ *   agent it was dispatched to and only while it is dispatched or running. A backup's archive is
+ *   mirrored at once; the output never says more than the agent's redacted, capped log.
  */
 
 const NO_SUCH_ACTION = refusal('not_found', 'No such action dispatched to this agent.', 'Poll for work and report only actions you were given.');
 const NO_SUCH_STACK_UPDATE = refusal('not_found', 'No such stack update dispatched to this agent.', 'Poll for work and report only stack updates you were given.');
+const NO_SUCH_MAINTENANCE = refusal('not_found', 'No such maintenance job dispatched to this agent.', 'Poll for work and report only maintenance jobs you were given.');
 const NO_SUCH_LOGS = refusal('not_found', 'No such log read dispatched to this agent.', 'Poll for work and stream only log reads you were given.');
 
 function parse<T extends z.ZodType>(schema: T, req: Request, res: Response): z.infer<T> | null {
@@ -165,6 +171,64 @@ export function mountWork(router: Router, deps: ServiceDeps): void {
       },
     });
     logger.info({ stackUpdateId: row.id, stack: row.stackName, state: body.state }, 'stack update result recorded');
+    res.json(outcome.status);
+  });
+
+  router.post('/maintenance/:id/progress', verified, async (req, res) => {
+    const body = parse(MaintenanceProgress, req, res);
+    const agentId = req.agent?.id;
+    if (body === null || agentId === undefined || agentId === null) return;
+    const row = body.jobId === paramId(req) ? await ownMaintenance(db, agentId, body.jobId) : null;
+    if (row === null) {
+      sendRefusal(res, NO_SUCH_MAINTENANCE);
+      return;
+    }
+    const outcome = await recordMaintenanceProgress(deps, row, body);
+    if (!outcome.accepted) {
+      sendRefusal(res, refusal('conflict', 'This maintenance job has already ended.', 'Report progress only for a running job.'));
+      return;
+    }
+    // The step only: what the job names is on its request and dispatch rows already.
+    await req.audit({
+      action: 'maintenance.progress',
+      entityType: 'maintenance_job',
+      entityId: row.id,
+      before: { state: row.state, step: row.step },
+      after: { state: outcome.status.state, step: body.step },
+    });
+    res.json(outcome.status);
+  });
+
+  router.post('/maintenance/:id/result', verified, async (req, res) => {
+    const body = parse(MaintenanceResult, req, res);
+    const agentId = req.agent?.id;
+    if (body === null || agentId === undefined || agentId === null) return;
+    const row = body.jobId === paramId(req) ? await ownMaintenance(db, agentId, body.jobId) : null;
+    if (row === null) {
+      sendRefusal(res, NO_SUCH_MAINTENANCE);
+      return;
+    }
+    const outcome = await recordMaintenanceResult(deps, row, body);
+    if (!outcome.accepted) {
+      sendRefusal(res, refusal('conflict', 'This maintenance job already has a result.', 'Send a result once per job.'));
+      return;
+    }
+    await req.audit({
+      action: 'maintenance.result',
+      entityType: 'maintenance_job',
+      entityId: row.id,
+      before: { state: row.state },
+      after: {
+        state: body.state,
+        kind: row.kind,
+        volume: row.volume,
+        ...(body.archive === undefined ? {} : { archiveId: body.archive.archiveId, sizeBytes: body.archive.sizeBytes, sha256: body.archive.sha256 }),
+        ...(body.removedArchives === undefined ? {} : { removedArchives: body.removedArchives }),
+        ...(body.prune === undefined ? {} : { pruneItems: body.prune.items.length, reclaimableBytes: body.prune.reclaimableBytes, reclaimedBytes: body.prune.reclaimedBytes }),
+        ...(outcome.status.refusal === null ? {} : { refusal: outcome.status.refusal.code }),
+      },
+    });
+    logger.info({ maintenanceId: row.id, kind: row.kind, state: body.state }, 'maintenance result recorded');
     res.json(outcome.status);
   });
 

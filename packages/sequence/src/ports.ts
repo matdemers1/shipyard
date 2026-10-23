@@ -303,6 +303,19 @@ export interface HostStatsSample {
   memoryLimitBytes: number | null;
 }
 
+/**
+ * One record of the Engine's build cache, as `/system/df` lists it (SHP-REQ-205). Its description
+ * (which can carry a build command) stops at the adapter: only what a prune decides on crosses.
+ */
+export interface BuildCacheRecord {
+  id: string;
+  sizeBytes: number;
+  /** ISO; null when the Engine did not say. */
+  createdAt: string | null;
+  lastUsedAt: string | null;
+  inUse: boolean;
+}
+
 export interface DockerRootSpace {
   path: string;
   totalBytes: number;
@@ -377,6 +390,29 @@ export interface DockerPort {
    * without it.
    */
   pullImage?(reference: string): Promise<ExecResult>;
+
+  // Volume maintenance and prune (SHP-ADR-012, SHP-T-17.2), optional for the same reason as
+  // `loadImage`; a maintenance job refuses without them.
+  /**
+   * `docker <args…>` through the pinned CLI, argv only and never a shell (non-negotiable 1). The
+   * maintenance engine is its only caller and builds every argv from fixed verbs and values it has
+   * validated (a volume name, an image ID, a cache record ID). Never throws on a non-zero exit.
+   */
+  dockerCli?(args: string[], options?: { timeoutMs?: number }): Promise<ExecResult>;
+  /**
+   * From a container's inspect, what the agent needs about its own: the image it runs (the archive
+   * helper's image) and its compose project label (the stack it must never stop). Null when the
+   * Engine does not know the container.
+   */
+  containerIdentity?(id: string): Promise<{ imageId: string; composeProject: string | null } | null>;
+  /** The Engine's build cache records (`/system/df`'s BuildCache). */
+  buildCacheRecords?(): Promise<BuildCacheRecord[]>;
+  /**
+   * Removes one build cache record through the Engine's `POST /build/prune` with `all=true` (or the
+   * Engine skips a record that is not dangling), its full ID anchored
+   * (`id=^<id>$`: the Engine matches `id` as a regular expression, so a bare ID is a prefix).
+   */
+  pruneBuildCacheRecord?(id: string): Promise<void>;
 }
 
 // ─── BuildKit (SHP-T-7.7) ────────────────────────────────────────────────────
@@ -447,6 +483,24 @@ export interface FsPort {
    * tail. Optional so single-process in-memory fakes need not implement it; the real adapter does.
    */
   lock?(path: string): Promise<() => Promise<void>>;
+}
+
+/**
+ * The binary file work a volume archive needs (SHP-REQ-201, SHP-ADR-012), beside `FsPort`'s text
+ * files: owner-only directories and files, a durable rename, and a streamed SHA-256. The agent
+ * computes the hash and size itself; it never trusts what a helper container says it wrote.
+ */
+export interface ArchiveFilesPort {
+  /** `mkdir -p`; every directory it creates is mode 0700, and one that already existed is left as it is. */
+  ensureDir(dir: string): Promise<void>;
+  /** Creates an empty file, mode 0600; fails when it exists. */
+  createEmpty(path: string): Promise<void>;
+  /** fsyncs `tmp`, renames it over `final`, and fsyncs the directory, so the archive survives a crash. */
+  commit(tmp: string, final: string): Promise<void>;
+  /** The file's SHA-256 (lowercase hex) and size, or null when it does not exist. */
+  digest(path: string): Promise<{ sha256: string; sizeBytes: number } | null>;
+  /** Removes a file; a file already gone is not an error. */
+  remove(path: string): Promise<void>;
 }
 
 export interface Clock {

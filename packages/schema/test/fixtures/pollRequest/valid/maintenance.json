@@ -1,0 +1,6 @@
+{
+  "waitSeconds": 10,
+  "capabilities": [
+    "maintenance"
+  ]
+}

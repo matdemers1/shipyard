@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { AppName } from './primitives.js';
 import { BackupStep, ComposeConfig, ServiceConfig } from './manifest.js';
 import { Digest } from './primitives.js';
+import { VolumeBackupSettings } from './maintenance.js';
 
 /**
  * What a tracked service follows (SHP-ADR-010): `pinned` never offers an update; `{ tag }` follows
@@ -42,6 +43,8 @@ const StackBase = {
   compose: ComposeConfig,
   /** Env files whose values are redacted from action output and logs (SHP-ADR-011). Absolute paths. */
   envFiles: z.array(z.string().regex(/^\//, 'env file paths must be absolute')).optional(),
+  /** Named-volume backups (SHP-ADR-012, SHP-REQ-201); a built-in step, no argv. `beforeUpdate` needs `updates: digest`. */
+  volumeBackups: VolumeBackupSettings.optional(),
 };
 
 /** `none`: start, stop, restart and recreate only; something else (ZimaOS's app store, say) updates it. */

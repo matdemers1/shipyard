@@ -91,8 +91,66 @@ export interface StackUpdateRecord {
   at: string;
 }
 
-/** Anything the ledger chain holds: a release (deploy or rollback), a backup, a restore, or a stack update. */
-export type LedgerRecord = LedgerEntry | BackupRecord | RestoreRecord | StackUpdateRecord;
+/** The app or stack a volume belonged to when it was archived (SHP-REQ-201). */
+export interface VolumeOwnerRecord {
+  kind: 'app' | 'stack';
+  name: string;
+}
+
+/**
+ * A volume archive the agent took (SHP-REQ-201, SHP-ADR-012). Its own kind with no `app`, so no
+ * app reader — releases, backups, restores, stack updates, pruning — can mistake it for one of
+ * theirs. `file` is the archive's absolute path; it lives only in this ledger and never leaves the
+ * agent: a restore names `archiveId` and the agent resolves the file here (SHP-REQ-202, SHP-D-080).
+ */
+export interface VolumeArchiveRecord {
+  kind: 'volume-archive';
+  archiveId: string;
+  volume: string;
+  owner: VolumeOwnerRecord | null;
+  createdAt: string;
+  sizeBytes: number;
+  sha256: string;
+  quiesced: boolean;
+  file: string;
+}
+
+/** A volume archive the retention limit (SHP-REQ-206) removed: it is no longer live. */
+export interface VolumeArchiveRemovedRecord {
+  kind: 'volume-archive-removed';
+  archiveId: string;
+  at: string;
+}
+
+/** One image or build cache record a prune dry run listed (SHP-REQ-205). */
+export interface PrunePlanItem {
+  kind: 'image' | 'build-cache';
+  id: string;
+  ref: string | null;
+  sizeBytes: number;
+  createdAt: string | null;
+  reason: 'dangling' | 'unused' | 'old-cache';
+}
+
+/**
+ * A prune dry run's list (SHP-REQ-205): a real prune removes only items of a plan in this ledger
+ * that are still eligible when it runs. Its own kind, never read by an app reader.
+ */
+export interface PrunePlanRecord {
+  kind: 'prune-plan';
+  jobId: string;
+  items: PrunePlanItem[];
+  at: string;
+}
+
+/** What only maintenance writes (SHP-ADR-012); none of these has an `app`. */
+export type MaintenanceLedgerRecord = VolumeArchiveRecord | VolumeArchiveRemovedRecord | PrunePlanRecord;
+
+/** The records that belong to an app or stack by name. */
+export type AppLedgerRecord = LedgerEntry | BackupRecord | RestoreRecord | StackUpdateRecord;
+
+/** Anything the ledger chain holds: a release (deploy or rollback), a backup, a restore, a stack update, or a maintenance record. */
+export type LedgerRecord = AppLedgerRecord | MaintenanceLedgerRecord;
 
 /** One physical line of the ledger file. */
 interface LedgerLine {
@@ -107,6 +165,15 @@ export const RESTORE_LIMIT_MS = 24 * 60 * 60 * 1000;
 
 function isRelease(entry: LedgerRecord): entry is LedgerEntry {
   return entry.kind === 'deploy' || entry.kind === 'rollback';
+}
+
+function isMaintenance(entry: LedgerRecord): entry is MaintenanceLedgerRecord {
+  return entry.kind === 'volume-archive' || entry.kind === 'volume-archive-removed' || entry.kind === 'prune-plan';
+}
+
+/** The app or stack a record belongs to; null for a maintenance record, which belongs to none. */
+function appOf(entry: LedgerRecord): string | null {
+  return isMaintenance(entry) ? null : entry.app;
 }
 
 export class LedgerTamperedError extends Error {
@@ -157,7 +224,46 @@ function validateImages(images: LedgerEntry['images']): void {
   }
 }
 
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+const VOLUME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/;
+
+function validateAt(at: string): void {
+  if (!at || Number.isNaN(Date.parse(at))) throw new LedgerEntryInvalidError(`invalid at: ${at}`);
+}
+
+function validateMaintenance(entry: MaintenanceLedgerRecord): void {
+  if (entry.kind === 'volume-archive') {
+    if (!entry.archiveId) throw new LedgerEntryInvalidError('archiveId must not be empty');
+    if (!VOLUME_RE.test(entry.volume)) throw new LedgerEntryInvalidError(`invalid volume: ${entry.volume}`);
+    const ownerKind: string | null = entry.owner === null ? null : entry.owner.kind;
+    if (entry.owner !== null && (!entry.owner.name || (ownerKind !== 'app' && ownerKind !== 'stack'))) {
+      throw new LedgerEntryInvalidError('owner must be null or { kind: app|stack, name }');
+    }
+    validateAt(entry.createdAt);
+    if (!Number.isInteger(entry.sizeBytes) || entry.sizeBytes < 0) throw new LedgerEntryInvalidError(`invalid sizeBytes: ${String(entry.sizeBytes)}`);
+    if (!SHA256_HEX_RE.test(entry.sha256)) throw new LedgerEntryInvalidError(`invalid sha256: ${entry.sha256}`);
+    if (!entry.file.startsWith('/')) throw new LedgerEntryInvalidError(`file must be an absolute path: ${entry.file}`);
+    return;
+  }
+  if (entry.kind === 'volume-archive-removed') {
+    if (!entry.archiveId) throw new LedgerEntryInvalidError('archiveId must not be empty');
+    validateAt(entry.at);
+    return;
+  }
+  if (!entry.jobId) throw new LedgerEntryInvalidError('jobId must not be empty');
+  if (!Array.isArray(entry.items)) throw new LedgerEntryInvalidError('items must be an array');
+  for (const item of entry.items) {
+    const itemKind: string = item.kind;
+    if ((itemKind !== 'image' && itemKind !== 'build-cache') || !item.id) throw new LedgerEntryInvalidError('a prune item names its kind and id');
+  }
+  validateAt(entry.at);
+}
+
 function validateRecord(entry: LedgerRecord): void {
+  if (isMaintenance(entry)) {
+    validateMaintenance(entry);
+    return;
+  }
   if (!entry.app || entry.app.length === 0) throw new LedgerEntryInvalidError('app must not be empty');
   if (!entry.deployId || entry.deployId.length === 0) throw new LedgerEntryInvalidError('deployId must not be empty');
   if (!entry.at || Number.isNaN(Date.parse(entry.at))) throw new LedgerEntryInvalidError(`invalid at: ${entry.at}`);
@@ -371,12 +477,12 @@ export class Ledger {
 
   /** All release entries (deploys and rollbacks) for `app`, oldest first. Backups and restores are not releases. */
   entries(app: string): LedgerEntry[] {
-    return this.lines.flatMap((l) => (l.entry.app === app && isRelease(l.entry) ? [l.entry] : []));
+    return this.lines.flatMap((l) => (isRelease(l.entry) && l.entry.app === app ? [l.entry] : []));
   }
 
   /** Succeeded stack updates and rollbacks of `stack`, oldest first (SHP-REQ-198). */
   stackUpdates(stack: string): StackUpdateRecord[] {
-    return this.lines.flatMap((l) => (l.entry.app === stack && l.entry.kind === 'stack-update' ? [l.entry] : []));
+    return this.lines.flatMap((l) => (l.entry.kind === 'stack-update' && l.entry.app === stack ? [l.entry] : []));
   }
 
   /** The succeeded stack update (or rollback) `updateId` of `stack`, or null: a stack rollback's only source. */
@@ -403,7 +509,7 @@ export class Ledger {
 
   /** Completed restores of `app`, oldest first. */
   restores(app: string): RestoreRecord[] {
-    return this.lines.flatMap((l) => (l.entry.app === app && l.entry.kind === 'restore' ? [l.entry] : []));
+    return this.lines.flatMap((l) => (l.entry.kind === 'restore' && l.entry.app === app ? [l.entry] : []));
   }
 
   /** The last restore of `app` that completed within `RESTORE_LIMIT_MS` of `now`, or null (SHP-REQ-084). */
@@ -451,7 +557,7 @@ export class Ledger {
     const recorded = new Set<string>();
     let previousRelease: string | null = null;
     for (const { entry } of this.lines) {
-      if (entry.app !== app) continue;
+      if (appOf(entry) !== app) continue;
       if (entry.kind === 'backup') {
         recorded.add(`${entry.deployId}\u0000${entry.backupArtifact}`);
         out.push({ app, deployId: entry.deployId, backupArtifact: entry.backupArtifact, at: entry.at, release: entry.release });
@@ -463,6 +569,45 @@ export class Ledger {
       }
     }
     return out;
+  }
+
+  // ─── Volume archives and prune plans (SHP-ADR-012) ──────────────────────────
+
+  /**
+   * The live volume archives — recorded and not since removed by retention — oldest first,
+   * optionally for one volume (SHP-REQ-201, SHP-REQ-206). The report's `volumeArchives` and a
+   * restore's choice both come from here.
+   */
+  volumeArchives(volume?: string): VolumeArchiveRecord[] {
+    const removed = new Set<string>();
+    for (const { entry } of this.lines) if (entry.kind === 'volume-archive-removed') removed.add(entry.archiveId);
+    return this.lines.flatMap(({ entry }) =>
+      entry.kind === 'volume-archive' && !removed.has(entry.archiveId) && (volume === undefined || entry.volume === volume) ? [entry] : [],
+    );
+  }
+
+  /** The live archive `archiveId`, or null: a restore's only source (SHP-REQ-202, SHP-D-080). */
+  volumeArchive(archiveId: string): VolumeArchiveRecord | null {
+    return this.volumeArchives().find((a) => a.archiveId === archiveId) ?? null;
+  }
+
+  /** True when this ledger has ever recorded a volume archive (the boot sweep deletes nothing otherwise). */
+  hasVolumeArchives(): boolean {
+    return this.lines.some(({ entry }) => entry.kind === 'volume-archive');
+  }
+
+  /** True when `archiveId` was ever recorded, live or since removed: recovery adopts only one that never was. */
+  volumeArchiveRecorded(archiveId: string): boolean {
+    return this.lines.some(({ entry }) => entry.kind === 'volume-archive' && entry.archiveId === archiveId);
+  }
+
+  /** The prune dry run `jobId` recorded, or null (SHP-REQ-205). */
+  prunePlan(jobId: string): PrunePlanRecord | null {
+    for (let i = this.lines.length - 1; i >= 0; i--) {
+      const entry = this.lines[i]?.entry;
+      if (entry?.kind === 'prune-plan' && entry.jobId === jobId) return entry;
+    }
+    return null;
   }
 
   /** Every digest this ledger has ever recorded for `app`, for image pruning. */

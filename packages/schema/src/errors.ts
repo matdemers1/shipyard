@@ -82,6 +82,11 @@ export const ErrorCode = z
     'digest_not_tracked',
     'registry_unreachable',
     'updates_disabled',
+    'volume_in_use',
+    'archive_not_found',
+    'confirmation_mismatch',
+    'volume_not_owned',
+    'dry_run_required',
   ])
   .meta({ id: 'ErrorCode', description: 'Machine-readable refusal reason' });
 export type ErrorCode = z.infer<typeof ErrorCode>;
@@ -151,6 +156,16 @@ export const CATALOGUE: Record<ErrorCode, CatalogueEntry> = {
   digest_not_tracked: { gate: 'none', httpStatus: 409, defaultFix: "That digest is not what the stack's track resolves to now; update to the current candidate instead." },
   registry_unreachable: { gate: 'none', httpStatus: 503, defaultFix: 'The registry could not be reached, so nothing was changed; try again when it answers.' },
   updates_disabled: { gate: 'none', httpStatus: 409, defaultFix: 'This stack is adopted with updates: none; set updates: digest and its services in its manifest to update it here.' },
+  // SHP-P-17: volumes and prune (SHP-ADR-012).
+  volume_in_use: { gate: 'none', httpStatus: 409, defaultFix: 'Stop and remove the containers that mount it first, or leave it.' },
+  archive_not_found: { gate: 'none', httpStatus: 404, defaultFix: "That archive is not in the agent's ledger; choose one from the volume's archive list." },
+  confirmation_mismatch: { gate: 'none', httpStatus: 400, defaultFix: "Type the volume's name exactly to confirm." },
+  volume_not_owned: {
+    gate: 'none',
+    httpStatus: 409,
+    defaultFix: "Backups and restores are for the volumes of an adopted stack or a Deployed app; deleting is only for a volume nothing owns.",
+  },
+  dry_run_required: { gate: 'none', httpStatus: 409, defaultFix: 'Run a dry run first and prune from its list.' },
   group_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the failed member, then deploy the group again; members after it were not touched.' },
   rollout_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the member that stopped the rollout, then roll again; the apps after it were not touched.' },
 };

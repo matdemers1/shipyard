@@ -74,6 +74,55 @@ export interface UnfinishedStackUpdate {
   swapped: boolean;
 }
 
+/**
+ * The journal lines of a maintenance job (SHP-ADR-012, SHP-T-17.2): a `maintenance` bracket under
+ * the job ID (in `deployId`) and its owner, volume or `prune` (in `app`), whose `start` detail
+ * carries `{ kind, volume, owner, composeFiles, project }`, and inside it one
+ * `maintenance:<kind>:<step>` pair per step, each written before the step runs. Not a deploy:
+ * `unfinished()` ignores them; `unfinishedMaintenance()` is how restart recovery finds a job the
+ * agent stopped in the middle of — and whether it left the owner's containers stopped.
+ */
+export const MAINTENANCE_STEP = 'maintenance';
+
+/** `maintenance:<kind>:<step>`, the journal name of one step of a maintenance job. */
+export function maintenanceStep(kind: string, step: string): string {
+  return `${MAINTENANCE_STEP}:${kind}:${step}`;
+}
+
+function isMaintenanceLine(step: string): boolean {
+  return step === MAINTENANCE_STEP || step.startsWith(`${MAINTENANCE_STEP}:`);
+}
+
+/** A maintenance job whose bracket has no `end` line: the agent stopped mid-job. */
+export interface UnfinishedMaintenance {
+  jobId: string;
+  /** The owner's, the volume's or `prune`. */
+  name: string;
+  /** The bracket's `start` detail: `{ kind, volume, owner, composeFiles, project, report }`. */
+  detail: Record<string, unknown> | undefined;
+  /** The last step that started without ending. */
+  lastStep: string | undefined;
+  /**
+   * True when a `stop` step started and no `start` step since ended with exit 0: the owner's
+   * containers may be stopped, and recovery starts them again (SHP-REQ-202).
+   */
+  stopped: boolean;
+  /** Temp archive files a step created and never committed or removed. */
+  tmpFiles: string[];
+  /** Helper container names a step ran and never saw finish. */
+  helpers: string[];
+  /**
+   * Archives an `archive` step finished writing (a restore's safety archive): its ID, where the
+   * agent was to commit it, and when. One committed but never recorded is adopted by recovery.
+   */
+  archives: { archiveId: string; file: string | null; at: string }[];
+  /**
+   * True when a restore began emptying or extracting into the volume (or putting its safety
+   * archive back) and did not finish an extract since: the volume may be half-restored.
+   */
+  dataDirty: boolean;
+}
+
 export class Journal {
   constructor(
     private readonly fs: FsPort,
@@ -156,7 +205,7 @@ export class Journal {
     const order: string[] = [];
 
     for (const entry of entries) {
-      if (entry.step === ACTION_STEP || isStackUpdateLine(entry.step)) continue;
+      if (entry.step === ACTION_STEP || isStackUpdateLine(entry.step) || isMaintenanceLine(entry.step)) continue;
       let state = deploys.get(entry.deployId);
       if (!state) {
         state = { app: entry.app, detail: undefined, ended: false, openSteps: [] };
@@ -217,6 +266,47 @@ export class Journal {
       } else {
         const i = state.openSteps.lastIndexOf(entry.step);
         if (i !== -1) state.openSteps.splice(i, 1);
+      }
+    }
+    return [...open.values()].map(({ openSteps, ...rest }) => ({ ...rest, lastStep: openSteps.at(-1) }));
+  }
+
+  /** Maintenance jobs started and never ended, in the order they started (SHP-ADR-012). */
+  async unfinishedMaintenance(): Promise<UnfinishedMaintenance[]> {
+    const open = new Map<string, UnfinishedMaintenance & { openSteps: string[] }>();
+    for (const entry of await this.readAll()) {
+      if (!isMaintenanceLine(entry.step)) continue;
+      if (entry.step === MAINTENANCE_STEP) {
+        if (entry.phase === 'start') {
+          open.set(entry.deployId, { jobId: entry.deployId, name: entry.app, detail: entry.detail, lastStep: undefined, stopped: false, tmpFiles: [], helpers: [], archives: [], dataDirty: false, openSteps: [] });
+        } else {
+          open.delete(entry.deployId);
+        }
+        continue;
+      }
+      const state = open.get(entry.deployId);
+      if (state === undefined) continue;
+      const leaf = entry.step.slice(entry.step.lastIndexOf(':') + 1);
+      const tmp = typeof entry.detail?.['tmp'] === 'string' ? entry.detail['tmp'] : undefined;
+      const helper = typeof entry.detail?.['helper'] === 'string' ? entry.detail['helper'] : undefined;
+      if (entry.phase === 'start') {
+        state.openSteps.push(entry.step);
+        if (leaf === 'stop') state.stopped = true;
+        if (leaf === 'empty' || leaf === 'extract' || leaf === 'safety-empty' || leaf === 'safety-extract') state.dataDirty = true;
+        if (tmp !== undefined && !state.tmpFiles.includes(tmp)) state.tmpFiles.push(tmp);
+        if (helper !== undefined && !state.helpers.includes(helper)) state.helpers.push(helper);
+      } else {
+        const i = state.openSteps.lastIndexOf(entry.step);
+        if (i !== -1) state.openSteps.splice(i, 1);
+        if (leaf === 'start' && entry.exitCode === 0) state.stopped = false;
+        if ((leaf === 'extract' || leaf === 'safety-extract') && entry.exitCode === 0) state.dataDirty = false;
+        const archiveId = entry.detail?.['archiveId'];
+        const final = entry.detail?.['final'];
+        if (leaf === 'archive' && entry.exitCode === 0 && typeof archiveId === 'string') {
+          state.archives.push({ archiveId, file: typeof final === 'string' ? final : null, at: entry.at });
+        }
+        if (tmp !== undefined) state.tmpFiles = state.tmpFiles.filter((f) => f !== tmp);
+        if (helper !== undefined) state.helpers = state.helpers.filter((h) => h !== helper);
       }
     }
     return [...open.values()].map(({ openSteps, ...rest }) => ({ ...rest, lastStep: openSteps.at(-1) }));

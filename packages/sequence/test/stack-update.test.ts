@@ -528,6 +528,46 @@ describe('runStackUpdate: refusals change nothing', () => {
     expect(w.composeCalls.filter((a) => a[0] === 'up')).toEqual([]);
   });
 
+  // SHP-ADR-012: volumeBackups.beforeUpdate — after the stack's own backup, before the pull.
+  it('beforeUpdate backs the volumes up after the backup step and before the pull', async () => {
+    const w = await makeWorld({ manifest: { volumeBackups: { beforeUpdate: true } } });
+    const calls: string[] = [];
+    w.ctx.backupVolumes = (stack, updateId) => {
+      calls.push(`${stack} ${updateId}`);
+      w.events.push('volume-backup');
+      return Promise.resolve(null);
+    };
+    const job = update({ web: NEW });
+    const result = await runStackUpdate(w.ports, w.ctx, job);
+    expect(result.state).toBe('succeeded');
+    expect(calls).toEqual([`media ${job.updateId}`]);
+    const at = (e: string): number => w.events.indexOf(e);
+    expect(at('compose:exec')).toBeLessThan(at('volume-backup'));
+    expect(at('journal:start:stack-update:volume-backup')).toBeLessThan(at('volume-backup'));
+    expect(at('volume-backup')).toBeLessThan(at(`pull:lscr.io/linuxserver/sonarr@${NEW}`));
+  });
+
+  it('beforeUpdate: a failed volume backup fails the update before any change', async () => {
+    const w = await makeWorld({ manifest: { volumeBackups: { beforeUpdate: true } } });
+    w.ctx.backupVolumes = () => Promise.resolve({ code: 'volume_not_owned', gate: 'none', message: 'no container mounts it', fix: 'x' });
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'backup_failed', message: expect.stringContaining('no container mounts it') as unknown } });
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    expect(w.pulls).toEqual([]);
+    expect(w.composeCalls.filter((a) => a[0] === 'up')).toEqual([]);
+  });
+
+  it('beforeUpdate with no way to back volumes up fails closed; without beforeUpdate the hook is never called', async () => {
+    const w = await makeWorld({ manifest: { volumeBackups: { beforeUpdate: true } } });
+    await expect(runStackUpdate(w.ports, w.ctx, update({ web: NEW }))).resolves.toMatchObject({ state: 'failed', refusal: { code: 'backup_failed' } });
+    expect(w.pulls).toEqual([]);
+    const other = await makeWorld({ manifest: { volumeBackups: { beforeUpdate: false } } });
+    const hook = vi.fn(() => Promise.resolve(null));
+    other.ctx.backupVolumes = hook;
+    await expect(runStackUpdate(other.ports, other.ctx, update({ web: NEW }))).resolves.toMatchObject({ state: 'succeeded' });
+    expect(hook).not.toHaveBeenCalled();
+  });
+
   it('a failed pull stops before any change', async () => {
     const w = await makeWorld();
     w.knobs.pullExit = 1;

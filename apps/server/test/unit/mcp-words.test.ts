@@ -22,10 +22,13 @@ const EXPECTED_TOOLS = [
   'shipyard_dry_run',
   'shipyard_host',
   'shipyard_logs',
+  'shipyard_maintenance_status',
+  'shipyard_prune',
   'shipyard_rollback',
   'shipyard_stack_update',
   'shipyard_stack_update_status',
   'shipyard_status',
+  'shipyard_volume_backup',
 ];
 
 let client: Client | undefined;
@@ -44,7 +47,7 @@ afterEach(async () => {
 });
 
 describe('MCP tool descriptions (SHP-REQ-165)', () => {
-  it('keeps the twelve tool names, which connected sessions depend on', async () => {
+  it('keeps the fifteen tool names, which connected sessions depend on', async () => {
     const tools = await listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);
   });

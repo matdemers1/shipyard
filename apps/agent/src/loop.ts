@@ -4,6 +4,7 @@ import {
   type ActionJob,
   type BuildJob,
   type LogsJob,
+  type MaintenanceJob,
   type StackUpdateJob,
   type BuildSettings,
   type PollRequest,
@@ -55,7 +56,7 @@ export const POLL_TIMEOUT_MS = 35_000;
 export type PollTarget = NonNullable<PollResponse['target']>;
 
 /** Every top-level poll-answer field this agent understands. */
-const POLL_RESPONSE_KEYS: ReadonlySet<string> = new Set(['target', 'build', 'buildSettings', 'action', 'logs', 'stackUpdate']);
+const POLL_RESPONSE_KEYS: ReadonlySet<string> = new Set(['target', 'build', 'buildSettings', 'action', 'logs', 'stackUpdate', 'maintenance']);
 
 /**
  * Parses a poll answer, dropping top-level fields this agent does not know first. The server is
@@ -151,6 +152,8 @@ export interface PollCapabilities {
   logs?: boolean;
   /** SHP-P-16: the agent runs stack updates by digest. */
   stackUpdates?: boolean;
+  /** SHP-P-17: the agent backs up, restores and deletes volumes and prunes (SHP-ADR-012). */
+  maintenance?: boolean;
 }
 
 /**
@@ -159,12 +162,13 @@ export interface PollCapabilities {
  * so the console says why instead of waiting on a job no agent will take).
  */
 export function pollBody(caps: LoopBuilds | PollCapabilities | undefined): PollRequest {
-  const { builds, actions = false, logs = false, stackUpdates = false } = caps === undefined || 'canTake' in caps ? { builds: caps } : caps;
+  const { builds, actions = false, logs = false, stackUpdates = false, maintenance = false } = caps === undefined || 'canTake' in caps ? { builds: caps } : caps;
   const capabilities: NonNullable<PollRequest['capabilities']> = [];
   if (builds?.canTake() === true) capabilities.push('build');
   if (actions) capabilities.push('actions');
   if (logs) capabilities.push('logs');
   if (stackUpdates) capabilities.push('stack-updates');
+  if (maintenance) capabilities.push('maintenance');
   return capabilities.length === 0 ? { waitSeconds: POLL_WAIT_SECONDS } : { waitSeconds: POLL_WAIT_SECONDS, capabilities };
 }
 
@@ -210,6 +214,8 @@ export interface LoopOptions {
   logs?: LoopJobs<LogsJob>;
   /** The stack update runner (SHP-REQ-197); with it the agent advertises `stack-updates`. */
   stackUpdates?: LoopJobs<StackUpdateJob>;
+  /** The volume and prune runner (SHP-ADR-012); with it the agent advertises `maintenance`. */
+  maintenance?: LoopJobs<MaintenanceJob>;
   /**
    * Called with `buildSettings` whenever a poll response carries it (SHP-T-7.11): the loop's only
    * hook into the BuildKit cache manager. Never awaited by the loop itself — a slow or failing
@@ -250,6 +256,9 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
   const now = opts.now ?? Date.now;
   // Until when `actions` and `logs` are left out of polls, after a server refused them.
   let extendedOffUntil = 0;
+  // A server from SHP-P-16 knows the other capabilities but not `maintenance`: that one is dropped
+  // first, on its own, so such a server still gets actions, logs and stack updates.
+  let maintenanceOffUntil = 0;
   let degradeWarned = false;
 
   while (!stopped()) {
@@ -258,15 +267,17 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
     let action: ActionJob | undefined;
     let logs: LogsJob | undefined;
     let stackUpdate: StackUpdateJob | undefined;
+    let maintenance: MaintenanceJob | undefined;
     const extended = now() >= extendedOffUntil;
     const askActions = extended && opts.actions !== undefined;
     const askLogs = extended && opts.logs !== undefined;
     const askStackUpdates = extended && opts.stackUpdates !== undefined;
+    const askMaintenance = extended && now() >= maintenanceOffUntil && opts.maintenance !== undefined;
     try {
       const body = await opts.client.request(
         'POST',
         POLL_PATH,
-        pollBody({ builds: opts.builds, actions: askActions, logs: askLogs, stackUpdates: askStackUpdates }),
+        pollBody({ builds: opts.builds, actions: askActions, logs: askLogs, stackUpdates: askStackUpdates, maintenance: askMaintenance }),
       );
       const parsed = parsePollResponse(body, (keys) => {
         const fresh = keys.filter((key) => !ignoredKeys.has(key));
@@ -279,6 +290,7 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       action = 'action' in parsed ? parsed.action : undefined;
       logs = 'logs' in parsed ? parsed.logs : undefined;
       stackUpdate = 'stackUpdate' in parsed ? parsed.stackUpdate : undefined;
+      maintenance = 'maintenance' in parsed ? parsed.maintenance : undefined;
       if (parsed.buildSettings !== undefined && opts.onBuildSettings !== undefined) {
         try {
           opts.onBuildSettings(parsed.buildSettings);
@@ -289,14 +301,15 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       delay = backoff.initialMs;
     } catch (err) {
       if (stopped()) break;
-      if ((askActions || askLogs || askStackUpdates) && refusedCapabilities(err)) {
+      if ((askActions || askLogs || askStackUpdates || askMaintenance) && refusedCapabilities(err)) {
         // An older server: poll again at once without them, and offer them again later.
-        extendedOffUntil = now() + EXTENDED_CAPABILITIES_RETRY_MS;
+        if (askMaintenance) maintenanceOffUntil = now() + EXTENDED_CAPABILITIES_RETRY_MS;
+        else extendedOffUntil = now() + EXTENDED_CAPABILITIES_RETRY_MS;
         if (!degradeWarned) {
           degradeWarned = true;
           opts.log.warn(
             { err: message(err), retryInMs: EXTENDED_CAPABILITIES_RETRY_MS },
-            'the server refused the actions/logs/stack-updates capabilities; polling without them — the server may need an upgrade',
+            'the server refused the actions/logs/stack-updates/maintenance capabilities; polling without them — the server may need an upgrade',
           );
         }
         continue;
@@ -324,6 +337,10 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
     if (stackUpdate !== undefined) {
       if (opts.stackUpdates === undefined) opts.log.warn({ updateId: stackUpdate.updateId }, 'sent a stack update without asking for one; ignoring it');
       else offerSafely(opts.stackUpdates, stackUpdate, opts.log, { updateId: stackUpdate.updateId });
+    }
+    if (maintenance !== undefined) {
+      if (opts.maintenance === undefined) opts.log.warn({ jobId: maintenance.jobId }, 'sent a maintenance job without asking for one; ignoring it');
+      else offerSafely(opts.maintenance, maintenance, opts.log, { jobId: maintenance.jobId });
     }
     if (target === null) continue;
     try {

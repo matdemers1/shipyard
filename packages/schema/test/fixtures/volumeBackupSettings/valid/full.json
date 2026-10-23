@@ -1,0 +1,9 @@
+{
+  "volumes": [
+    "forgejo_data"
+  ],
+  "retain": 14,
+  "quiesce": true,
+  "nightly": true,
+  "beforeUpdate": true
+}

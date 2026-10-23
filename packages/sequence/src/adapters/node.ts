@@ -1,9 +1,10 @@
-import { randomBytes } from 'node:crypto';
-import { mkdir, open, readdir, readFile as fsReadFile, rename, stat } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { chmod, mkdir, open, readdir, readFile as fsReadFile, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { acquireGuard } from '../guard.js';
-import type { Clock, FsPort } from '../ports.js';
+import type { ArchiveFilesPort, Clock, FsPort } from '../ports.js';
 
 /**
  * The real filesystem and clock adapters (SHP-T-1.11). `writeFileAtomic` is the durability
@@ -84,6 +85,81 @@ export function nodeFs(): FsPort {
           return { path: full, size: stats.size, mtimeMs: stats.mtimeMs };
         }),
       );
+    },
+  };
+}
+
+function errCode(err: unknown): string | undefined {
+  return typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string' ? err.code : undefined;
+}
+
+/**
+ * Volume archives on the real filesystem (SHP-REQ-201, SHP-T-17.2): directories 0700, files 0600,
+ * a commit that fsyncs the file, renames it and fsyncs the directory, and a streamed SHA-256.
+ */
+export function nodeArchiveFiles(): ArchiveFilesPort {
+  return {
+    async ensureDir(dir) {
+      // `mkdir -p` returns the first directory it made: that one and each below it down to `dir`
+      // are ours, and set 0700 whatever the umask. One that existed (the backup root) is left alone.
+      const first = await mkdir(dir, { recursive: true, mode: 0o700 });
+      if (first === undefined) return;
+      for (let d = dir; d.length >= first.length; d = dirname(d)) {
+        await chmod(d, 0o700);
+        if (d === first || d === dirname(d)) break;
+      }
+    },
+
+    async createEmpty(path) {
+      const handle = await open(path, 'wx', 0o600);
+      try {
+        await handle.chmod(0o600);
+      } finally {
+        await handle.close();
+      }
+    },
+
+    async commit(tmp, final) {
+      const handle = await open(tmp, 'r+');
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await rename(tmp, final);
+      const dirHandle = await open(dirname(final), 'r');
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close();
+      }
+    },
+
+    async digest(path) {
+      try {
+        const info = await stat(path);
+        if (!info.isFile()) return null;
+      } catch (err) {
+        if (errCode(err) === 'ENOENT') return null;
+        throw err;
+      }
+      const hash = createHash('sha256');
+      let read = 0;
+      for await (const chunk of createReadStream(path)) {
+        const buf = chunk as Buffer;
+        hash.update(buf);
+        read += buf.length;
+      }
+      // The size is what was hashed, so the two always describe the same bytes.
+      return { sha256: hash.digest('hex'), sizeBytes: read };
+    },
+
+    async remove(path) {
+      try {
+        await unlink(path);
+      } catch (err) {
+        if (errCode(err) !== 'ENOENT') throw err;
+      }
     },
   };
 }

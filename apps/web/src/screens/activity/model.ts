@@ -1,6 +1,7 @@
-import type { ActionStatus, StackUpdateStatus } from '@shipyard/schema';
+import type { ActionStatus, MaintenanceStatus, StackUpdateStatus } from '@shipyard/schema';
 import type { StageState } from '../../components/pipeline';
 import { isTerminalAction } from '../../lib/actions';
+import { isMaintenanceActive } from '../../lib/maintenance';
 import { isTerminalStackUpdate } from '../../lib/stacks';
 import { STAGE_LABEL, isTerminalBuild, type BuildState, type BuildSummary } from '../../lib/builds';
 import type { ScheduleEntry } from '../../lib/schedules';
@@ -13,7 +14,7 @@ import {
   type TimelineItem,
   type TimelineOutcome,
 } from '../../lib/timeline';
-import { DEPLOY_ALL_READY, STACK_UPDATES, checkName, stateWords } from '../../lib/words';
+import { DEPLOY_ALL_READY, MAINTENANCE_CHIP, STACK_UPDATES, checkName, stateWords } from '../../lib/words';
 
 /**
  * Activity's model (SHP-T-13.13, SHP-REQ-164): the filters in the address, the one feed made of
@@ -25,7 +26,7 @@ import { DEPLOY_ALL_READY, STACK_UPDATES, checkName, stateWords } from '../../li
 // ── Filters, in the URL ──────────────────────────────────────────────────
 
 /** The kind chips. `refusal` is a deploy outcome, not a stored kind. */
-export type ActivityKind = 'deploy' | 'rollback' | 'refusal' | 'build' | 'schedule' | 'restore' | 'action' | 'stack-update';
+export type ActivityKind = 'deploy' | 'rollback' | 'refusal' | 'build' | 'schedule' | 'restore' | 'action' | 'stack-update' | 'maintenance';
 
 export const KIND_CHIPS: readonly { value: ActivityKind; label: string }[] = [
   { value: 'deploy', label: 'Deploys' },
@@ -39,6 +40,8 @@ export const KIND_CHIPS: readonly { value: ActivityKind; label: string }[] = [
   { value: 'action', label: 'Actions' },
   // Updates and rollbacks of an adopted stack by digest (SHP-T-16.6, SHP-REQ-200).
   { value: 'stack-update', label: STACK_UPDATES },
+  // Volume backups, restores, orphan deletes and prunes (SHP-T-17.6, SHP-ADR-012).
+  { value: 'maintenance', label: MAINTENANCE_CHIP },
 ];
 
 const KIND_VALUES: readonly string[] = KIND_CHIPS.map((k) => k.value);
@@ -78,17 +81,20 @@ export interface Sources {
   actions: boolean;
   /** Stack updates and rollbacks; refused ones under Refusals too. */
   stackUpdates: boolean;
+  /** Volume and prune jobs; refused ones under Refusals too. */
+  maintenance: boolean;
 }
 
 export function sourcesFor(filters: ActivityFilters): Sources {
   const kind = filters.kind;
   return {
-    deploys: kind !== 'build' && kind !== 'schedule' && kind !== 'action' && kind !== 'stack-update',
+    deploys: kind !== 'build' && kind !== 'schedule' && kind !== 'action' && kind !== 'stack-update' && kind !== 'maintenance',
     builds: kind === undefined || kind === 'build',
     scheduleRows: kind === undefined || kind === 'schedule' || kind === 'refusal',
     showUpcoming: kind === undefined || kind === 'schedule',
     actions: kind === undefined || kind === 'action' || kind === 'refusal',
     stackUpdates: kind === undefined || kind === 'stack-update' || kind === 'refusal',
+    maintenance: kind === undefined || kind === 'maintenance' || kind === 'refusal',
   };
 }
 
@@ -133,6 +139,15 @@ export function stackUpdateMatches(update: StackUpdateStatus, filters: ActivityF
   return outcome === undefined || update.state === outcome;
 }
 
+/** A volume or prune job against the filters: its owner for app, requester, outcome; Refusals is its refused state. */
+export function maintenanceMatches(job: MaintenanceStatus, filters: ActivityFilters): boolean {
+  if (filters.app !== undefined && job.owner?.name !== filters.app) return false;
+  if (!contains(job.requester.label, filters.requester)) return false;
+  const outcome = filters.kind === 'refusal' ? 'refused' : filters.outcome;
+  if (outcome === 'active') return isMaintenanceActive(job.state);
+  return outcome === undefined || job.state === outcome;
+}
+
 export function buildMatches(build: BuildSummary, filters: ActivityFilters): boolean {
   return contains(build.requesterLabel, filters.requester) && outcomeMatches(filters.outcome, build.state);
 }
@@ -163,6 +178,7 @@ export type FeedEntry =
   | { type: 'schedule'; key: string; at: string; entry: ScheduleEntry }
   | { type: 'action'; key: string; at: string; action: ActionStatus }
   | { type: 'stack-update'; key: string; at: string; update: StackUpdateStatus }
+  | { type: 'maintenance'; key: string; at: string; job: MaintenanceStatus }
   | {
       type: 'rollout';
       key: string;
@@ -394,6 +410,10 @@ export function stackUpdateNode(state: StackUpdateStatus['state']): StageState {
     case 'running':
       return 'running';
   }
+}
+
+export function maintenanceNode(state: MaintenanceStatus['state']): StageState {
+  return actionNode(state);
 }
 
 export function buildNode(state: BuildState): StageState {

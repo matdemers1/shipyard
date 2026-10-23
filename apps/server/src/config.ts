@@ -66,6 +66,9 @@ export const Config = z
     // The app name of Shipyard's own server manifest (docs/manifests/shipyard.yml). A rollout always
     // ships it last, so its restart never interrupts the apps before it (SHP-REQ-152).
     SELF_APP: z.preprocess(blankAsUnset, z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).default('shipyard')),
+    // The server-local hour at which manifests' nightly volume backups are queued (SHP-T-17.3,
+    // SHP-ADR-012). The agent runs them one at a time.
+    NIGHTLY_BACKUP_HOUR: z.preprocess(blankAsUnset, z.coerce.number().int().min(0).max(23).default(3)),
   })
   .transform((c) => ({
     ...c,

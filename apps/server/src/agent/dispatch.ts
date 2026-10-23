@@ -66,6 +66,14 @@ export async function claimTarget(db: Db, agentId: string): Promise<string | nul
               where pd."rollout_id" = d."rollout_id"
                 and pd."rollout_position" < d."rollout_position"
                 and pt."state" <> 'succeeded'))
+        -- Not while a volume restore of the app is on the host (SHP-T-17.3, SHP-REQ-202): a target
+        -- queued before the restore waits for it to end, as an action does.
+        and not exists (
+              select 1 from "maintenance_job" m
+              where m."kind" = 'volume-restore'
+                and m."owner_kind" = 'app'
+                and m."owner_name" = a."name"
+                and m."state" in ('dispatched', 'running'))
       order by t."created_at", t."id"
       for update of t skip locked
       limit 1

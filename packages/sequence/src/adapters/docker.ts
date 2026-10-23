@@ -4,6 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import Dockerode from 'dockerode';
 
 import type {
+  BuildCacheRecord,
   BuildNetworkInfo,
   ComposeTarget,
   ContainerLogLine,
@@ -435,7 +436,8 @@ export function createDockerAdapter(
   Required<
     Pick<DockerPort, 'loadImage' | 'inspectNetwork' | 'hostContainers' | 'hostVolumes' | 'systemDf' | 'hostImages' | 'hostNetworks' | 'containerStats' | 'dockerRootSpace'>
   > &
-  Required<Pick<DockerPort, 'containerLogs' | 'inspectEnv' | 'pullImage'>> {
+  Required<Pick<DockerPort, 'containerLogs' | 'inspectEnv' | 'pullImage'>> &
+  Required<Pick<DockerPort, 'dockerCli' | 'containerIdentity' | 'buildCacheRecords' | 'pruneBuildCacheRecord'>> {
   const docker = options.docker ?? dockerodeFor(options.dockerHost);
   const composeBin = options.composeBin ?? 'docker';
   const probeImage = options.probeImage ?? 'busybox:1.37';
@@ -669,6 +671,69 @@ export function createDockerAdapter(
         return { exitCode: 2, stdout: '', stderr: `refusing to pull ${reference}: not a repo@sha256 reference` };
       }
       return execFile(composeBin, ['pull', '--quiet', reference], { env: composeEnv(), timeoutMs: 600_000 });
+    },
+
+    // Volume maintenance (SHP-ADR-012, SHP-T-17.2): the helper run, `volume rm`, `image rm` and
+    // `builder prune` go through the pinned CLI as argv; the reads below are inspect/df only.
+    async dockerCli(args, opts) {
+      const runOpts: { env: NodeJS.ProcessEnv; timeoutMs?: number } = { env: composeEnv() };
+      if (opts?.timeoutMs !== undefined) runOpts.timeoutMs = opts.timeoutMs;
+      return execFile(composeBin, args, runOpts);
+    },
+
+    async containerIdentity(id) {
+      try {
+        const info = await docker.getContainer(id).inspect();
+        if (typeof info.Image !== 'string' || info.Image === '') return null;
+        const labels = (info.Config.Labels as Record<string, string> | null | undefined) ?? {};
+        return { imageId: info.Image, composeProject: nonEmpty(labels[COMPOSE_PROJECT_LABEL]) };
+      } catch (err) {
+        if (statusCodeOf(err) === 404) return null;
+        throw err;
+      }
+    },
+
+    async buildCacheRecords(): Promise<BuildCacheRecord[]> {
+      const df = (await docker.df()) as {
+        BuildCache?: { ID?: string; Size?: number; CreatedAt?: string | null; LastUsedAt?: string | null; InUse?: boolean }[] | null;
+      };
+      return (df.BuildCache ?? []).flatMap((entry) =>
+        typeof entry.ID !== 'string' || entry.ID === ''
+          ? []
+          : [
+              {
+                id: entry.ID,
+                sizeBytes: typeof entry.Size === 'number' && entry.Size > 0 ? entry.Size : 0,
+                createdAt: isoOrNull(entry.CreatedAt),
+                lastUsedAt: isoOrNull(entry.LastUsedAt),
+                inUse: entry.InUse === true,
+              },
+            ],
+      );
+    },
+
+    async pruneBuildCacheRecord(id) {
+      if (!/^[a-z0-9]{1,64}$/.test(id)) throw new Error('not a build cache record ID');
+      // The Engine turns an `id` filter into BuildKit's `id~=` (a regular expression): anchored, it
+      // matches this record only, never every record whose ID starts with it.
+      // Dialled directly: dockerode's own `pruneBuilder` drops its options, which would prune every
+      // unused record — never acceptable here.
+      await new Promise<void>((resolveDial, rejectDial) => {
+        docker.modem.dial(
+          {
+            path: '/build/prune?',
+            method: 'POST',
+            // `all`: without it the Engine skips a record that is not dangling or unused-shared, so
+            // a listed old record could survive; the anchored `id` still restricts it to this one.
+            options: { all: true, filters: { id: [`^${id}$`] } },
+            statusCodes: { 200: true, 400: 'bad parameter', 500: 'server error' },
+          },
+          (err: unknown) => {
+            if (err === null || err === undefined) resolveDial();
+            else rejectDial(err instanceof Error ? err : new Error('build cache prune failed'));
+          },
+        );
+      });
     },
 
     async inspectNetwork(name): Promise<BuildNetworkInfo | null> {

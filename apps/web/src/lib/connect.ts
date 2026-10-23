@@ -70,4 +70,7 @@ export const TOOLS: readonly { name: string; does: string }[] = [
   { name: 'shipyard_logs', does: 'A redacted tail of a container’s logs, for the apps and stacks the token is scoped to and allowed to read logs for.' },
   { name: 'shipyard_stack_update', does: 'Asks to update an adopted, Operated stack to the newest images its track resolves to; a deployer approves it in the console’s Needs you first.' },
   { name: 'shipyard_stack_update_status', does: 'Follows a stack update — awaiting approval, running, succeeded, rolled back or refused — with the images before and after.' },
+  { name: 'shipyard_volume_backup', does: 'Backs up a named volume of a Deployed app or an Operated stack the token is scoped to. Restoring or deleting a volume is console-only.' },
+  { name: 'shipyard_prune', does: 'Lists dangling and old unused images and old build cache with their sizes (a dry run); a second call removes exactly that list. Volumes are never pruned.' },
+  { name: 'shipyard_maintenance_status', does: 'Follows a volume backup or a prune that was still running, with the archive or the bytes reclaimed.' },
 ];

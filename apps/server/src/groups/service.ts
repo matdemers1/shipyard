@@ -22,6 +22,7 @@ import {
   type CreateDeployOptions,
   type DeployCaller,
 } from '../deploys/service.js';
+import { RestoreLockedError, assertNoRestore } from '../maintenance/lock.js';
 
 /**
  * Group deploys (SHP-T-5.2, SHP-T-5.3; SHP-REQ-078, SHP-REQ-079, SHP-D-047).
@@ -217,10 +218,15 @@ export async function createGroupDeploy(
   let deployId: string | undefined;
   for (let attempt = 0; attempt < 2 && deployId === undefined; attempt += 1) {
     try {
-      // One nested create, one transaction: every member's lock is taken, or none is.
-      const row = await db.deploy.create({ data, select: { id: true } });
+      // One nested create, one transaction: every member's lock is taken, or none is — and none
+      // while a volume restore holds a member (SHP-T-17.3, SHP-REQ-202).
+      const row = await db.$transaction(async (tx) => {
+        await assertNoRestore(tx, members.map((m) => m.name));
+        return tx.deploy.create({ data, select: { id: true } });
+      });
       deployId = row.id;
     } catch (err) {
+      if (err instanceof RestoreLockedError) return err.refusal;
       if (!isUniqueViolation(err)) throw err;
       for (const member of members) {
         const locked = await lockRefusal(db, member.name, member.id);

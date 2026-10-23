@@ -321,7 +321,7 @@ describe('the Host destination', () => {
 
     expect(screen.getByText(/5 images · .* · 2 not used by any container .* · 1 untagged/)).toBeInTheDocument();
     expect(screen.getByText(/Largest: ghcr\.io\/matdemers1\/bindery\/worker \(4\.0 GB × 2 versions\)/)).toBeInTheDocument();
-    expect(screen.getByText(/^Read-only\. Deployed is a D3 app Shipyard deploys/)).toBeInTheDocument();
+    expect(screen.getByText(/^Deployed is a D3 app Shipyard deploys/)).toBeInTheDocument();
 
     // SHP-REQ-181: it only reads.
     expect(writes(calls)).toEqual([]);
@@ -373,7 +373,7 @@ describe('the Host destination', () => {
     expect(within(vols).getAllByRole('listitem')).toHaveLength(6);
     await user.click(screen.getByRole('button', { name: 'Show all 8' }));
     expect(within(screen.getByRole('list', { name: 'Volumes' })).getAllByRole('listitem')).toHaveLength(8);
-    expect(screen.getByText('Showing 8 of 8 · orphans first')).toBeInTheDocument();
+    expect(screen.getByText(/^Showing 8 of 8 · orphans first/)).toBeInTheDocument();
   });
 
   it('marks a snapshot stale after two report intervals', async () => {

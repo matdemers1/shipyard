@@ -27,7 +27,16 @@ import {
   runStackUpdate,
   systemClock,
   ManifestLoadError,
+  backupVolumesBeforeUpdate,
+  closeInterruptedMaintenance,
+  nodeArchiveFiles,
+  recoverInterruptedMaintenance,
+  safeError,
+  stripPaths,
+  runMaintenance,
   type Log,
+  type MaintenanceContext,
+  type MaintenancePorts,
   type SequencePorts,
 } from '@shipyard/sequence';
 import { createActionRunner, reportInterruptedActions } from './actions.js';
@@ -40,6 +49,7 @@ import { loadOrCreateIdentity } from './identity.js';
 import { POLL_TIMEOUT_MS, createTargetRunner, fileTargetStore, reportLeftovers, runLoop, targetStorePath, trackInFlight } from './loop.js';
 import { createInventoryCollector } from './inventory.js';
 import { createLogsRunner } from './logs.js';
+import { createMaintenanceRunner, reportInterruptedMaintenance } from './maintenance.js';
 import { buildReport, manifestsHash, startReporting } from './report.js';
 import { createCandidateChecker } from './stack-candidates.js';
 import { createStackUpdateRunner, reportInterruptedStackUpdates } from './stack-updates.js';
@@ -141,9 +151,45 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // A lifecycle action is never redone after a restart: it is reported interrupted (SHP-REQ-187).
   await reportInterruptedActions({ client, journal, log: logger });
 
+  const archiveFiles = nodeArchiveFiles();
+  // The agent's own container, inspected once (SHP-ADR-012): its image is the archive helper (never
+  // pulled), and its compose project is the stack a volume job must never stop. A failed lookup is
+  // tried again next time rather than remembered.
+  let ownIdentity: Promise<{ imageId: string; composeProject: string | null }> | undefined;
+  const selfIdentity = (): Promise<{ imageId: string; composeProject: string | null }> => {
+    if (ownIdentity === undefined) {
+      const self = config.selfContainerId;
+      const inspect = ports.docker.containerIdentity?.bind(ports.docker);
+      ownIdentity =
+        self === undefined || inspect === undefined
+          ? Promise.reject(new Error('the agent is not running in a container (no HOSTNAME under /.dockerenv, no SHIPYARD_SELF_CONTAINER_ID)'))
+          : inspect(self).then((found) => {
+              if (found === null) throw new Error("Docker does not know the agent's own container");
+              return found;
+            });
+      ownIdentity.catch(() => {
+        ownIdentity = undefined;
+      });
+    }
+    return ownIdentity;
+  };
+  const helperImage = async (): Promise<string> => (await selfIdentity()).imageId;
+  // Outside a container no project is the agent's own; inside one, a lookup that fails refuses the job.
+  const ownProject = async (): Promise<string | null> => (config.selfContainerId === undefined ? null : (await selfIdentity()).composeProject);
+
   // Opened once: the ledger's hash chain is verified on open. Appends take a cross-process lock and
   // chain onto the file's true tail, since the host CLI appends to the same file (SHP-T-6.11).
   const ledger = await Ledger.open(ports.fs, paths.ledgerPath);
+
+  // Nor is a volume job (SHP-ADR-012): stray temp archives go, an archive committed but never
+  // recorded is adopted, a half-restored volume is put back from its safety archive (or its stack
+  // left stopped), and a project a job had stopped is started again — then the server is told.
+  const maintenanceRecovered = await recoverInterruptedMaintenance({ docker: ports.docker, fs: ports.fs, files: archiveFiles, log }, journal, {
+    backupRoot: config.backupRoot,
+    ledger,
+    helperImage,
+  });
+  await reportInterruptedMaintenance({ client, recovered: maintenanceRecovered, close: (r) => closeInterruptedMaintenance(journal, r), log: logger });
 
   // A stack update is never resumed forward either (SHP-REQ-197): put back what one left mid-swap,
   // and tell the server.
@@ -279,6 +325,22 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   }
   const worker = builds;
 
+  // Volume backups, restores, deletes and prunes (SHP-ADR-012), with the identity found above.
+  const maintenancePorts: MaintenancePorts = { docker: ports.docker, fs: ports.fs, files: archiveFiles, clock: ports.clock, log };
+  const maintenanceContext = async (onStep?: MaintenanceContext['onStep']): Promise<MaintenanceContext> => ({
+    dataRoot: config.dataRoot,
+    backupRoot: config.backupRoot,
+    apps: await loadManifests(ports.fs, config.dataRoot),
+    stacks: await loadStacks(ports.fs, config.dataRoot),
+    journal,
+    ledger,
+    helperImage,
+    ownProject,
+    // A prune never runs beside a deploy, a stack update or an action (their locks show it).
+    busy: async () => targets.inFlight() || (await anyLockLive()),
+    ...(onStep === undefined ? {} : { onStep }),
+  });
+
   // Stack updates by digest (SHP-P-16): always on, in the background, one at a time.
   const stackUpdates = createStackUpdateRunner({
     client,
@@ -292,7 +354,16 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       }
       return runStackUpdate(
         { registry: stackRegistry, docker: ports.docker, fs: ports.fs, clock: ports.clock, log },
-        { dataRoot: config.dataRoot, stacks, journal, ledger, historyDir: paths.historyDir, onStep },
+        {
+          dataRoot: config.dataRoot,
+          stacks,
+          journal,
+          ledger,
+          historyDir: paths.historyDir,
+          onStep,
+          // volumeBackups.beforeUpdate (SHP-ADR-012): inside the update's own lock.
+          backupVolumes: async (stack, updateId) => (await backupVolumesBeforeUpdate(maintenancePorts, await maintenanceContext(), { stack, updateId })).refusal,
+        },
         job,
       );
     },
@@ -340,6 +411,24 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     log: logger,
     signal: stopping.signal,
   });
+  const maintenance = createMaintenanceRunner({
+    client,
+    execute: async (job, onStep) => {
+      let ctx: MaintenanceContext;
+      try {
+        ctx = await maintenanceContext(onStep);
+      } catch (err) {
+        // No host path in what reaches the server (SHP-T-17.2): the error's code, or its message without paths.
+        const why = err instanceof ManifestLoadError ? err.toRefusal() : refusal('manifest_invalid', `The host's manifests could not be read (${safeError(err)}).`);
+        return { jobId: job.jobId, state: 'refused', refusal: { ...why, message: stripPaths(why.message) } };
+      }
+      return runMaintenance(maintenancePorts, ctx, job);
+    },
+    // New or removed archives reach the server with the next report, sent now.
+    onFinished: () => void reporting.sendNow(),
+    log: logger,
+    signal: stopping.signal,
+  });
   const logs = createLogsRunner({
     client,
     docker: ports.docker,
@@ -356,6 +445,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       actions,
       logs,
       stackUpdates,
+      maintenance,
       log: logger,
       signal: stopping.signal,
       ...(worker === undefined ? {} : { builds: { canTake: () => !worker.busy(), offer: (job) => void worker.offer(job) } }),

@@ -82,6 +82,11 @@ Within one report interval (60 s) the console's **Host** view shows the stack's 
 a single service — and watch it go queued → running → succeeded, with compose's output on the
 action.
 
+## Backing up its volumes
+
+An adopted stack's named volumes can be backed up, restored and pruned around: `volumeBackups` in
+its manifest sets retention, quiesce and nightly backups. See `volumes.md`.
+
 ## Removing a stack
 
 Delete its file from `stacks/` (and the mount, if nothing else needs it) and restart the agent with

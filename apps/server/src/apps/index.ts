@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { ACTIVE_STATES, Refusal as RefusalSchema, refusal } from '@shipyard/schema';
+import { ACTIVE_STATES, Refusal as RefusalSchema, parseManifestYaml, refusal } from '@shipyard/schema';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
@@ -29,6 +29,7 @@ const APP_SELECT = {
   runningDigests: true,
   driftedAt: true,
   manifestSha256: true,
+  manifestYaml: true,
   retiredAt: true,
 } satisfies Prisma.AppSelect;
 
@@ -50,11 +51,26 @@ interface AppSummary {
   canary: boolean;
   group: string | null;
   manifestSha256: string;
+  /**
+   * The compose project the app's manifest names (SHP-T-17.6, SHP-ADR-012): the console decides a
+   * volume's owner by it, as the server's volume index does. Null when the stored manifest no
+   * longer parses.
+   */
+  composeProject: string | null;
   /** A freeze holds now (SHP-REQ-077): Home leaves the app out of Roll all (SHP-REQ-154). */
   frozen: boolean;
   /** When the agent stopped reporting it (SHP-REQ-174); only ever set on `GET /api/apps/:app`. */
   retiredAt: string | null;
   active: { targetId: string; deployId: string; state: string; holder: string; currentStep: string | null } | null;
+}
+
+/** The compose project in the app's mirrored manifest, the way the maintenance service reads it. */
+function composeProjectOf(manifestYaml: string): string | null {
+  try {
+    return parseManifestYaml(manifestYaml).compose.project;
+  } catch {
+    return null;
+  }
 }
 
 async function summarise(db: Db, app: AppRow): Promise<AppSummary> {
@@ -89,6 +105,7 @@ async function summarise(db: Db, app: AppRow): Promise<AppSummary> {
     canary: app.canary,
     group: app.groupName,
     manifestSha256: app.manifestSha256,
+    composeProject: composeProjectOf(app.manifestYaml),
     frozen: freeze !== null,
     retiredAt: app.retiredAt?.toISOString() ?? null,
     active:
@@ -146,7 +163,7 @@ export function appsRouter(deps: ServiceDeps): Router {
       sendRefusal(res, notFound);
       return;
     }
-    const row = await db.app.findUnique({ where: { name }, select: { ...APP_SELECT, manifestYaml: true } });
+    const row = await db.app.findUnique({ where: { name }, select: APP_SELECT });
     if (row === null) {
       sendRefusal(res, notFound);
       return;

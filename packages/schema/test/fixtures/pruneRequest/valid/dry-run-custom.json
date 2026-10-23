@@ -1,0 +1,10 @@
+{
+  "dryRun": true,
+  "images": {
+    "dangling": false,
+    "unusedOlderThanHours": 720
+  },
+  "buildCache": {
+    "olderThanHours": null
+  }
+}

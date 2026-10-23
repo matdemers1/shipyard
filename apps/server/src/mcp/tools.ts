@@ -9,12 +9,16 @@ import {
   ShipyardDryRunInput,
   ShipyardHostInput,
   ShipyardLogsInput,
+  ShipyardPruneInput,
   ShipyardRollbackInput,
   ShipyardStackUpdateInput,
   ShipyardStatusInput,
+  ShipyardVolumeBackupInput,
   refusal,
   type ActionStatus,
   type DeployStatus,
+  type MaintenanceStatus,
+  type PruneItem,
   type Refusal,
 } from '@shipyard/schema';
 import type { GitHubPort } from '@shipyard/sequence/github';
@@ -34,11 +38,20 @@ import {
 import { getGroupDeployStatus, waitForGroupChange } from '../groups/service.js';
 import { readHostSnapshots, snapshotContainers } from '../host/index.js';
 import { logsViewerOf, readLogsTail } from '../logs/service.js';
+import {
+  getMaintenance,
+  isMaintenanceTerminal,
+  maintenanceInScope,
+  requestPrune,
+  requestVolumeBackup,
+  waitForMaintenance,
+} from '../maintenance/service.js';
 import { getStackUpdate, requestStackUpdate, waitForStackUpdate } from '../stack-updates/service.js';
 import { appStatuses } from './status.js';
 
 /**
- * The twelve MCP tools (SHP-REQ-041, SHP-REQ-144, SHP-REQ-179, SHP-REQ-184, SHP-REQ-193, SHP-REQ-199, SHP-REQ-200). Every tool is a
+ * The fifteen MCP tools (SHP-REQ-041, SHP-REQ-144, SHP-REQ-179, SHP-REQ-184, SHP-REQ-193, SHP-REQ-199, SHP-REQ-200,
+ * SHP-REQ-201, SHP-REQ-204, SHP-REQ-205). Every tool is a
  * thin shell over the deploy, build, host, action or logs service: no deploy or build logic lives here, and no tool accepts a command,
  * a path or an image reference (SHP-REQ-053) — only app names, 40-hex SHAs, deploy/build IDs and who
  * is asking. `shipyard_host` takes nothing at all and is not scoped to an app: the host inventory
@@ -49,7 +62,12 @@ import { appStatuses } from './status.js';
  * `shipyard_stack_update_status` reads it; the update is held for a deployer's approval in the console
  * when the stack's policy is `tokens` (the default) or `always` (SHP-ADR-010, SHP-REQ-199) and is kept
  * with its requester, digests before and after, and outcome (SHP-REQ-200).
- * Freeze, schedule, restore and approval are console-only (SHP-D-072).
+ * `shipyard_volume_backup` queues a backup of one volume of a Deployed app or an Operated stack the token is
+ * scoped to, `shipyard_prune` lists (a dry run, the default) or removes dangling and old unused images and
+ * old build cache, and `shipyard_maintenance_status` reads either job (SHP-ADR-012, SHP-REQ-201, SHP-REQ-205).
+ * There is no volume restore or delete tool and no argument that reaches one: both are an admin's act in the
+ * console and the server refuses them for any API token (SHP-REQ-204). Volumes are never pruned.
+ * Freeze, schedule, restore, volume delete and approval are console-only (SHP-D-072).
  */
 
 export interface McpOptions {
@@ -68,6 +86,43 @@ export const DEFAULT_DRY_RUN_WAIT_SECONDS = 85;
 export const ACTION_WAIT_MS = 60_000;
 /** How long `shipyard_logs` waits for the agent to send the tail. */
 export const LOGS_TAIL_WAIT_MS = 30_000;
+/** How long `shipyard_volume_backup` waits for the agent's result before it answers "still running". */
+export const BACKUP_WAIT_MS = 60_000;
+
+const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const;
+
+/** A size for a person: 4096 -> "4.0 KiB". */
+function formatBytes(bytes: number): string {
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return unit === 0 ? `${String(bytes)} B` : `${value.toFixed(1)} ${BYTE_UNITS[unit] ?? 'B'}`;
+}
+
+const PRUNE_REASON_LABEL: Record<PruneItem['reason'], string> = {
+  dangling: 'dangling images',
+  unused: 'unused images past the age limit',
+  'old-cache': 'old build cache',
+};
+
+/** The prune items grouped by why they would go, with the bytes each group would free (SHP-REQ-205). */
+function pruneGroups(items: readonly PruneItem[]): { reason: PruneItem['reason']; what: string; count: number; sizeBytes: number; items: PruneItem[] }[] {
+  const order: PruneItem['reason'][] = ['dangling', 'unused', 'old-cache'];
+  return order
+    .map((reason) => {
+      const mine = items.filter((i) => i.reason === reason);
+      return { reason, what: PRUNE_REASON_LABEL[reason], count: mine.length, sizeBytes: mine.reduce((sum, i) => sum + i.sizeBytes, 0), items: mine };
+    })
+    .filter((g) => g.count > 0);
+}
+
+/** A job without the prune list, which the tool reports once, grouped, beside it. */
+function withoutPrune(status: MaintenanceStatus): Omit<MaintenanceStatus, 'prune'> {
+  return Object.fromEntries(Object.entries(status).filter(([name]) => name !== 'prune')) as Omit<MaintenanceStatus, 'prune'>;
+}
 
 /**
  * `shipyard_host` sends only the newest samples per container. The full series (up to 500 per
@@ -133,6 +188,8 @@ function stackOutOfScope(caller: DeployCaller, stack: string): Refusal | null {
 }
 
 const NO_SUCH_STACK_UPDATE = refusal('not_found', 'No such stack update.', 'Use the update id that shipyard_stack_update returned.');
+
+const NO_SUCH_MAINTENANCE = refusal('not_found', 'No such maintenance job.', 'Use the job id that shipyard_volume_backup or shipyard_prune returned.');
 
 const NO_SUCH_DEPLOY = refusal('not_found', 'No such deploy.', 'Use the deployId that shipyard_deploy or shipyard_rollback returned.');
 
@@ -501,6 +558,129 @@ export function buildMcpServer(
       const seconds = Math.min(wait ?? 0, MAX_WAIT_SECONDS);
       const status = seconds === 0 ? first : await waitForStackUpdate(deps, updateId, seconds * 1000, signal);
       return status === null ? refused(NO_SUCH_STACK_UPDATE) : ok(status);
+    },
+  );
+
+  server.registerTool(
+    'shipyard_volume_backup',
+    {
+      title: 'Back up a volume',
+      description:
+        'Queues a backup of the named Docker `volume` and waits up to 60 s for the agent to finish. The volume ' +
+        'must belong to a Deployed app or an Operated stack (an Observed volume, or an orphan, is refused with ' +
+        'volume_not_owned), and the token must be scoped to that app or stack. Returns { job, message }: the ' +
+        'job\'s id and state (queued, running, succeeded, failed or refused) and, once it has succeeded, the ' +
+        'archive (time, size). If the backup is still running the message says so with the job id; follow it with ' +
+        'shipyard_maintenance_status and do not repeat the call. The agent archives the volume read-only into its ' +
+        'own ledger; the owner is stopped for the archive only if its manifest says so. Restoring or deleting a ' +
+        'volume is not available here: both are console-only. `requester` (repo, branch, label) is required and recorded.',
+      inputSchema: toolInput(ShipyardVolumeBackupInput),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ volume, requester }) => {
+      // The service resolves the volume's owner and checks the token's scope against it (SHP-REQ-201); its
+      // refusal is passed through verbatim.
+      const queued = await requestVolumeBackup(deps, caller, volume, { requester });
+      if ('code' in queued) return refused(queued);
+      const settled = (await waitForMaintenance(deps, queued.id, BACKUP_WAIT_MS, signal)) ?? (await getMaintenance(deps.db, queued.id)) ?? queued;
+      if (settled.refusal !== null && settled.state === 'refused') return refused(settled.refusal);
+      let message: string;
+      if (settled.state === 'succeeded' && settled.archive !== null) {
+        message = `Backed up ${volume}: archive taken ${settled.archive.createdAt}, ${formatBytes(settled.archive.sizeBytes)}.`;
+      } else if (isMaintenanceTerminal(settled.state)) {
+        message = `The backup ${settled.state}${settled.refusal === null ? '' : `: ${settled.refusal.message}`}. Job ${settled.id}.`;
+      } else {
+        message = `Still running after 60 s (job ${settled.id}). Follow it with shipyard_maintenance_status; do not repeat the call.`;
+      }
+      return ok({ job: settled, message });
+    },
+  );
+
+  server.registerTool(
+    'shipyard_prune',
+    {
+      title: 'Prune images and build cache',
+      description:
+        'Frees disk by removing dangling images, unused images older than the age limit, and old build cache, ' +
+        'never anything a container uses and never a volume (volumes are not pruned). `dryRun` is true by ' +
+        'default: it lists what would go, waits up to 85 s, and returns the items grouped by reason with their ' +
+        'sizes and the reclaimable total, plus the job id. To remove exactly that list, call again with ' +
+        '`dryRun: false` and `fromDryRunId` set to that job id; a prune without a dry run from the last hour is ' +
+        'refused. A real prune returns `reclaimedBytes`. Removing images is destructive even when they are unused. ' +
+        'Any token may prune: image IDs, references and sizes are host-wide information shipyard_host already ' +
+        'gives any token. If the job is still running after the wait, follow it with shipyard_maintenance_status. ' +
+        '`requester` (repo, branch, label) is required and recorded.',
+      inputSchema: toolInput(ShipyardPruneInput),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ dryRun, fromDryRunId, requester }) => {
+      // The schema package's refine is lost with `toolInput`, so it is re-checked here.
+      if (!dryRun && fromDryRunId === undefined) {
+        return refused(
+          refusal('invalid_request', 'A prune that is not a dry run needs fromDryRunId.', 'Run shipyard_prune with dryRun true first, then pass its job id as fromDryRunId.'),
+        );
+      }
+      const queued = await requestPrune(
+        deps,
+        caller,
+        dryRun ? { dryRun: true } : { dryRun: false, ...(fromDryRunId === undefined ? {} : { fromDryRunId }) },
+        { requester },
+      );
+      if ('code' in queued) return refused(queued);
+      const waitMs = (dryRun ? dryRunWait : MAX_WAIT_SECONDS) * 1000;
+      const settled = (await waitForMaintenance(deps, queued.id, waitMs, signal)) ?? (await getMaintenance(deps.db, queued.id)) ?? queued;
+      if (settled.refusal !== null && settled.state === 'refused') return refused(settled.refusal);
+      const job = withoutPrune(settled);
+      if (settled.state === 'succeeded' && settled.prune !== null) {
+        const groups = pruneGroups(settled.prune.items);
+        if (dryRun) {
+          return ok({
+            job,
+            groups,
+            reclaimableBytes: settled.prune.reclaimableBytes,
+            message:
+              settled.prune.items.length === 0
+                ? 'Nothing to prune.'
+                : `Would remove ${String(settled.prune.items.length)} items, freeing ${formatBytes(settled.prune.reclaimableBytes)}. ` +
+                  `To remove exactly this list, call shipyard_prune again with dryRun: false and fromDryRunId: ${settled.id}. Volumes are never pruned.`,
+          });
+        }
+        const reclaimed = settled.prune.reclaimedBytes ?? 0;
+        return ok({ job, groups, reclaimedBytes: reclaimed, message: `Pruned ${String(settled.prune.items.length)} items, reclaimed ${formatBytes(reclaimed)}.` });
+      }
+      const message = isMaintenanceTerminal(settled.state)
+        ? `The prune ${settled.state}${settled.refusal === null ? '' : `: ${settled.refusal.message}`}. Job ${settled.id}.`
+        : `Still running after the wait (job ${settled.id}). Follow it with shipyard_maintenance_status.`;
+      return ok({ job, message });
+    },
+  );
+
+  server.registerTool(
+    'shipyard_maintenance_status',
+    {
+      title: 'Backup and prune status',
+      description:
+        "Returns a volume backup's or a prune's status by `jobId`: state (queued, running, succeeded, failed or " +
+        'refused), current step, requester, the archive a backup took, the items a prune found or removed with ' +
+        '`reclaimableBytes` and `reclaimedBytes`, and any refusal verbatim. With `wait` (seconds, at most 90) it ' +
+        'returns once the job has finished or the wait runs out, whichever is first; a finished job returns at ' +
+        'once. Use it when shipyard_volume_backup or shipyard_prune answers that the job is still running. A ' +
+        'backup is readable by a token scoped to the volume\'s app or stack; any token may read a prune. Changes nothing.',
+      // Mirrors shipyard_stack_update_status: an id and an optional wait (the schema package owns no input for it).
+      inputSchema: z.strictObject({ jobId: z.uuid(), wait: z.int().min(0).max(MAX_WAIT_SECONDS).optional() }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ jobId, wait }) => {
+      if (!UUID_RE.test(jobId)) return refused(NO_SUCH_MAINTENANCE);
+      // Scope is checked before waiting, so an out-of-scope caller cannot hold a long poll open.
+      const first = await getMaintenance(deps.db, jobId);
+      if (first === null) return refused(NO_SUCH_MAINTENANCE);
+      if (!maintenanceInScope(caller, first)) {
+        return refused(refusal('forbidden', "This token is not scoped to that job's app or stack.", 'Use a token issued for the volume\'s app or stack.'));
+      }
+      const seconds = Math.min(wait ?? 0, MAX_WAIT_SECONDS);
+      const status = seconds === 0 ? first : await waitForMaintenance(deps, jobId, seconds * 1000, signal);
+      return status === null ? refused(NO_SUCH_MAINTENANCE) : ok(status);
     },
   );
 

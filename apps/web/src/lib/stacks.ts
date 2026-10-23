@@ -359,6 +359,11 @@ export interface StacksData {
   byName: ReadonlyMap<string, StackView>;
   /** The first read has answered (or failed): a sheet named in the address can say "not found" now. */
   loaded: boolean;
+  /**
+   * A read has succeeded at least once. Volume ownership waits for this, not `loaded`: with no
+   * stack list, a stack's unmounted volume would look orphaned and be offered Delete (SHP-ADR-012).
+   */
+  answered: boolean;
   refresh: () => void;
 }
 
@@ -370,6 +375,7 @@ export interface StacksData {
 export function useStacks(): StacksData {
   const [byName, setByName] = useState<ReadonlyMap<string, StackView>>(() => new Map());
   const [loaded, setLoaded] = useState(false);
+  const [answered, setAnswered] = useState(false);
   const generation = useRef(0);
 
   const load = useCallback(async () => {
@@ -379,6 +385,7 @@ export function useStacks(): StacksData {
       if (gen !== generation.current) return;
       setByName(new Map(list.map((s) => [s.name, s])));
       setLoaded(true);
+      setAnswered(true);
     } catch {
       // Keep what is on screen.
       if (gen === generation.current) setLoaded(true);
@@ -400,7 +407,7 @@ export function useStacks(): StacksData {
     void load();
   }, [load]);
 
-  return { byName, loaded, refresh };
+  return { byName, loaded, answered, refresh };
 }
 
 // ── Running one update or rollback ───────────────────────────────────────

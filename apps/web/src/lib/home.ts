@@ -1,6 +1,7 @@
 import type { SystemStatus } from '@shipyard/schema';
 import { createContext, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { request, RefusalError } from './api';
+import { maintenance, type MaintenanceNeeds } from './maintenance';
 import { stacks as stackApi, type StackNeeds, type StackView } from './stacks';
 import { system } from './system';
 
@@ -61,6 +62,8 @@ export interface AppRow {
   approvalPolicy: string | null;
   /** A freeze holds now; absent from a server older than SHP-T-12.2. */
   frozen?: boolean;
+  /** The compose project its manifest names (SHP-T-17.6): what owns a volume; absent from an older server. */
+  composeProject?: string | null;
   active: { targetId: string; deployId: string; state: string; holder: string; currentStep: string | null } | null;
 }
 
@@ -114,6 +117,11 @@ export interface AppsSnapshot {
   stackNeeds: StackNeeds | null;
   /** The adopted stacks, read only while a stack update waits for approval: its tags come from here. */
   stacks: StackView[] | null;
+  /**
+   * Failed backups and low disk (SHP-T-17.6, SHP-ADR-012): `GET /api/maintenance/needs-you`, or null
+   * from a server without volume maintenance.
+   */
+  maintenanceNeeds: MaintenanceNeeds | null;
   error: RefusalError | null;
   /** When the last read that succeeded finished, in epoch milliseconds. */
   loadedAt: number | null;
@@ -140,6 +148,7 @@ const INITIAL: AppsSnapshot = {
   system: null,
   stackNeeds: null,
   stacks: null,
+  maintenanceNeeds: null,
   error: null,
   loadedAt: null,
 };
@@ -182,7 +191,7 @@ export function createAppsStore(): AppsStore {
     const readSystem = wantsSystem();
     inFlight = { readSystem };
     try {
-      const [appRows, approvalRows, agentRows, host, stackNeeds] = await Promise.all([
+      const [appRows, approvalRows, agentRows, host, stackNeeds, maintenanceNeeds] = await Promise.all([
         request<{ apps: AppRow[] }>('/api/apps').then((r) => r.apps),
         request<PendingApproval[]>('/api/approvals'),
         // Only the empty states read the agents; a failed read must not hide the apps.
@@ -190,6 +199,8 @@ export function createAppsStore(): AppsStore {
         readSystem ? system.status().catch(() => null) : Promise.resolve(null),
         // A server without stack updates has no such route: nothing of a stack needs anyone then.
         stackApi.needsYou().catch(() => null),
+        // Likewise for volume maintenance: nothing of a volume or the disk needs anyone then.
+        maintenance.needsYou().catch(() => null),
       ]);
       const stackRows = stackNeeds !== null && stackNeeds.approvals.length > 0 ? await stackApi.list().catch(() => null) : null;
       if (gen !== generation) return;
@@ -205,7 +216,7 @@ export function createAppsStore(): AppsStore {
       if (gen !== generation) return;
 
       lastReadSystem = readSystem;
-      emit({ status: 'ready', apps, approvals: approvalRows, agents: agentRows, system: host, stackNeeds, stacks: stackRows, error: null, loadedAt: Date.now() });
+      emit({ status: 'ready', apps, approvals: approvalRows, agents: agentRows, system: host, stackNeeds, stacks: stackRows, maintenanceNeeds, error: null, loadedAt: Date.now() });
     } catch (err) {
       if (gen !== generation) return;
       // The last answer stays, so the badge does not invent or drop a warning on one failed read.

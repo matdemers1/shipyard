@@ -1,9 +1,15 @@
 import { EmptyState, Page, PageHeader, Skeleton, Stack } from '@d3cloud/ui';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useMe } from '../lib/auth';
 import { ageWords, chipFromParams, paramsForChip, useHost, type HostChip } from '../lib/host';
+import { useOwnerApps, volumeOwners, volumeRows, type MaintenanceStatus } from '../lib/maintenance';
 import { isTerminalStackUpdate, useStacks, type StackPhase, type StackView } from '../lib/stacks';
+import { HOST_FOOTNOTE } from '../lib/words';
 import { ContainerSheet } from './host/ContainerSheet';
+import { DeleteSheet } from './host/DeleteSheet';
+import { PruneSheet } from './host/PruneSheet';
+import { RestoreSheet } from './host/RestoreSheet';
 import { StackSheet } from './host/StackSheet';
 import { AgentStatus, HostView } from './host/HostView';
 
@@ -20,10 +26,11 @@ import { AgentStatus, HostView } from './host/HostView';
  *
  * An adopted stack updated by digest (SHP-T-16.6, SHP-ADR-010) opens its sheet the same way:
  * `?stack=<name>` for its history (SHP-REQ-200), `&update=1` for the update sheet (SHP-REQ-194).
+ *
+ * Volumes and disk (SHP-T-17.6, SHP-ADR-012): `?volume=<name>` opens a volume's archives,
+ * `&restore=<archiveId>` the restore sheet (SHP-REQ-202), `&delete=1` an orphan's delete sheet
+ * (SHP-REQ-203), and `?prune=1` the prune sheet from the Disk card (SHP-REQ-205); Back closes each.
  */
-
-const FOOTNOTE =
-  'Read-only. Deployed is a D3 app Shipyard deploys; Operated is a third-party stack adopted with a manifest; Observed is everything else Docker runs.';
 
 export function Host() {
   const [params, setParams] = useSearchParams();
@@ -36,6 +43,17 @@ export function Host() {
   const navigate = useNavigate();
   const location = useLocation();
   const containerId = params.get('container');
+  const me = useMe();
+  const role = me?.role;
+  const volumeName = params.get('volume');
+  const restoreId = params.get('restore');
+  const deleting = params.get('delete') === '1';
+  const pruning = params.get('prune') === '1';
+  const [volumeReloads, setVolumeReloads] = useState(0);
+  const [pruneResult, setPruneResult] = useState<MaintenanceStatus | null>(null);
+  const bumpVolumes = useCallback(() => {
+    setVolumeReloads((n) => n + 1);
+  }, []);
   const stackName = params.get('stack');
   const stackMode = params.get('update') === '1' ? 'update' : 'history';
   const stackData = useStacks();
@@ -93,8 +111,80 @@ export function Host() {
     next.delete('container');
     next.delete('stack');
     next.delete('update');
+    next.delete('restore');
+    next.delete('delete');
+    next.delete('prune');
     setParams(next, { replace: true });
   };
+  /** Opens a sheet as its own history entry, so Back closes it. */
+  const openSheet = useCallback(
+    (change: (next: URLSearchParams) => void) => {
+      const next = new URLSearchParams(params);
+      next.delete('container');
+      next.delete('stack');
+      next.delete('update');
+      change(next);
+      void navigate({ pathname: '/host', search: `?${next.toString()}` }, { state: { sheet: true } });
+    },
+    [params, navigate],
+  );
+  const onToggleArchives = useCallback(
+    (volume: string | null) => {
+      const next = new URLSearchParams(params);
+      if (volume === null) next.delete('volume');
+      else next.set('volume', volume);
+      next.delete('restore');
+      next.delete('delete');
+      setParams(next, { replace: true });
+    },
+    [params, setParams],
+  );
+  const onRestore = useCallback(
+    (volume: string, archiveId: string) => {
+      openSheet((next) => {
+        next.set('volume', volume);
+        next.set('restore', archiveId);
+        next.delete('delete');
+      });
+    },
+    [openSheet],
+  );
+  const onDelete = useCallback(
+    (volume: string) => {
+      openSheet((next) => {
+        next.set('volume', volume);
+        next.set('delete', '1');
+        next.delete('restore');
+      });
+    },
+    [openSheet],
+  );
+  const onPrune = useCallback(() => {
+    openSheet((next) => {
+      next.set('prune', '1');
+    });
+  }, [openSheet]);
+  // Who owns a volume: the unretired apps and the adopted stacks, once both lists have answered.
+  const ownerApps = useOwnerApps();
+  const owners = useMemo(
+    () => (ownerApps === null || !stackData.answered ? null : volumeOwners(ownerApps, [...stackData.byName.values()])),
+    [ownerApps, stackData.answered, stackData.byName],
+  );
+  const volumeRow = useMemo(() => {
+    if (volumeName === null || owners === null) return null;
+    for (const h of data.hosts) {
+      const row = volumeRows(h.inventory, owners).find((r) => r.volume.name === volumeName);
+      if (row !== undefined) return row;
+    }
+    return null;
+  }, [volumeName, data.hosts, owners]);
+  // Needs you links to the Disk card: once the snapshot is on screen, bring it into view.
+  const ready = data.status === 'ready';
+  useEffect(() => {
+    if (!ready || location.hash !== '#disk') return;
+    // jsdom has no scrollIntoView; a browser always does.
+    (document.getElementById('disk') as Partial<HTMLElement> | null)?.scrollIntoView?.({ block: 'center' });
+  }, [ready, location.hash]);
   // Recreate gives a container a new ID: the sheet follows it by name once the next report lands.
   const lastName = useRef<string | null>(null);
   const sheetContainer = useMemo(() => {
@@ -147,6 +237,15 @@ export function Host() {
             stacks={stacksShown}
             stackHref={stackHref}
             busyStacks={busyStacks}
+            role={role}
+            openVolume={volumeName}
+            onToggleArchives={onToggleArchives}
+            onRestore={onRestore}
+            onDelete={onDelete}
+            onPrune={onPrune}
+            pruneResult={pruneResult}
+            volumeReloads={volumeReloads}
+            volumeOwners={owners}
           />
         ) : (
           data.hosts.map((snapshot) => (
@@ -166,13 +265,22 @@ export function Host() {
                   stacks={stacksShown}
                   stackHref={stackHref}
                   busyStacks={busyStacks}
+                  role={role}
+                  openVolume={volumeName}
+                  onToggleArchives={onToggleArchives}
+                  onRestore={onRestore}
+                  onDelete={onDelete}
+                  onPrune={onPrune}
+                  pruneResult={pruneResult}
+                  volumeReloads={volumeReloads}
+                  volumeOwners={owners}
                 />
               </Stack>
             </section>
           ))
         )}
 
-        <p className="shp-host-foot">{FOOTNOTE}</p>
+        <p className="shp-host-foot">{HOST_FOOTNOTE}</p>
       </Stack>
       {containerId !== null && data.status === 'ready' ? <ContainerSheet container={sheetContainer} open onClose={closeSheet} /> : null}
       {stackName !== null && containerId === null && data.status === 'ready' && stackData.loaded ? (
@@ -188,6 +296,13 @@ export function Host() {
           onPhase={onPhase}
         />
       ) : null}
+      {volumeName !== null && restoreId !== null && !deleting && data.status === 'ready' && owners !== null ? (
+        <RestoreSheet key={`${volumeName}:${restoreId}`} volume={volumeName} row={volumeRow} archiveId={restoreId} role={role} onClose={closeSheet} onChanged={bumpVolumes} />
+      ) : null}
+      {volumeName !== null && deleting && data.status === 'ready' && owners !== null ? (
+        <DeleteSheet key={volumeName} volume={volumeName} row={volumeRow} role={role} onClose={closeSheet} onChanged={bumpVolumes} />
+      ) : null}
+      {pruning && data.status === 'ready' ? <PruneSheet role={role} onClose={closeSheet} onPruned={setPruneResult} /> : null}
     </Page>
   );
 }

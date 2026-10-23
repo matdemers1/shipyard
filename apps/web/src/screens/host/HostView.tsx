@@ -12,8 +12,12 @@ import {
   matchesChip,
   type HostChip,
 } from '../../lib/host';
+import type { Role } from '../../lib/api';
+import { canBackUpOrPrune, type MaintenanceStatus, type VolumeOwnerRef } from '../../lib/maintenance';
 import type { StackView } from '../../lib/stacks';
+import { VOLUME_WORDS } from '../../lib/words';
 import { ContainerGroups, type ContainerHref, type StackHref } from './ContainerGroups';
+import { MaintenanceOutcome } from './VolumeParts';
 import { Volumes } from './Volumes';
 
 /**
@@ -37,6 +41,21 @@ export interface HostViewProps {
   stackHref?: StackHref;
   /** Stacks whose open sheet is asking for an update right now. */
   busyStacks?: ReadonlySet<string>;
+  /** The reader's role: what the volume rows and the Disk card offer (SHP-T-17.6). */
+  role?: Role | undefined;
+  /** The volume whose archives are open (`?volume=`). */
+  openVolume?: string | null;
+  onToggleArchives?: (volume: string | null) => void;
+  onRestore?: (volume: string, archiveId: string) => void;
+  onDelete?: (volume: string) => void;
+  /** Opens the prune sheet from the Disk card. */
+  onPrune?: () => void;
+  /** The last prune this session ran, shown on the Disk card. */
+  pruneResult?: MaintenanceStatus | null;
+  /** Bumped after a restore or delete: the volume rows read their archives again. */
+  volumeReloads?: number;
+  /** The unretired apps and adopted stacks that own volumes; null while not yet known. */
+  volumeOwners?: readonly VolumeOwnerRef[] | null;
 }
 
 function plural(n: number, one: string, other: string): string {
@@ -53,7 +72,26 @@ export function AgentStatus({ snapshot, now }: { snapshot: HostSnapshot; now: nu
   );
 }
 
-export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor, stacks, stackHref, busyStacks }: HostViewProps) {
+export function HostView({
+  snapshot,
+  chip,
+  onChip,
+  now,
+  headingLevel,
+  hrefFor,
+  stacks,
+  stackHref,
+  busyStacks,
+  role,
+  openVolume = null,
+  onToggleArchives,
+  onRestore,
+  onDelete,
+  onPrune,
+  pruneResult = null,
+  volumeReloads = 0,
+  volumeOwners = null,
+}: HostViewProps) {
   const inventory = snapshot.inventory;
   const totals = useMemo(() => hostTotals(inventory), [inventory]);
   const counts = useMemo(() => chipCounts(inventory.containers), [inventory]);
@@ -96,9 +134,19 @@ export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor, s
           footnote={`${bytesWords(images.bytes)} · ${String(images.unusedCount)} not used by any container`}
         />
         <Stat
+          id="disk"
           label="Disk"
           value={bytesWords(disk.freeBytes)}
           unit="free"
+          {...(onPrune !== undefined && canBackUpOrPrune(role)
+            ? {
+                status: (
+                  <Button type="button" size="sm" variant="secondary" className="shp-host-prune" onClick={onPrune}>
+                    {VOLUME_WORDS.prune}
+                  </Button>
+                ),
+              }
+            : {})}
           footnote={
             <>
               of {bytesWords(disk.totalBytes)} on {disk.path}
@@ -107,6 +155,7 @@ export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor, s
           }
         />
       </StatGroup>
+      {pruneResult === null ? null : <MaintenanceOutcome status={pruneResult} dynamic={false} />}
 
       <div className="shp-host-chips" role="group" aria-label="Filter containers">
         {HOST_CHIPS.map((c) => (
@@ -156,7 +205,17 @@ export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor, s
           </span>
         }
       >
-        <Volumes volumes={inventory.volumes} />
+        <p className="shp-host-muted shp-host-volhint">{VOLUME_WORDS.hint}</p>
+        <Volumes
+          inventory={inventory}
+          owners={volumeOwners}
+          role={role}
+          openVolume={openVolume}
+          reloads={volumeReloads}
+          {...(onToggleArchives === undefined ? {} : { onToggleArchives })}
+          {...(onRestore === undefined ? {} : { onRestore })}
+          {...(onDelete === undefined ? {} : { onDelete })}
+        />
       </Section>
 
       <Section surface="plain" headingLevel={headingLevel} title="Images">

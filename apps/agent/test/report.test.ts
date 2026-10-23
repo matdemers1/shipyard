@@ -272,6 +272,56 @@ describe('buildReport releases (SHP-REQ-111)', () => {
   });
 });
 
+describe('buildReport volume archives (SHP-REQ-201, SHP-ADR-012)', () => {
+  it("carries every live archive from the ledger, never its path, and none from a ledger that doesn't verify", async () => {
+    const fs = ledgerFs();
+    const ledger = await Ledger.open(fs, `${ROOT}/agent/ledger.jsonl`);
+    const archive = (archiveId: string) => ({
+      kind: 'volume-archive' as const,
+      archiveId,
+      volume: 'web_data',
+      owner: { kind: 'app' as const, name: 'web' },
+      createdAt: '2026-10-22T00:00:00.000Z',
+      sizeBytes: 12,
+      sha256: 'c'.repeat(64),
+      quiesced: true,
+      file: '/data/shipyard/agent/backups/volumes/web_data/20261022T000000Z.tar.zst',
+    });
+    const A1 = '11111111-1111-4111-8111-111111111111';
+    const A2 = '22222222-2222-4222-8222-222222222222';
+    await ledger.append(archive(A1));
+    await ledger.append(archive(A2));
+    await ledger.append({ kind: 'volume-archive-removed', archiveId: A1, at: '2026-10-22T00:00:01.000Z' });
+    await ledger.append(release(1));
+
+    const report = await buildReport(
+      { fs: fakeFs(new Map([[`${ROOT}/apps/web.yml`, manifestYaml('web')]])), docker: fakeDocker({}), engineApiVersion: () => Promise.resolve('1.51'), ledger },
+      ROOT,
+      { agentVersion: '0', patExpiresAt: null },
+    );
+    expect(AgentReport.parse(report)).toEqual(report);
+    expect(report.volumeArchives).toEqual([
+      { archiveId: A2, volume: 'web_data', owner: { kind: 'app', name: 'web' }, createdAt: '2026-10-22T00:00:00.000Z', sizeBytes: 12, sha256: 'c'.repeat(64), quiesced: true },
+    ]);
+    expect(JSON.stringify(report)).not.toContain('/backups/volumes/');
+    // The archive is not a release of anything.
+    expect(report.releases?.map((r) => r.deployId)).toEqual([release(1).deployId]);
+
+    const broken = await buildReport(
+      {
+        fs: fakeFs(new Map()),
+        docker: fakeDocker({}),
+        engineApiVersion: () => Promise.resolve('1.51'),
+        ledger: { refresh: () => Promise.reject(new Error('ledger tampered')), recent: () => [], volumeArchives: () => [archive(A2)] },
+        log: { info: vi.fn(), warn: vi.fn() },
+      },
+      ROOT,
+      { agentVersion: '0', patExpiresAt: null },
+    );
+    expect(broken.volumeArchives).toBeUndefined();
+  });
+});
+
 describe('startReporting', () => {
   afterEach(() => {
     vi.useRealTimers();

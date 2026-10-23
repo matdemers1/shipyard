@@ -174,6 +174,22 @@ describe('GET /api/apps', () => {
     });
   });
 
+  it("names each app's compose project, from its manifest, for the console's volume owners (SHP-T-17.6)", async () => {
+    const { cookie } = await signIn();
+    // A manifest stored before it validated names no project: the console then claims nothing by it.
+    await db.app.update({ where: { name: 'billing' }, data: { manifestYaml: 'not: [a manifest' } });
+    const res = await request(app).get('/api/apps').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    const apps = (res.body as { apps: (Summary & { composeProject: string | null })[] }).apps;
+    expect(apps.map((a) => [a.name, a.composeProject])).toEqual([
+      ['api', 'api'],
+      ['billing', null],
+      ['web', 'web'],
+    ]);
+    // The manifest itself stays on GET /api/apps/:app; the list carries only the project.
+    expect(apps[0]).not.toHaveProperty('manifestYaml');
+  });
+
   it('shows a token only the apps it is scoped to', async () => {
     const { userId } = await signIn();
     const token = await tokenFor(userId, ['web', 'billing']);

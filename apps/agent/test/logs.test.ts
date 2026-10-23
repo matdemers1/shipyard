@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LogsChunk, type LogsJob, type Manifest } from '@shipyard/schema';
-import type { ContainerLogLine, ContainerLogsOptions, DockerPort, FsPort, LoadedManifests, LoadedStacks } from '@shipyard/sequence';
+import { DockerLogDecoder, type ContainerLogLine, type ContainerLogsOptions, type DockerPort, type FsPort, type LoadedManifests, type LoadedStacks } from '@shipyard/sequence';
 import type { AgentClient } from '../src/client.js';
 import { LOGS_MAX_BYTES, createLogsRunner, logsChunkPath, type LogsRunnerOptions, type LogsTimers } from '../src/logs.js';
 
@@ -55,7 +55,14 @@ function apps(): LoadedManifests {
 
 type LogSource = (options: ContainerLogsOptions) => AsyncIterable<ContainerLogLine>;
 
-function fakeDocker(source: LogSource, opts: { project?: string | null; missing?: boolean } = {}): DockerPort & { logCalls: ContainerLogsOptions[] } {
+interface DockerOpts {
+  project?: string | null;
+  missing?: boolean;
+  /** The container's Env values; default a secret, `production` and `short`. */
+  envValues?: string[];
+}
+
+function fakeDocker(source: LogSource, opts: DockerOpts = {}): DockerPort & { logCalls: ContainerLogsOptions[] } {
   const logCalls: ContainerLogsOptions[] = [];
   return {
     logCalls,
@@ -66,7 +73,11 @@ function fakeDocker(source: LogSource, opts: { project?: string | null; missing?
     images: () => Promise.resolve([]),
     removeImage: () => Promise.resolve(),
     inspectEnv: () =>
-      Promise.resolve(opts.missing === true ? null : { envValues: [ENV_SECRET, 'production', 'short'], composeProject: opts.project === undefined ? 'mail' : opts.project }),
+      Promise.resolve(
+        opts.missing === true
+          ? null
+          : { envValues: opts.envValues ?? [ENV_SECRET, 'production', 'short'], composeProject: opts.project === undefined ? 'mail' : opts.project },
+      ),
     containerLogs: (_id, options) => {
       logCalls.push(options);
       return source(options);
@@ -100,7 +111,7 @@ function job(extra: Partial<LogsJob> = {}): LogsJob {
   return { logsId: LOGS_ID, containerId: CONTAINER, tail: 200, follow: false, followSeconds: 0, ...extra };
 }
 
-function setup(source: LogSource, over: Partial<LogsRunnerOptions> & { dockerOpts?: { project?: string | null; missing?: boolean } } = {}) {
+function setup(source: LogSource, over: Partial<LogsRunnerOptions> & { dockerOpts?: DockerOpts } = {}) {
   const logged: unknown[] = [];
   const record = (obj: object, msg?: string): void => {
     logged.push({ obj, msg });
@@ -139,6 +150,70 @@ describe('the logs runner (SHP-REQ-189, SHP-REQ-190)', () => {
     expect(own).not.toContain('connecting with');
     expect(own).not.toContain(FILE_SECRET);
     expect(own).not.toContain(ENV_SECRET);
+  });
+
+  it('redacts a multi-line Env value (a PEM key) line by line: none of its lines reaches the server', async () => {
+    const body = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj', 'MZlD2sOq5dwvY5n0kWb4fGAd0k3JqvPz3eL9xq2n1R3t8yV5hOmXk7aB6cDeFgHi'];
+    const pem = ['-----BEGIN PRIVATE KEY-----', ...body, '-----END PRIVATE KEY-----'].join('\n');
+    // An app that prints its key at start: the decoder hands it over one line at a time.
+    const { runner, client } = setup(() => lines(['loading key:', ...pem.split('\n'), 'ready']), { dockerOpts: { envValues: [pem] } });
+    await runner.run(job());
+    const wire = JSON.stringify(client.chunks());
+    for (const l of body) expect(wire).not.toContain(l);
+    expect(client.chunks().flatMap((c) => c.lines.map((l) => l.text))).toEqual(['loading key:', '[redacted]', '[redacted]', '[redacted]', '[redacted]', 'ready']);
+  });
+
+  it('redacts a secret straddling the old 64 KiB line cut: the decoder keeps the line whole', async () => {
+    const frame = (text: string): Buffer => {
+      const payload = Buffer.from(text, 'utf8');
+      const header = Buffer.alloc(8);
+      header.writeUInt8(1, 0);
+      header.writeUInt32BE(payload.length, 4);
+      return Buffer.concat([header, payload]);
+    };
+    const bytes = frame(`2026-10-22T12:00:00Z ${'x'.repeat(64 * 1024 - 5)}${ENV_SECRET} end\n`);
+    const source: LogSource = () =>
+      (async function* () {
+        const decoder = new DockerLogDecoder(false);
+        // As a socket delivers it: in small chunks.
+        for (let i = 0; i < bytes.length; i += 4096) {
+          await Promise.resolve();
+          yield* decoder.push(bytes.subarray(i, i + 4096));
+        }
+        yield* decoder.end();
+      })();
+    const { runner, client } = setup(source, { dockerOpts: { envValues: [ENV_SECRET] } });
+    await runner.run(job());
+    const sent = client.chunks().flatMap((c) => c.lines);
+    expect(sent).toHaveLength(1);
+    expect(JSON.stringify(sent)).not.toContain(ENV_SECRET.slice(0, 5));
+  });
+
+  it('carries the end of a piece the decoder had to cut into the next, so a secret across the cut is redacted whole', async () => {
+    const cutAt = 10;
+    const { runner, client } = setup(
+      () =>
+        (async function* () {
+          await Promise.resolve();
+          yield { stream: 'stdout' as const, at: '2026-10-22T12:00:00.000Z', text: `${'p'.repeat(100)} ${ENV_SECRET.slice(0, cutAt)}`, continues: true };
+          yield { stream: 'stderr' as const, at: null, text: 'interleaved' };
+          yield { stream: 'stdout' as const, at: null, text: `${ENV_SECRET.slice(cutAt)} after` };
+        })(),
+      { dockerOpts: { envValues: [ENV_SECRET] } },
+    );
+    await runner.run(job());
+    const sent = client.chunks().flatMap((c) => c.lines);
+    // The piece is sent without its last (longest secret − 1) characters, which open the next.
+    const keep = ENV_SECRET.length - 1;
+    const piece = `${'p'.repeat(100)} `;
+    expect(sent.map((l) => `${l.stream}:${l.text}`)).toEqual([
+      `stdout:${piece.slice(0, piece.length + cutAt - keep)}`,
+      'stderr:interleaved',
+      `stdout:${piece.slice(piece.length + cutAt - keep)}[redacted] after`,
+    ]);
+    const wire = JSON.stringify(sent);
+    expect(wire).not.toContain(ENV_SECRET.slice(0, cutAt));
+    expect(wire).not.toContain(ENV_SECRET.slice(cutAt));
   });
 
   it('sends the tail in ordered chunks of at most 500 lines, the last one done', async () => {

@@ -4,6 +4,7 @@ import {
   createRedactor,
   loadSecrets,
   redactionValues,
+  safeCut,
   type DockerPort,
   type FsPort,
   type LoadedManifests,
@@ -106,8 +107,8 @@ export function createLogsRunner(opts: LogsRunnerOptions): LogsRunner {
   const timers = opts.timers ?? realTimers;
   let active = 0;
 
-  /** The redactor for this container, or the refusal to send instead of any line. */
-  const redactorFor = async (job: LogsJob): Promise<((text: string) => string) | Refusal> => {
+  /** The redactor for this container and the values it redacts, or the refusal to send instead of any line. */
+  const redactorFor = async (job: LogsJob): Promise<{ redact: (text: string) => string; values: string[] } | Refusal> => {
     const inspect = docker.inspectEnv?.bind(docker);
     if (inspect === undefined || docker.containerLogs === undefined) {
       return refusal('invalid_request', 'This agent cannot read container logs.', 'Upgrade the agent (docs/runbooks/upgrade-agent.md).');
@@ -138,7 +139,8 @@ export function createLogsRunner(opts: LogsRunnerOptions): LogsRunner {
     } catch (err) {
       return refusal('manifest_invalid', `The container's env file could not be read, so its logs cannot be redacted: ${message(err)}`);
     }
-    return createRedactor(redactionValues(secrets, facts.envValues));
+    const values = redactionValues(secrets, facts.envValues);
+    return { redact: createRedactor(values), values };
   };
 
   const stream = async (job: LogsJob): Promise<void> => {
@@ -158,10 +160,16 @@ export function createLogsRunner(opts: LogsRunnerOptions): LogsRunner {
     };
 
     const redactor = await redactorFor(job);
-    if (typeof redactor !== 'function') {
+    if ('code' in redactor) {
       await refuse(redactor);
       return;
     }
+    const { redact, values } = redactor;
+    // A piece the decoder had to cut keeps back its last (longest secret − 1) characters, moved
+    // further back past any secret straddling the cut; they open the next piece of that stream, so
+    // every secret is redacted whole however a line was cut (SHP-REQ-190).
+    const keep = Math.max(0, ...values.map((v) => v.length - 1));
+    const carry = { stdout: '', stderr: '' };
     const readLogs = docker.containerLogs?.bind(docker);
     if (readLogs === undefined) return;
 
@@ -206,8 +214,16 @@ export function createLogsRunner(opts: LogsRunnerOptions): LogsRunner {
       const options = { tail: job.tail, follow, signal: abort.signal, ...(job.since === undefined ? {} : { since: job.since }) };
       for await (const line of readLogs(job.containerId, options)) {
         if (abort.signal.aborted) break;
-        // Redacted before it is cut, so a cut can never leave the start of a secret behind.
-        const text = redactor(line.text).slice(0, MAX_LINE_CHARS);
+        let raw = carry[line.stream] + line.text;
+        carry[line.stream] = '';
+        if (line.continues === true) {
+          const cut = safeCut(raw, values, raw.length - keep);
+          carry[line.stream] = raw.slice(cut);
+          raw = raw.slice(0, cut);
+          if (raw.length === 0) continue;
+        }
+        // Redacted whole, then cut to the protocol's 16 KiB: a cut can never leave part of a secret behind.
+        const text = redact(raw).slice(0, MAX_LINE_CHARS);
         const size = Buffer.byteLength(text, 'utf8');
         if (bytes + size > maxBytes) {
           stop('cap');

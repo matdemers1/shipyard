@@ -38,6 +38,14 @@ export const PROGRESS_PATH = '/api/agent/progress';
 export const STEPS_PATH = '/api/agent/steps';
 export const RESULT_PATH = '/api/agent/result';
 
+/**
+ * How long the agent stops advertising `actions` and `logs` after a server refused a poll that
+ * carried them. A server from before SHP-T-15.2 validates `capabilities` as `['build']` strictly
+ * and answers 400 `invalid_request`: the agent is upgraded by hand and the server by Shipyard
+ * (SHP-D-011), so either may be the newer one, and a newer agent must keep polling an older server.
+ */
+export const EXTENDED_CAPABILITIES_RETRY_MS = 10 * 60_000;
+
 /** The longest the server may hold a poll (SHP-REQ-040). */
 export const POLL_WAIT_SECONDS = 25;
 /** The HTTP timeout for a poll: the wait plus slack for the network. */
@@ -207,6 +215,13 @@ export interface LoopOptions {
   signal: AbortSignal;
   sleep?: Sleep;
   backoff?: Backoff;
+  /** Epoch ms; for the capability retry window. Default `Date.now`. */
+  now?: () => number;
+}
+
+/** A refusal of the poll body itself: what a server that does not know a capability answers. */
+function refusedPollBody(err: unknown): boolean {
+  return err instanceof AgentRequestError && err.status === 400 && err.refusal?.code === 'invalid_request';
 }
 
 /**
@@ -221,18 +236,21 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
   const stopped = (): boolean => opts.signal.aborted;
   // Logged once per field, not on every 25 s poll.
   const ignoredKeys = new Set<string>();
+  const now = opts.now ?? Date.now;
+  // Until when `actions` and `logs` are left out of polls, after a server refused them.
+  let extendedOffUntil = 0;
+  let degradeWarned = false;
 
   while (!stopped()) {
     let target: PollTarget | null;
     let build: BuildJob | undefined;
     let action: ActionJob | undefined;
     let logs: LogsJob | undefined;
+    const extended = now() >= extendedOffUntil;
+    const askActions = extended && opts.actions !== undefined;
+    const askLogs = extended && opts.logs !== undefined;
     try {
-      const body = await opts.client.request(
-        'POST',
-        POLL_PATH,
-        pollBody({ builds: opts.builds, actions: opts.actions !== undefined, logs: opts.logs !== undefined }),
-      );
+      const body = await opts.client.request('POST', POLL_PATH, pollBody({ builds: opts.builds, actions: askActions, logs: askLogs }));
       const parsed = parsePollResponse(body, (keys) => {
         const fresh = keys.filter((key) => !ignoredKeys.has(key));
         if (fresh.length === 0) return;
@@ -253,6 +271,18 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       delay = backoff.initialMs;
     } catch (err) {
       if (stopped()) break;
+      if ((askActions || askLogs) && refusedPollBody(err)) {
+        // An older server: poll again at once without them, and offer them again later.
+        extendedOffUntil = now() + EXTENDED_CAPABILITIES_RETRY_MS;
+        if (!degradeWarned) {
+          degradeWarned = true;
+          opts.log.warn(
+            { err: message(err), retryInMs: EXTENDED_CAPABILITIES_RETRY_MS },
+            'the server refused the actions/logs capabilities; polling without them — the server may need an upgrade',
+          );
+        }
+        continue;
+      }
       opts.log.warn({ err: message(err), retryInMs: delay }, 'poll failed; backing off');
       await sleep(delay, opts.signal);
       delay = nextDelay(delay, backoff);

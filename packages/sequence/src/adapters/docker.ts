@@ -231,8 +231,12 @@ export function demuxDockerStream(buf: Buffer): { stdout: string; stderr: string
   return { stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') };
 }
 
-/** A line with no newline is cut here, so one endless line cannot hold the agent's memory. */
-export const MAX_LOG_LINE_CHARS = 64 * 1024;
+/**
+ * A line with no newline is cut here, so one endless line cannot hold the agent's memory. Large on
+ * purpose: lines are redacted whole after this, and only a line longer than this is ever cut before
+ * redaction (the piece is then flagged `continues`, and the reader carries its end over).
+ */
+export const MAX_LOG_LINE_CHARS = 1024 * 1024;
 
 const LOG_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2}) /;
 
@@ -257,6 +261,8 @@ export class DockerLogDecoder {
   private pending: Buffer = Buffer.alloc(0);
   private readonly decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
   private readonly partial = { stdout: '', stderr: '' };
+  /** The last piece of this stream was a forced cut: the next one has no timestamp of its own. */
+  private readonly continuing = { stdout: false, stderr: false };
 
   constructor(private readonly tty: boolean) {}
 
@@ -297,14 +303,21 @@ export class DockerLogDecoder {
       text = text.slice(nl + 1);
     }
     while (text.length > MAX_LOG_LINE_CHARS) {
-      out.push(this.line(stream, text.slice(0, MAX_LOG_LINE_CHARS)));
+      out.push(this.line(stream, text.slice(0, MAX_LOG_LINE_CHARS), true));
       text = text.slice(MAX_LOG_LINE_CHARS);
     }
     this.partial[stream] = text;
   }
 
-  private line(stream: 'stdout' | 'stderr', raw: string): ContainerLogLine {
-    const { at, text } = splitLogTimestamp(raw.endsWith('\r') ? raw.slice(0, -1) : raw);
+  private line(stream: 'stdout' | 'stderr', raw: string, cut = false): ContainerLogLine {
+    const continuation = this.continuing[stream];
+    this.continuing[stream] = cut;
+    if (cut) {
+      const { at, text } = continuation ? { at: null, text: raw } : splitLogTimestamp(raw);
+      return { stream, at, text, continues: true };
+    }
+    const body = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const { at, text } = continuation ? { at: null, text: body } : splitLogTimestamp(body);
     return { stream, at, text };
   }
 }

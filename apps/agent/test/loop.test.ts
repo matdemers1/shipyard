@@ -4,6 +4,7 @@ import { Journal, type Clock, type DeployResult, type FsPort, type Log, type Mac
 import { AgentRequestError, type AgentClient } from '../src/client.js';
 import { AgentConfigError, loadAgentConfig } from '../src/config.js';
 import {
+  EXTENDED_CAPABILITIES_RETRY_MS,
   POLL_PATH,
   PROGRESS_PATH,
   RESULT_PATH,
@@ -303,6 +304,58 @@ describe('runLoop: lifecycle actions and logs (SHP-T-15.3)', () => {
     });
     expect(warnings).toEqual([{ actionId: ACTION.actionId }]);
     expect(client.calls).toHaveLength(3);
+  });
+
+  it('keeps polling a server that refuses the actions/logs capabilities: drops them at once, offers them again after 10 minutes, warns once', async () => {
+    const stop = new AbortController();
+    let clockMs = 0;
+    const delays: number[] = [];
+    const warnings: object[] = [];
+    // A server from before SHP-T-15.2: `capabilities` may only hold 'build'.
+    const client = fakeClient((call, i) => {
+      if (i === 5) stop.abort();
+      const caps = (call.body as { capabilities?: string[] }).capabilities ?? [];
+      if (caps.some((c) => c !== 'build')) {
+        throw new AgentRequestError(400, refusal('invalid_request', 'The agent request failed validation.'), 'POST', POLL_PATH);
+      }
+      // Each good poll takes four minutes of the clock.
+      clockMs += 4 * 60_000;
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      builds: { canTake: () => true, offer: () => undefined },
+      actions: { offer: () => undefined },
+      logs: { offer: () => undefined },
+      log: { ...quiet, warn: (obj: object) => void warnings.push(obj) },
+      signal: stop.signal,
+      sleep: (ms) => (delays.push(ms), Promise.resolve()),
+      now: () => clockMs,
+    });
+    const all = ['build', 'actions', 'logs'];
+    expect(client.calls.map((c) => (c.body as { capabilities?: string[] }).capabilities)).toEqual([
+      all, // refused at t=0
+      ['build'], // at once, no back-off; t=4 min after
+      ['build'], // t=8 min
+      ['build'], // still inside the 10 minutes; t=12 min after
+      all, // offered again, refused again
+      ['build'],
+    ]);
+    expect(delays).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(EXTENDED_CAPABILITIES_RETRY_MS).toBe(10 * 60_000);
+  });
+
+  it('still backs off on a 400 that is not about the capabilities', async () => {
+    const stop = new AbortController();
+    const delays: number[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 2) stop.abort();
+      throw new AgentRequestError(400, refusal('invalid_request', 'bad body'), 'POST', POLL_PATH);
+    });
+    await runLoop({ client, runTarget: () => Promise.resolve(), log: quiet, signal: stop.signal, sleep: (ms) => (delays.push(ms), Promise.resolve()) });
+    expect(delays).toEqual([1_000, 2_000]);
   });
 
   it('trackInFlight knows which app a running target is for', async () => {

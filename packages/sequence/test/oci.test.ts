@@ -214,3 +214,130 @@ describe('listTags', () => {
     await expect(createOciRegistry({ fetch }).listTags('postgres')).rejects.toMatchObject({ kind: 'rate_limited' });
   });
 });
+
+describe('a registry that stalls or floods fails closed (SHP-REQ-196)', () => {
+  /** A 200 whose body never closes, the verifier's reproduction. */
+  const stalled = (): Response => new Response(new ReadableStream({ start: () => undefined }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  const within = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`still hanging after ${String(ms)} ms`));
+          }, ms);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  it('a tag list body that never closes is unreachable at the deadline', async () => {
+    const registry = createOciRegistry({ fetch: fakeFetch(() => stalled()).fetch, timeoutMs: 100 });
+    const started = Date.now();
+    await expect(within(registry.listTags('postgres'), 2_000)).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('timed out') as unknown });
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('a manifest body that never closes is unreachable at the deadline', async () => {
+    const { fetch } = fakeFetch(({ method }) => (method === 'HEAD' ? new Response(null, { status: 200 }) : stalled()));
+    await expect(within(createOciRegistry({ fetch, timeoutMs: 100 }).resolveDigest('ghcr.io/a/b', '1'), 2_000)).rejects.toMatchObject({ kind: 'unreachable' });
+  });
+
+  it('a token body that never closes is unreachable at the deadline', async () => {
+    const { fetch } = fakeFetch(({ url }) => (url.includes('/token') ? stalled() : challenge('https://ghcr.io/token', 'ghcr.io', 'repository:a/b:pull')));
+    await expect(within(createOciRegistry({ fetch, timeoutMs: 100 }).resolveDigest('ghcr.io/a/b', '1'), 2_000)).rejects.toMatchObject({ kind: 'unreachable' });
+  });
+
+  it('a fetch that ignores its abort signal still ends at the deadline', async () => {
+    const ignoring: typeof fetch = () => new Promise<never>(() => undefined);
+    await expect(within(createOciRegistry({ fetch: ignoring, timeoutMs: 100 }).resolveDigest('postgres', '17'), 2_000)).rejects.toMatchObject({ kind: 'unreachable' });
+  });
+
+  it('an oversize body is refused, declared or streamed; so is a page with too many tags', async () => {
+    const big = Buffer.alloc(4 * 1024 * 1024 + 1, 0x20);
+    const declared = createOciRegistry({ fetch: fakeFetch(() => new Response(big, { status: 200, headers: { 'content-length': String(big.length) } })).fetch });
+    await expect(declared.listTags('postgres')).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('bytes') as unknown });
+
+    const streamed = createOciRegistry({
+      fetch: fakeFetch(
+        () =>
+          new Response(
+            new ReadableStream({
+              pull(controller) {
+                controller.enqueue(new Uint8Array(512 * 1024));
+              },
+            }),
+            { status: 200 },
+          ),
+      ).fetch,
+    });
+    await expect(within(streamed.listTags('postgres'), 5_000)).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('bytes') as unknown });
+
+    const manifest = createOciRegistry({ fetch: fakeFetch(({ method }) => (method === 'HEAD' ? new Response(null, { status: 200 }) : new Response(Buffer.alloc(1024 * 1024 + 1), { status: 200 }))).fetch });
+    await expect(manifest.resolveDigest('ghcr.io/a/b', '1')).rejects.toMatchObject({ kind: 'unreachable' });
+
+    const many = createOciRegistry({ fetch: fakeFetch(() => Response.json({ tags: ['1', '2', '3'] })).fetch, maxTagsPerPage: 2 });
+    await expect(many.listTags('postgres')).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('3 tags') as unknown });
+  });
+
+  it('an invalid tag is refused without asking the registry', async () => {
+    const { fetch, calls } = fakeFetch(() => new Response(null, { status: 200 }));
+    await expect(createOciRegistry({ fetch }).resolveDigest('postgres', '../evil')).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('not a valid tag') as unknown });
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('only https, and a token only where it was issued', () => {
+  it('refuses a redirect to http, never sending the cached token there', async () => {
+    const { fetch, calls } = fakeFetch(({ url, headers }) => {
+      if (url.startsWith('https://ghcr.io/token')) return Response.json({ token: 'gh' });
+      if (url.startsWith('http://')) return new Response(null, { status: 200, headers: { 'docker-content-digest': DIGEST } });
+      if (headers.get('authorization') !== 'Bearer gh') return challenge('https://ghcr.io/token', 'ghcr.io', 'repository:a/b:pull');
+      return new Response(null, { status: 307, headers: { location: url.replace('https://', 'http://') } });
+    });
+    await expect(createOciRegistry({ fetch }).resolveDigest('ghcr.io/a/b', '1')).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('not https') as unknown });
+    expect(calls.some((c) => c.url.startsWith('http://'))).toBe(false);
+  });
+
+  it('refuses an http token realm, and never sends a credential over http even to a plain-http host', async () => {
+    const { fetch, calls } = fakeFetch(({ url, headers }) => {
+      if (url.includes('/token')) return Response.json({ token: 't' });
+      if (headers.get('authorization') !== 'Bearer t') {
+        if (url.startsWith('https://ghcr.io/')) return challenge('http://ghcr.io/token', 'ghcr.io', 'repository:a/b:pull');
+        return challenge('http://registry:5000/token', 'registry', 'repository:toy/app:pull');
+      }
+      return new Response(null, { status: 200, headers: { 'docker-content-digest': DIGEST } });
+    });
+    const registry = createOciRegistry({ fetch, plainHttpHosts: ['registry:5000'], credentials: () => 'c2VjcmV0' });
+    await expect(registry.resolveDigest('ghcr.io/a/b', '1')).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('not https') as unknown });
+    expect(calls.some((c) => c.url.startsWith('http://ghcr.io'))).toBe(false);
+    await expect(registry.resolveDigest('registry:5000/toy/app', '1')).resolves.toBe(DIGEST);
+    const token = calls.find((c) => c.url.startsWith('http://registry:5000/token'));
+    expect(token?.headers.has('authorization')).toBe(false);
+  });
+
+  it('keys the token cache by scheme: a token taken over https is never replayed over http', async () => {
+    const { fetch, calls } = fakeFetch(({ url, headers }) => {
+      const secure = url.startsWith('https://');
+      if (url.includes('/token')) return Response.json({ token: secure ? 'secure' : 'plain' });
+      if (headers.get('authorization') !== (secure ? 'Bearer secure' : 'Bearer plain')) {
+        return challenge(secure ? 'https://registry:5000/token' : 'http://registry:5000/token', 'r', 'repository:toy/app:pull');
+      }
+      // Over plain http, tag 1 is handed off to https on the same host.
+      if (!secure && url.endsWith('/1')) return new Response(null, { status: 307, headers: { location: url.replace('http://', 'https://') } });
+      return new Response(null, { status: 200, headers: { 'docker-content-digest': DIGEST } });
+    });
+    const registry = createOciRegistry({ fetch, plainHttpHosts: ['registry:5000'] });
+    await expect(registry.resolveDigest('registry:5000/toy/app', '1')).resolves.toBe(DIGEST);
+    await expect(registry.resolveDigest('registry:5000/toy/app', '2')).resolves.toBe(DIGEST);
+    const overHttp = calls.filter((c) => c.url.startsWith('http://'));
+    expect(overHttp.length).toBeGreaterThan(0);
+    expect(overHttp.some((c) => c.headers.get('authorization') === 'Bearer secure')).toBe(false);
+    // The https hop never carried the http token either.
+    expect(calls.filter((c) => c.url.startsWith('https://')).some((c) => c.headers.get('authorization') === 'Bearer plain')).toBe(false);
+  });
+});

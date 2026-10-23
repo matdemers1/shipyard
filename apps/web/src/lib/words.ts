@@ -8,6 +8,9 @@ import type {
   DeployTargetState,
   Gate,
   LifecycleVerb,
+  MaintenanceState,
+  MaintenanceStatus,
+  MaintenanceStep,
   StackUpdateState,
   StackUpdateStep,
 } from '@shipyard/schema';
@@ -563,4 +566,364 @@ export function approveStackVerb(kind: 'update' | 'rollback'): string {
 /** Its full name: "Approve and update forgejo". */
 export function approveStackLabel(kind: 'update' | 'rollback', stack: string): string {
   return `${approveStackVerb(kind)} ${stack}`;
+}
+
+// ── Volumes and prune (SHP-ADR-012, SHP-P-17) ────────────────────────────
+//
+// Every word the volume and prune screens say (SHP-T-17.6): the Host volumes list and its archives,
+// the back-up confirmation, the restore, delete and prune sheets, the progress banner and results,
+// Needs you and Activity. The components and lib/maintenance.ts only compose these; the guard in
+// test/words.test.ts fails if they spell copy of their own.
+
+/** The months as an archive's time says them: "Oct 21 22:40". */
+export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+export const TODAY = 'Today';
+export const YESTERDAY = 'Yesterday';
+
+/** Where a maintenance job is, and how it ended. A total record over the schema's enum. */
+export const MAINTENANCE_STATE_WORDS: Record<MaintenanceState, string> = {
+  queued: 'Queued',
+  dispatched: 'Sent to the agent',
+  running: 'Running',
+  succeeded: 'Succeeded',
+  failed: 'Failed',
+  refused: 'Refused',
+  cancelled: 'Cancelled',
+};
+
+/** The step a running job is on, as the in-progress banner says it. */
+export const MAINTENANCE_STEP_WORDS: Record<MaintenanceStep, string> = {
+  queued: 'Queued',
+  stopping: 'Stopping',
+  archiving: 'Archiving',
+  restoring: 'Restoring',
+  starting: 'Starting',
+  checking: 'Checking health',
+  deleting: 'Deleting',
+  listing: 'Listing',
+  pruning: 'Pruning',
+  retaining: 'Removing old archives',
+};
+
+/** "Archiving · forgejo_data"; a prune names no volume. */
+export function maintenanceProgressWords(step: string, volume: string | null): string {
+  return volume === null ? step : `${step} · ${volume}`;
+}
+
+/** What a job is, by its kind: Activity's badge on a job that did not succeed. */
+export const MAINTENANCE_KIND_WORDS: Record<MaintenanceStatus['kind'], string> = {
+  'volume-backup': 'Backup',
+  'volume-restore': 'Restore',
+  'volume-delete': 'Delete',
+  prune: 'Prune',
+};
+
+/** What a job did, once it worked: Activity's badge. */
+export const MAINTENANCE_DONE_WORDS: Record<MaintenanceStatus['kind'], string> = {
+  'volume-backup': 'Backed up',
+  'volume-restore': 'Restored',
+  'volume-delete': 'Deleted',
+  prune: 'Pruned',
+};
+
+export const VOLUME_WORDS = {
+  heading: 'Volumes',
+  hint: 'Back up and restore owned volumes, delete orphans. Observed volumes are shown, never touched.',
+  none: 'No named volumes.',
+  noMounts: 'No container mounts it',
+  orphaned: 'Orphaned',
+  observed: 'Observed — no actions',
+  backUp: 'Back up',
+  restore: 'Restore…',
+  remove: 'Delete…',
+  prune: 'Prune…',
+  archives: 'Archives',
+  quiesced: 'Quiesced',
+  liveCopy: 'Live copy',
+  noArchives: 'No archives yet. Back up takes the first.',
+  loadingArchives: 'Loading the archives',
+  newestFirst: 'newest first',
+  asking: 'Asking the server',
+  dryRun: 'Dry run',
+} as const;
+
+/** A volume's name in the list, when Docker gave it no name of its own. */
+export function anonymousVolumeWords(name: string): string {
+  return `${name.slice(0, 6)}…${name.slice(-4)} (anonymous)`;
+}
+
+/** "Archives · 3", the toggle's visible words; null while the count is being read. */
+export function archivesCountWords(count: number | null): string {
+  return count === null ? VOLUME_WORDS.archives : `${VOLUME_WORDS.archives} · ${String(count)}`;
+}
+
+/** The toggle's full name: "Archives · 3 of bindery_pgdata". */
+export function archivesOfWords(count: number | null, volume: string): string {
+  return `${archivesCountWords(count)} of ${volume}`;
+}
+
+/** "Back up bindery_pgdata", "Restore… bindery_pgdata", "Delete… kardashev_pgdata": the row buttons' full names. */
+export function volumeActionLabel(action: 'backUp' | 'restore' | 'remove', volume: string): string {
+  return `${VOLUME_WORDS[action]} ${volume}`;
+}
+
+/** An archive row's Restore…: "Restore… the Oct 21 22:40 archive of forgejo_data". */
+export function restoreArchiveLabel(time: string, volume: string): string {
+  return `${VOLUME_WORDS.restore} the ${time} archive of ${volume}`;
+}
+
+/** The archives list's caption: "5 archives · newest first". */
+export function archivesCaptionWords(count: number): string {
+  return `${String(count)} ${count === 1 ? 'archive' : 'archives'} · ${VOLUME_WORDS.newestFirst}`;
+}
+
+/** A volume claimed by an app or stack's compose label that nothing mounts: neither delete nor back up. */
+export function claimedVolumeWords(owner: string): string {
+  return `Nothing mounts it; ${owner} claims it, so it is never deleted from here`;
+}
+
+export function showingVolumesWords(shown: number, total: number): string {
+  return `Showing ${String(shown)} of ${String(total)} · orphans first · Delete… appears only on volumes no container mounts, running or stopped`;
+}
+
+export function showAllVolumesWords(total: number): string {
+  return `Show all ${String(total)}`;
+}
+
+export function showFirstVolumesWords(count: number): string {
+  return `Show the first ${String(count)}`;
+}
+
+// The back-up confirmation (SHP-REQ-201). Quiesce is the manifest's, never asked here.
+
+export function backUpTitle(volume: string): string {
+  return `Back up ${volume}?`;
+}
+
+export function backUpVolumeWords(volume: string): string {
+  return `Copies ${volume} into a new archive in the agent's own ledger. The owner's manifest decides whether it is stopped for the copy, and how many archives are kept: the oldest beyond that is removed.`;
+}
+
+export const BACK_UP_FOOT = 'Deployer, operator or admin. Recorded in Activity.';
+
+// The restore sheet (SHP-REQ-202).
+
+export function restoreTitle(volume: string): string {
+  return `Restore ${volume}`;
+}
+
+export function restoreIntroWords(volume: string, owner: string, containers: number): string {
+  return `Puts one archive back into ${volume}. Shipyard stops ${owner} (${String(containers)} ${containers === 1 ? 'container' : 'containers'}) for the restore and starts it again after.`;
+}
+
+export const RESTORE_WARNING_TITLE = 'The volume’s current contents are replaced';
+
+export function restoreWarningWords(volume: string, size: string): string {
+  return `Everything in ${volume} now (${size}) is overwritten by the archive you pick. Anything written after that archive was taken is lost. Back up first if you might want it.`;
+}
+
+export const WHAT_HAPPENS_TITLE = 'What happens';
+export const ARCHIVE_TITLE = 'Archive';
+export const NEWEST_FIRST = 'Newest first';
+
+/** Stop the owner → empty the volume → unpack the archive → start the owner → health. */
+export function archiveChainWords(volume: string, owner: string, containers: number, archiveTime: string | null): string[] {
+  return [
+    `Stop ${owner} (${String(containers)} ${containers === 1 ? 'container' : 'containers'})`,
+    `Empty ${volume}`,
+    archiveTime === null ? 'Unpack the archive' : `Unpack the ${archiveTime} archive`,
+    `Start ${owner}`,
+    'Health',
+  ];
+}
+
+export function typeToConfirmWords(volume: string): string {
+  return `Type ${volume} to confirm`;
+}
+
+export const NAME_MATCHES = 'Matches the volume name';
+export const NAME_DOES_NOT_MATCH = 'Not a match yet: type the name exactly, capitals included';
+export const AUTHENTICATOR_CODE = 'Authenticator code';
+export const RESTORE_STEP_UP_HELP = 'Step-up: a fresh 6-digit code from your authenticator, asked again because restore replaces data.';
+export const DELETE_STEP_UP_HELP = 'Step-up: a fresh 6-digit code from your authenticator.';
+export const RESTORE_FOOT = 'Admin · console only. Restore is never offered over MCP.';
+export const NO_ARCHIVE_TO_RESTORE = 'This volume has no archive to restore yet.';
+export const VOLUME_NOT_FOUND = 'Volume not found';
+
+export function volumeNotFoundWords(volume: string): string {
+  return `The host reports no volume named ${volume}. It may have been removed; the list on Host is current.`;
+}
+
+export function restoreVerb(volume: string): string {
+  return `Restore ${volume}`;
+}
+
+// The delete sheet (SHP-REQ-203).
+
+export function deleteTitle(volume: string): string {
+  return `Delete ${volume}`;
+}
+
+export function deleteIntroWords(project: string | null): string {
+  return project === null
+    ? 'No container mounts this volume, running or stopped, and no compose project labels it.'
+    : `No container mounts this volume, running or stopped. Its compose label says it last belonged to ${project}.`;
+}
+
+export const DELETE_FACTS = {
+  label: 'About this volume',
+  size: 'Size',
+  created: 'Created',
+  driver: 'Driver',
+  project: 'Project label',
+  mountedBy: 'Mounted by',
+  noContainer: 'No container, running or stopped',
+  unknown: '—',
+} as const;
+
+export const DELETE_WARNING_TITLE = 'This cannot be undone';
+
+export function deleteWarningWords(size: string): string {
+  return `Deleting removes the volume and its ${size} of data. Shipyard keeps no archive of orphans, and Docker has no trash.`;
+}
+
+export function deleteInUseWords(volume: string): string {
+  return `If a container mounts ${volume} before you press Delete, Shipyard refuses with volume_in_use and deletes nothing. Deployed and Operated volumes never offer Delete.`;
+}
+
+export const DELETE_FOOT = 'Admin · console only. Never offered over MCP.';
+
+export function deleteVerb(volume: string): string {
+  return `Delete ${volume}`;
+}
+
+// The prune sheet (SHP-REQ-205).
+
+export const PRUNE_TITLE = 'Prune images and build cache';
+export const PRUNE_INTRO = 'What Docker would remove right now. Prune these removes exactly this list; anything that changed since the dry run is left alone.';
+export const PRUNE_NO_VOLUMES = 'Volumes are never pruned. Delete orphaned volumes one at a time from their row.';
+export const PRUNE_LISTING = 'Listing what a prune would remove';
+export const PRUNE_RUN_AGAIN = 'Run the dry run again';
+export const PRUNE_THESE = 'Prune these';
+export const PRUNE_NOTHING = 'Nothing to prune';
+export const PRUNE_NOTHING_WORDS = 'No dangling image, unused image or build cache entry is old enough to remove.';
+
+export const PRUNE_GROUP_WORDS = {
+  dangling: { title: 'Dangling images', hint: 'Untagged layers no container uses' },
+  unused: { title: 'Unused images, older than 7 days', hint: 'Tagged, but no container (running or stopped) uses them' },
+  cache: { title: 'Build cache, older than 7 days', hint: 'BuildKit entries not used in a week' },
+} as const;
+
+/** "3.2 GB back". */
+export function reclaimWords(size: string): string {
+  return `${size} back`;
+}
+
+/** "18 items · dry run at 14:31". */
+export function pruneSummaryWords(count: number, clock: string): string {
+  return `${String(count)} ${count === 1 ? 'item' : 'items'} · dry run at ${clock}`;
+}
+
+/** A group's total: "5 · 1.4 GB". */
+export function pruneGroupTotalWords(count: number, size: string): string {
+  return `${String(count)} · ${size}`;
+}
+
+/** An item's detail: "untagged · 12 days", "unused · 21 days", "cache · 9 days". */
+export function pruneItemDetailWords(reason: 'dangling' | 'unused' | 'old-cache', days: number | null): string {
+  const what = reason === 'dangling' ? 'untagged' : reason === 'unused' ? 'unused' : 'cache';
+  return days === null ? what : `${what} · ${String(days)} ${days === 1 ? 'day' : 'days'}`;
+}
+
+export function pruneFootWords(count: number | null): string {
+  return count === null
+    ? 'Deployer, operator or admin. Recorded in Activity.'
+    : `Deployer, operator or admin. Removes only the ${String(count)} ${count === 1 ? 'item' : 'items'} above; recorded in Activity.`;
+}
+
+// Results, inline and in Activity.
+
+/** "Backed up forgejo_data · 1.1 GB". */
+export function backedUpWords(volume: string, size: string | null): string {
+  return size === null ? `Backed up ${volume}` : `Backed up ${volume} · ${size}`;
+}
+
+/** "Quiesced · 1 older archive removed", "Live copy". */
+export function backedUpDetailWords(quiesced: boolean, removed: number): string {
+  const how = quiesced ? 'quiesced' : 'live copy';
+  return removed === 0 ? how : `${how} · ${String(removed)} older ${removed === 1 ? 'archive' : 'archives'} removed`;
+}
+
+export function restoredWords(volume: string): string {
+  return `Restored ${volume}`;
+}
+
+export function deletedWords(volume: string): string {
+  return `Deleted ${volume}`;
+}
+
+/** "Freed 3.2 GB". */
+export function freedWords(size: string): string {
+  return `Freed ${size}`;
+}
+
+/** "Removed 5 dangling images, 4 unused images and 9 build-cache entries · no volumes touched". */
+export function freedDetailWords(dangling: number, unused: number, cache: number): string {
+  const parts = [
+    `${String(dangling)} dangling ${dangling === 1 ? 'image' : 'images'}`,
+    `${String(unused)} unused ${unused === 1 ? 'image' : 'images'}`,
+    `${String(cache)} build-cache ${cache === 1 ? 'entry' : 'entries'}`,
+  ];
+  return `Removed ${parts.slice(0, -1).join(', ')} and ${parts.at(-1) ?? ''} · no volumes touched`;
+}
+
+/** "Didn’t delete kardashev_pgdata · volume_in_use": what did not happen, and the code that says why. */
+export function didNotWords(kind: MaintenanceStatus['kind'], volume: string | null, code: string | null): string {
+  const verb = { 'volume-backup': 'back up', 'volume-restore': 'restore', 'volume-delete': 'delete', prune: 'prune' }[kind];
+  const what = volume === null ? `Didn’t ${verb}` : `Didn’t ${verb} ${volume}`;
+  return code === null ? what : `${what} · ${code}`;
+}
+
+/** Activity's name for a prune, which names no volume. */
+export const IMAGES_AND_CACHE = 'Images and build cache';
+
+/** A dry run in Activity: "Dry run · 18 items, 3.2 GB". */
+export function dryRunWords(count: number, size: string): string {
+  return `${VOLUME_WORDS.dryRun} · ${String(count)} ${count === 1 ? 'item' : 'items'}, ${size}`;
+}
+
+/** Activity's chip for the volume and prune jobs. */
+export const MAINTENANCE_CHIP = 'Maintenance';
+
+// Needs you.
+
+/** "backup failed — <message>": a volume whose latest backup did not work; its fix is the second line. */
+export function failedBackupWords(state: string, message: string | null): string {
+  const what = state === 'refused' ? 'backup refused' : 'backup failed';
+  return message === null ? what : `${what} — ${message}`;
+}
+
+/** "/DATA is 93.4% full · 61.2 GB free". */
+export function lowDiskWords(mount: string, usedPercent: number, free: string): string {
+  return `${mount} is ${String(usedPercent)}% full · ${free} free`;
+}
+
+export const OPEN_VOLUME = 'Open volume';
+export const OPEN_DISK = 'Open disk';
+
+export function openVolumeOnHostWords(volume: string): string {
+  return `Open ${volume} on Host`;
+}
+
+export function openDiskOnHostWords(mount: string): string {
+  return `Open ${mount} on Host`;
+}
+
+/** The Host footnote: the three tiers, and what is acted on. */
+export const HOST_FOOTNOTE =
+  'Deployed is a D3 app Shipyard deploys; Operated is a third-party stack you adopted with a manifest; Observed is everything else Docker runs, shown and never touched. No environment, command or labels ever leave the host.';
+
+/** The rest of a long prune group, in one row: "7 more entries · 170.0 MB". */
+export function morePruneItemsWords(count: number, size: string): string {
+  return `${String(count)} more ${count === 1 ? 'entry' : 'entries'} · ${size}`;
 }

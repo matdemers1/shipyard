@@ -1,19 +1,22 @@
 import { Alert, Button, Card, FormActions, Link, Modal, ModalClose, Section } from '@d3cloud/ui';
 import type { SystemStatus } from '@shipyard/schema';
 import type { StackUpdateStatus } from '@shipyard/schema';
-import { CircleX, GitCompareArrows, KeyRound, Layers, ServerCrash, UserCheck } from 'lucide-react';
+import { Archive, CircleX, GitCompareArrows, HardDrive, KeyRound, Layers, ServerCrash, UserCheck } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { RefusalError, request } from '../lib/api';
 import { newestWithRun, sha7 } from '../lib/appstatus';
 import type { HomeApp, PendingApproval } from '../lib/home';
+import { bytes, type MaintenanceNeeds } from '../lib/maintenance';
 import type { NeedsYouItem } from '../lib/needsyou';
 import { requestedChange, stacks as stackApi, type StackNeeds, type StackView } from '../lib/stacks';
 import {
   DENY_STACK_CONSEQUENCE,
   FAILED_STACK_FALLBACK,
   HELD_STACK_FALLBACK,
+  OPEN_DISK,
   OPEN_STACK,
+  OPEN_VOLUME,
   SHEET_WORDS,
   STATUS_WORDS,
   VERBS,
@@ -21,9 +24,13 @@ import {
   approveStackVerb,
   approveVerb,
   denyStackWords,
+  failedBackupWords,
   failedStackWords,
   heldStackWords,
+  lowDiskWords,
+  openDiskOnHostWords,
   openStackOnHostWords,
+  openVolumeOnHostWords,
 } from '../lib/words';
 import { AdoptLiveButton, RedeployButton } from './DriftBanner';
 import type { SheetAction } from './DryRunSheet';
@@ -39,7 +46,16 @@ import { agoShort } from './pipeline/stages';
  * A stack update held for approval (SHP-T-16.6, SHP-REQ-199) gets Deny and "Approve and update" in
  * the same style as a deploy's; a stack whose newest update failed or was rolled back is a warning
  * row that opens the stack's sheet on Host.
+ *
+ * A volume whose latest backup failed or was refused (SHP-T-17.6, SHP-ADR-012) is a row with the
+ * refusal's message and fix verbatim, opening the volume on Host; a filesystem at least 90% full is
+ * a row with its mount, how full and what is free, opening the Disk card.
  */
+
+/** "backup failed — <message>": the row's first line for a failed backup. */
+export function failedBackupLine(job: { state: string; refusal: { message: string } | null } | undefined): string {
+  return failedBackupWords(job?.state ?? 'failed', job?.refusal?.message ?? null);
+}
 
 /** "update 17.1.1 → 17.1.2 · asked by …": what a held stack request would do, and who asked. */
 export function heldStackLine(update: Pick<StackUpdateStatus, 'kind' | 'digests' | 'requesterLabel'>, stack: StackView | undefined): string {
@@ -76,6 +92,8 @@ export interface NeedsYouProps {
   stackNeeds?: StackNeeds | null;
   /** The adopted stacks, for the tags a held request moves between. */
   stacks?: readonly StackView[] | null;
+  /** Failed backups and low disk (SHP-T-17.6); absent or null from a server without them. */
+  maintenanceNeeds?: MaintenanceNeeds | null;
   canAct: boolean;
   /** Opens the dry-run sheet: "Approve and deploy" reviews the approval there. */
   onReview: (action: SheetAction) => void;
@@ -105,6 +123,7 @@ export function NeedsYou({
   system,
   stackNeeds = null,
   stacks = null,
+  maintenanceNeeds = null,
   canAct,
   onReview,
   onChanged,
@@ -257,6 +276,43 @@ export function NeedsYou({
             <Link asChild className="shp-row-link">
               <RouterLink to={`/host?stack=${encodeURIComponent(item.stack)}`} aria-label={openStackOnHostWords(item.stack)}>
                 {OPEN_STACK}
+              </RouterLink>
+            </Link>
+          ),
+        };
+      }
+      case 'backup-failed': {
+        const job = maintenanceNeeds?.failedBackups.find((j) => j.id === item.jobId);
+        return {
+          key: `backup-failed-${item.jobId}`,
+          tone: job?.state === 'refused' ? 'warning' : 'danger',
+          icon: <Archive />,
+          app: item.volume,
+          what: failedBackupLine(job),
+          ...(job === undefined || job.refusal === null ? {} : { detail: job.refusal.fix }),
+          at: job?.finishedAt ?? job?.createdAt ?? null,
+          actions: (
+            <Link asChild className="shp-row-link">
+              <RouterLink to={`/host?volume=${encodeURIComponent(item.volume)}`} aria-label={openVolumeOnHostWords(item.volume)}>
+                {OPEN_VOLUME}
+              </RouterLink>
+            </Link>
+          ),
+        };
+      }
+      case 'low-disk': {
+        const low = maintenanceNeeds?.lowDisk.find((d) => d.mount === item.mount);
+        return {
+          key: `low-disk-${item.mount}`,
+          tone: 'warning',
+          icon: <HardDrive />,
+          app: null,
+          what: lowDiskWords(item.mount, low?.usedPercent ?? 0, bytes(low?.freeBytes ?? null)),
+          at: null,
+          actions: (
+            <Link asChild className="shp-row-link">
+              <RouterLink to="/host#disk" aria-label={openDiskOnHostWords(item.mount)}>
+                {OPEN_DISK}
               </RouterLink>
             </Link>
           ),

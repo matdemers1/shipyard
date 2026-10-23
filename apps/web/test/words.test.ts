@@ -246,6 +246,33 @@ describe('stack updates speak only from lib/words.ts (SHP-T-16.6)', () => {
     expect(offences(join(SRC, path), scope)).toEqual([]);
   });
 
+  /**
+   * SHP-T-17.6 (SHP-ADR-012): the volume and prune screens are held to the same rule — the Host
+   * volumes list, the back-up confirmation, the restore, delete and prune sheets and their shared
+   * parts, the maintenance model, Needs you's backup and disk rows, and Activity's maintenance row.
+   */
+  it.each([
+    ['screens/host/Volumes.tsx', whole],
+    ['screens/host/VolumeParts.tsx', whole],
+    ['screens/host/RestoreSheet.tsx', whole],
+    ['screens/host/DeleteSheet.tsx', whole],
+    ['screens/host/PruneSheet.tsx', whole],
+    ['lib/maintenance.ts', whole],
+    ['components/NeedsYou.tsx', named(['backup-failed', 'low-disk', 'failedBackupLine'])],
+    ['screens/activity/FeedRow.tsx', named(['MaintenanceRow', 'maintenanceDetail', 'maintenanceBadge', 'isDryRun'])],
+  ])('volumes and prune (SHP-T-17.6): %s', (path, scope) => {
+    expect(offences(join(SRC, path), scope)).toEqual([]);
+  });
+
+  it('scopes the volume guard to code that exists (a renamed function would slip past it)', () => {
+    const needs = readFileSync(join(SRC, 'components/NeedsYou.tsx'), 'utf8');
+    expect(needs).toContain("case 'backup-failed'");
+    expect(needs).toContain("case 'low-disk'");
+    const feed = readFileSync(join(SRC, 'screens/activity/FeedRow.tsx'), 'utf8');
+    expect(feed).toContain('function MaintenanceRow(');
+    expect(feed).toContain('function maintenanceDetail(');
+  });
+
   it('catches copy in a component (the guard itself works)', () => {
     const probe = [
       'const a = <p>Stack not found</p>;',

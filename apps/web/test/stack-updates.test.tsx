@@ -671,6 +671,7 @@ describe('Activity lists stack updates (SHP-REQ-200)', () => {
       showUpcoming: false,
       actions: false,
       stackUpdates: true,
+      maintenance: false,
     });
     expect(sourcesFor(filtersFromParams(new URLSearchParams(''))).stackUpdates).toBe(true);
     expect(stackUpdateMatches(PREVIOUS, filtersFromParams(new URLSearchParams('app=forgejo')))).toBe(true);

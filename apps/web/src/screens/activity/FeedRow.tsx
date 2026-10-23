@@ -1,5 +1,5 @@
 import { Badge, Link } from '@d3cloud/ui';
-import type { ActionStatus, StackUpdateStatus } from '@shipyard/schema';
+import type { ActionStatus, MaintenanceStatus, StackUpdateStatus } from '@shipyard/schema';
 import { ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
@@ -7,9 +7,20 @@ import { PipeNode } from '../../components/pipeline';
 import { actionBadgeWords, actionDuration, actionScope, actionStateWords } from '../../lib/actions';
 import { sha7 } from '../../lib/appdetail';
 import { TRIGGER_LABEL } from '../../lib/builds';
+import { bytes, maintenanceStateWords } from '../../lib/maintenance';
 import { changeWords, outcomeTone, requesterLine, stackUpdateStateWords } from '../../lib/stacks';
 import { formatDuration, formatFeedTime } from '../../lib/timeline';
-import { DEPLOY_ALL_READY, stackChangeWords } from '../../lib/words';
+import {
+  DEPLOY_ALL_READY,
+  IMAGES_AND_CACHE,
+  MAINTENANCE_DONE_WORDS,
+  MAINTENANCE_KIND_WORDS,
+  VOLUME_WORDS,
+  backedUpDetailWords,
+  dryRunWords,
+  freedWords,
+  stackChangeWords,
+} from '../../lib/words';
 import {
   actionNode,
   buildHeadline,
@@ -18,6 +29,7 @@ import {
   deployNode,
   deployRequester,
   durationBetween,
+  maintenanceNode,
   requesterWords,
   rolloutSummary,
   scheduleHeadline,
@@ -182,6 +194,67 @@ function StackUpdateRow({ update, at, now }: { update: StackUpdateStatus; at: st
   );
 }
 
+/** A dry run is a prune that lists; a real one removes. */
+function isDryRun(job: MaintenanceStatus): boolean {
+  return job.kind === 'prune' && job.prune !== null && job.prune.reclaimedBytes === null;
+}
+
+/** The badge: what it did once it worked ("Backed up", "Dry run"), else the job and its state. */
+export function maintenanceBadge(job: MaintenanceStatus): string {
+  if (job.state === 'succeeded') return isDryRun(job) ? VOLUME_WORDS.dryRun : MAINTENANCE_DONE_WORDS[job.kind];
+  return [MAINTENANCE_KIND_WORDS[job.kind], maintenanceStateWords(job.state)].join(' · ');
+}
+
+/** What it came to — the archive, what a prune freed or found — and, when it did not work, the refusal verbatim. */
+export function maintenanceDetail(job: MaintenanceStatus): string {
+  if (job.state !== 'succeeded') return job.refusal === null ? '' : [job.refusal.message, job.refusal.fix].join(' · ');
+  if (job.kind === 'volume-backup' && job.archive !== null) {
+    return [bytes(job.archive.sizeBytes), backedUpDetailWords(job.archive.quiesced, job.removedArchives.length)].join(' · ');
+  }
+  if (job.kind === 'prune' && job.prune !== null) {
+    return job.prune.reclaimedBytes === null ? dryRunWords(job.prune.items.length, bytes(job.prune.reclaimableBytes)) : freedWords(bytes(job.prune.reclaimedBytes));
+  }
+  return '';
+}
+
+/**
+ * A volume backup, restore, delete or a prune (SHP-T-17.6, SHP-ADR-012): the volume (or "Images and
+ * build cache"), a badge with what was done, what it came to or the refusal's message and fix, who
+ * asked and when. The row opens the volume on Host, or Host for a prune.
+ */
+function MaintenanceRow({ job, at, now }: { job: MaintenanceStatus; at: string; now: Date }) {
+  const who = requesterWords(job.requester.label);
+  const tone = job.state === 'failed' || job.state === 'refused' ? 'danger' : 'neutral';
+  const detail = maintenanceDetail(job);
+  const to = job.volume === null ? '/host' : `/host?volume=${encodeURIComponent(job.volume)}`;
+  return (
+    <li className="shp-feed-row">
+      <PipeNode state={maintenanceNode(job.state)} size="sm" />
+      <Link asChild>
+        <RouterLink to={to} className="shp-feed-row__link">
+          <span className="shp-feed-row__line">
+            <strong>{job.volume ?? IMAGES_AND_CACHE}</strong>
+            <Badge size="sm" tone={tone}>
+              {maintenanceBadge(job)}
+            </Badge>
+          </span>
+          <span className="shp-feed-row__sub">
+            {detail}
+            <span className="shp-feed-row__who-inline">
+              {detail === '' ? '' : ' · '}
+              {who}
+            </span>
+          </span>
+        </RouterLink>
+      </Link>
+      <span className="shp-feed-row__who">{who}</span>
+      <time className="shp-feed-row__time" dateTime={at} title={new Date(at).toLocaleString()}>
+        {formatFeedTime(at, now)}
+      </time>
+    </li>
+  );
+}
+
 function RolloutRow({ entry, now }: { entry: Extract<FeedEntry, { type: 'rollout' }>; now: Date }) {
   const [open, setOpen] = useState(false);
   const { members, total } = entry;
@@ -250,6 +323,8 @@ export function FeedRow({ entry, now }: { entry: FeedEntry; now: Date }) {
       return <ActionRow action={entry.action} at={entry.at} now={now} />;
     case 'stack-update':
       return <StackUpdateRow update={entry.update} at={entry.at} now={now} />;
+    case 'maintenance':
+      return <MaintenanceRow job={entry.job} at={entry.at} now={now} />;
     case 'schedule':
       return (
         <Row

@@ -26,6 +26,12 @@ export interface AgentConfig {
   buildDockerConfig: string | undefined;
   /** Scratch space for build source and secret files (`BUILD_TMP_DIR`); default `<dataRoot>/agent/build-tmp`. */
   buildTmpDir: string;
+  /**
+   * Where volume archives go (`SHIPYARD_BACKUP_ROOT`; default `<dataRoot>/agent/backups`), as
+   * `<backup root>/volumes/<volume>/<timestamp>.tar.zst` (SHP-REQ-201). Same-path convention
+   * (SHP-D-053): the agent's path is the host's, so it can bind-mount it into the archive helper.
+   */
+  backupRoot: string;
 }
 
 export class AgentConfigError extends Error {
@@ -70,6 +76,13 @@ export function loadAgentConfig(env: NodeJS.ProcessEnv, inContainer: () => boole
     throw new AgentConfigError(`BUILDKIT_ADDR must be unix:///path or tcp://host:port, got ${buildkitAddr}`);
   }
   const root = dataRoot.replace(/\/+$/, '') || '/';
+  const explicitBackupRoot = nonEmpty(env['SHIPYARD_BACKUP_ROOT'])?.replace(/\/+$/, '');
+  const backupRoot = explicitBackupRoot ?? `${root === '/' ? '' : root}/agent/backups`;
+  // Bind-mounted into the helper as `-v <dir>:/out`: absolute, and nothing Docker would split on.
+  // (A default under an unusable data root is refused by each backup instead, not at start.)
+  if (explicitBackupRoot !== undefined && (!explicitBackupRoot.startsWith('/') || /[:,\s]/.test(explicitBackupRoot))) {
+    throw new AgentConfigError(`SHIPYARD_BACKUP_ROOT must be an absolute path with no ":", "," or spaces, got ${backupRoot}`);
+  }
 
   return {
     serverUrl: parsed.toString(),
@@ -81,5 +94,6 @@ export function loadAgentConfig(env: NodeJS.ProcessEnv, inContainer: () => boole
     buildkitAddr,
     buildDockerConfig: nonEmpty(env['BUILD_DOCKER_CONFIG']),
     buildTmpDir: nonEmpty(env['BUILD_TMP_DIR']) ?? `${root === '/' ? '' : root}/agent/build-tmp`,
+    backupRoot,
   };
 }

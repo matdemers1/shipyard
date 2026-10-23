@@ -443,6 +443,67 @@ describe('runLoop: stack updates (SHP-P-16)', () => {
   });
 });
 
+describe('runLoop: maintenance (SHP-P-17, SHP-ADR-012)', () => {
+  const JOB = { jobId: '88888888-8888-4888-8888-888888888888', kind: 'volume-delete', volume: 'orphan' } as const;
+
+  it("advertises 'maintenance' with a runner and hands the job to it in the background", async () => {
+    expect(pollBody({ actions: true, logs: true, stackUpdates: true, maintenance: true })).toEqual({
+      waitSeconds: 25,
+      capabilities: ['actions', 'logs', 'stack-updates', 'maintenance'],
+    });
+    expect(parsePollResponse({ target: null, maintenance: JOB })).toEqual({ target: null, maintenance: JOB });
+    const stop = new AbortController();
+    const offered: unknown[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, maintenance: JOB };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({ client, runTarget: () => Promise.resolve(), maintenance: { offer: (job) => void offered.push(job) }, log: quiet, signal: stop.signal, sleep: noSleep });
+    expect(offered).toEqual([JOB]);
+    expect(client.calls[0]?.body).toEqual({ waitSeconds: 25, capabilities: ['maintenance'] });
+  });
+
+  it('ignores a job sent to an agent without the runner', async () => {
+    const stop = new AbortController();
+    const warnings: object[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, maintenance: JOB };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({ client, runTarget: () => Promise.resolve(), log: { ...quiet, warn: (obj: object) => void warnings.push(obj) }, signal: stop.signal, sleep: noSleep });
+    expect(warnings).toEqual([{ jobId: JOB.jobId }]);
+  });
+
+  it('a server that refuses only `maintenance` keeps getting actions, logs and stack updates', async () => {
+    const stop = new AbortController();
+    // A server from SHP-P-16: every capability but `maintenance`.
+    const client = fakeClient((call, i) => {
+      if (i === 3) stop.abort();
+      const caps = (call.body as { capabilities?: string[] }).capabilities ?? [];
+      if (caps.includes('maintenance')) {
+        throw new AgentRequestError(400, refusal('invalid_request', 'The agent request failed validation.', 'capabilities.3: Invalid option'), 'POST', POLL_PATH);
+      }
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      actions: { offer: () => undefined },
+      logs: { offer: () => undefined },
+      stackUpdates: { offer: () => undefined },
+      maintenance: { offer: () => undefined },
+      log: quiet,
+      signal: stop.signal,
+      sleep: noSleep,
+      now: () => 0,
+    });
+    const rest = ['actions', 'logs', 'stack-updates'];
+    expect(client.calls.map((c) => (c.body as { capabilities?: string[] }).capabilities)).toEqual([[...rest, 'maintenance'], rest, rest, rest]);
+  });
+});
+
 describe('runLoop', () => {
   it('polls again at once after an empty poll', async () => {
     const stop = new AbortController();
@@ -812,6 +873,7 @@ describe('loadAgentConfig', () => {
       buildkitAddr: undefined,
       buildDockerConfig: undefined,
       buildTmpDir: '/data/shipyard/agent/build-tmp',
+      backupRoot: '/data/shipyard/agent/backups',
     });
     expect(loadAgentConfig({ ...base, SHIPYARD_AGENT_VERSION: '0.2.0', SHIPYARD_VERSION: 'abc' }, () => false).agentVersion).toBe('0.2.0');
   });
@@ -836,6 +898,13 @@ describe('loadAgentConfig', () => {
     expect(loadAgentConfig({ ...base, BUILDKIT_ADDR: '  ' }, () => false).buildkitAddr).toBeUndefined();
     expect(() => loadAgentConfig({ ...base, BUILDKIT_ADDR: '/run/buildkit.sock' }, () => false)).toThrow(AgentConfigError);
     expect(() => loadAgentConfig({ ...base, BUILDKIT_ADDR: 'docker-container://x' }, () => false)).toThrow(AgentConfigError);
+  });
+
+  it('reads the backup root (SHP-REQ-201): absolute, nothing a bind mount would split on', () => {
+    expect(loadAgentConfig({ ...base, SHIPYARD_BACKUP_ROOT: '/mnt/backups/' }, () => false).backupRoot).toBe('/mnt/backups');
+    expect(() => loadAgentConfig({ ...base, SHIPYARD_BACKUP_ROOT: 'backups' }, () => false)).toThrow(AgentConfigError);
+    expect(() => loadAgentConfig({ ...base, SHIPYARD_BACKUP_ROOT: '/a:/b' }, () => false)).toThrow(AgentConfigError);
+    expect(() => loadAgentConfig({ ...base, SHIPYARD_BACKUP_ROOT: '/a,b' }, () => false)).toThrow(AgentConfigError);
   });
 
   it('refuses a missing server or data root', () => {

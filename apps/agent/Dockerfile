@@ -49,6 +49,13 @@ LABEL org.opencontainers.image.revision=$REVISION \
 ENV SHIPYARD_VERSION=$REVISION \
     NODE_ENV=production
 
+# zstd for volume archives (SHP-ADR-012, SHP-REQ-201): the agent runs this same image as its
+# archive helper (`tar --zstd`, `find`), so nothing third-party is ever pulled for a backup.
+# tar and find are already in the base.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends zstd \
+    && rm -rf /var/lib/apt/lists/*
+
 # Pinned Docker CLI and Compose v5 plugin, copied from the official images rather than an apt
 # repo, so the agent talks to the host's Docker Engine through a version it was tested against.
 COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker

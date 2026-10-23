@@ -27,7 +27,14 @@ import {
   runStackUpdate,
   systemClock,
   ManifestLoadError,
+  backupVolumesBeforeUpdate,
+  closeInterruptedMaintenance,
+  nodeArchiveFiles,
+  recoverInterruptedMaintenance,
+  runMaintenance,
   type Log,
+  type MaintenanceContext,
+  type MaintenancePorts,
   type SequencePorts,
 } from '@shipyard/sequence';
 import { createActionRunner, reportInterruptedActions } from './actions.js';
@@ -40,6 +47,7 @@ import { loadOrCreateIdentity } from './identity.js';
 import { POLL_TIMEOUT_MS, createTargetRunner, fileTargetStore, reportLeftovers, runLoop, targetStorePath, trackInFlight } from './loop.js';
 import { createInventoryCollector } from './inventory.js';
 import { createLogsRunner } from './logs.js';
+import { createMaintenanceRunner, reportInterruptedMaintenance } from './maintenance.js';
 import { buildReport, manifestsHash, startReporting } from './report.js';
 import { createCandidateChecker } from './stack-candidates.js';
 import { createStackUpdateRunner, reportInterruptedStackUpdates } from './stack-updates.js';
@@ -140,6 +148,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   });
   // A lifecycle action is never redone after a restart: it is reported interrupted (SHP-REQ-187).
   await reportInterruptedActions({ client, journal, log: logger });
+
+  // Nor is a volume job (SHP-ADR-012): a project one had stopped is started again first — a stack
+  // is never left stopped because the agent restarted — then the server is told.
+  const archiveFiles = nodeArchiveFiles();
+  const maintenanceRecovered = await recoverInterruptedMaintenance({ docker: ports.docker, files: archiveFiles, log }, journal);
+  await reportInterruptedMaintenance({ client, recovered: maintenanceRecovered, close: (r) => closeInterruptedMaintenance(journal, r), log: logger });
 
   // Opened once: the ledger's hash chain is verified on open. Appends take a cross-process lock and
   // chain onto the file's true tail, since the host CLI appends to the same file (SHP-T-6.11).
@@ -279,6 +293,41 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   }
   const worker = builds;
 
+  // Volume backups, restores, deletes and prunes (SHP-ADR-012). The helper is the agent's own
+  // image, found once by inspecting its own container; it is never pulled.
+  let ownImage: Promise<string> | undefined;
+  const helperImage = (): Promise<string> => {
+    if (ownImage === undefined) {
+      const self = config.selfContainerId;
+      const inspect = ports.docker.containerImageId?.bind(ports.docker);
+      ownImage =
+        self === undefined || inspect === undefined
+          ? Promise.reject(new Error('the agent is not running in a container (no HOSTNAME under /.dockerenv, no SHIPYARD_SELF_CONTAINER_ID)'))
+          : inspect(self).then((id) => {
+              if (id === null) throw new Error(`Docker does not know the agent's own container ${self}`);
+              return id;
+            });
+      // A failed lookup is tried again next time rather than remembered.
+      ownImage.catch(() => {
+        ownImage = undefined;
+      });
+    }
+    return ownImage;
+  };
+  const maintenancePorts: MaintenancePorts = { docker: ports.docker, fs: ports.fs, files: archiveFiles, clock: ports.clock, log };
+  const maintenanceContext = async (onStep?: MaintenanceContext['onStep']): Promise<MaintenanceContext> => ({
+    dataRoot: config.dataRoot,
+    backupRoot: config.backupRoot,
+    apps: await loadManifests(ports.fs, config.dataRoot),
+    stacks: await loadStacks(ports.fs, config.dataRoot),
+    journal,
+    ledger,
+    helperImage,
+    // A prune never runs beside a deploy, a stack update or an action (their locks show it).
+    busy: async () => targets.inFlight() || (await anyLockLive()),
+    ...(onStep === undefined ? {} : { onStep }),
+  });
+
   // Stack updates by digest (SHP-P-16): always on, in the background, one at a time.
   const stackUpdates = createStackUpdateRunner({
     client,
@@ -292,7 +341,16 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       }
       return runStackUpdate(
         { registry: stackRegistry, docker: ports.docker, fs: ports.fs, clock: ports.clock, log },
-        { dataRoot: config.dataRoot, stacks, journal, ledger, historyDir: paths.historyDir, onStep },
+        {
+          dataRoot: config.dataRoot,
+          stacks,
+          journal,
+          ledger,
+          historyDir: paths.historyDir,
+          onStep,
+          // volumeBackups.beforeUpdate (SHP-ADR-012): inside the update's own lock.
+          backupVolumes: async (stack, updateId) => (await backupVolumesBeforeUpdate(maintenancePorts, await maintenanceContext(), { stack, updateId })).refusal,
+        },
         job,
       );
     },
@@ -340,6 +398,23 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     log: logger,
     signal: stopping.signal,
   });
+  const maintenance = createMaintenanceRunner({
+    client,
+    execute: async (job, onStep) => {
+      let ctx: MaintenanceContext;
+      try {
+        ctx = await maintenanceContext(onStep);
+      } catch (err) {
+        const why = err instanceof ManifestLoadError ? err.toRefusal() : refusal('manifest_invalid', `The host's manifests could not be read: ${err instanceof Error ? err.message : String(err)}`);
+        return { jobId: job.jobId, state: 'refused', refusal: why };
+      }
+      return runMaintenance(maintenancePorts, ctx, job);
+    },
+    // New or removed archives reach the server with the next report, sent now.
+    onFinished: () => void reporting.sendNow(),
+    log: logger,
+    signal: stopping.signal,
+  });
   const logs = createLogsRunner({
     client,
     docker: ports.docker,
@@ -356,6 +431,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       actions,
       logs,
       stackUpdates,
+      maintenance,
       log: logger,
       signal: stopping.signal,
       ...(worker === undefined ? {} : { builds: { canTake: () => !worker.busy(), offer: (job) => void worker.offer(job) } }),

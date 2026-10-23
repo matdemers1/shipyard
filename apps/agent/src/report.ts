@@ -9,7 +9,17 @@ import {
   type Manifest,
   type StackManifest,
 } from '@shipyard/schema';
-import { loadManifests, loadStacks, type DockerPort, type FsPort, type LedgerEntry, type LoadedManifest, type LoadedStack } from '@shipyard/sequence';
+import {
+  loadManifests,
+  loadStacks,
+  toVolumeArchive,
+  type DockerPort,
+  type FsPort,
+  type LedgerEntry,
+  type LoadedManifest,
+  type LoadedStack,
+  type VolumeArchiveRecord,
+} from '@shipyard/sequence';
 import type { AgentClient } from './client.js';
 
 /**
@@ -28,7 +38,13 @@ import type { AgentClient } from './client.js';
  *
  * It carries the stacks adopted under `<data root>/stacks/` too (SHP-REQ-183), hashed like the
  * apps, and they are part of `reportHash`: an edited stack file is reported at once.
+ *
+ * And the volume archives in the ledger (SHP-REQ-201, SHP-ADR-012), every live one, with no path:
+ * the server lists them and a restore names one by ID for the agent to resolve itself.
  */
+
+/** The schema's cap on `volumeArchives`. */
+const MAX_REPORTED_ARCHIVES = 5000;
 
 export interface ReportPorts {
   fs: FsPort;
@@ -39,7 +55,12 @@ export interface ReportPorts {
    * The agent's ledger, shared with the engine. `refresh` adopts what another process (the host
    * CLI) appended; `recent` is newest first. Absent: the report carries no releases.
    */
-  ledger?: { refresh(): Promise<void>; recent(app: string, n?: number): LedgerEntry[] };
+  ledger?: {
+    refresh(): Promise<void>;
+    recent(app: string, n?: number): LedgerEntry[];
+    /** The live volume archives (SHP-REQ-201); reported without their paths. Absent: none reported. */
+    volumeArchives?(): VolumeArchiveRecord[];
+  };
   /** The BuildKit cache manager's snapshot (SHP-T-7.11); absent when builds are disabled. */
   buildCache?: () => AgentBuildCache | undefined;
   /**
@@ -161,6 +182,8 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
 
   const engine = (await ports.engineApiVersion()).trim();
   const releases = await ledgerReleases(ports, loaded);
+  // Only from a ledger that just verified (ledgerReleases refreshed it): newest kept at the cap.
+  const archives = releases === undefined ? undefined : ports.ledger?.volumeArchives?.().slice(-MAX_REPORTED_ARCHIVES).map(toVolumeArchive);
   const buildCache = ports.buildCache?.();
   const host = await hostInventory(ports, loaded, stacks);
   return {
@@ -172,6 +195,7 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
     // Absent rather than empty when nothing is adopted, as an older agent's report is.
     ...(stacks.length === 0 || stacksFailed ? {} : { stacks: await reportedStacks(ports, stacks) }),
     ...(releases === undefined ? {} : { releases }),
+    ...(archives === undefined ? {} : { volumeArchives: archives }),
     ...(buildCache === undefined ? {} : { buildCache }),
     ...(host === undefined ? {} : { host }),
   };

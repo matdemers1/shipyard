@@ -35,6 +35,8 @@ export interface HostViewProps {
   /** Adopted stacks by name, for their update badge and sheet (SHP-T-16.6). */
   stacks?: ReadonlyMap<string, StackView>;
   stackHref?: StackHref;
+  /** Stacks whose open sheet is asking for an update right now. */
+  busyStacks?: ReadonlySet<string>;
 }
 
 function plural(n: number, one: string, other: string): string {
@@ -51,7 +53,7 @@ export function AgentStatus({ snapshot, now }: { snapshot: HostSnapshot; now: nu
   );
 }
 
-export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor, stacks, stackHref }: HostViewProps) {
+export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor, stacks, stackHref, busyStacks }: HostViewProps) {
   const inventory = snapshot.inventory;
   const totals = useMemo(() => hostTotals(inventory), [inventory]);
   const counts = useMemo(() => chipCounts(inventory.containers), [inventory]);
@@ -135,6 +137,7 @@ export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor, s
             hrefFor={hrefFor}
             {...(stacks === undefined ? {} : { stacks })}
             {...(stackHref === undefined ? {} : { stackHref })}
+            {...(busyStacks === undefined ? {} : { busyStacks })}
           />
         )}
       </Section>

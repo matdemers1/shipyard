@@ -9,7 +9,7 @@ import { sha7 } from '../../lib/appdetail';
 import { TRIGGER_LABEL } from '../../lib/builds';
 import { changeWords, outcomeTone, requesterLine, stackUpdateStateWords } from '../../lib/stacks';
 import { formatDuration, formatFeedTime } from '../../lib/timeline';
-import { DEPLOY_ALL_READY } from '../../lib/words';
+import { DEPLOY_ALL_READY, stackChangeWords } from '../../lib/words';
 import {
   actionNode,
   buildHeadline,
@@ -140,12 +140,14 @@ function ActionRow({ action, at, now }: { action: ActionStatus; at: string; now:
   );
 }
 
-/** "Update 17.1.1 → 17.1.2", "Rollback to 17.0.4", and the refusal's message when it did not work. */
+/**
+ * "Update 17.1.1 → 17.1.2", "Rollback · 17.0.4" and — when it did not work — the refusal's message
+ * and fix verbatim (SHP-REQ-200).
+ */
 export function stackUpdateDetail(update: StackUpdateStatus): string {
-  const what = changeWords(update);
-  const verb = update.kind === 'rollback' ? 'Rollback' : 'Update';
-  const message = update.state === 'succeeded' || update.refusal === null ? null : update.refusal.message;
-  return [what === null ? verb : `${verb} ${what}`, message].filter((x): x is string => x !== null).join(' · ');
+  const change = stackChangeWords(update.kind, changeWords(update));
+  const why = update.state === 'succeeded' || update.refusal === null ? [] : [update.refusal.message, update.refusal.fix];
+  return [change, ...why].join(' · ');
 }
 
 /**

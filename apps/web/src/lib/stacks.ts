@@ -11,7 +11,21 @@ import type {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefusalError, request, unreachableRefusal, type Role } from './api';
 import { canChangeState } from './auth';
-import { STACK_UPDATE_STATE_WORDS, STACK_UPDATE_STEP_WORDS } from './words';
+import {
+  CHAIN_WORDS,
+  STACK_STEP_DONE_WORDS,
+  STACK_UPDATE_STATE_WORDS,
+  STACK_UPDATE_STEP_WORDS,
+  backUpWords,
+  recheckWords,
+  requesterLineWords,
+  rollbackNoteWords,
+  soakWords,
+  soakingWords,
+  stackResultWords,
+  toWords,
+  tracksWords,
+} from './words';
 
 /**
  * Updating an adopted stack by digest from the console (SHP-T-16.6, SHP-ADR-010; SHP-REQ-194,
@@ -203,26 +217,22 @@ export function versionWords(tag: string | null, digest: string | null): string 
   return digest === null ? '—' : shortDigest(digest);
 }
 
-// ── The sheet's words ────────────────────────────────────────────────────
+// ── The sheet's words (composed from lib/words.ts) ───────────────────────
 
 /** "17.x", "latest", or "pinned": what the Re-check step names. */
 export function trackWords(track: StackTrack): string {
-  if (track === 'pinned') return 'pinned';
+  if (track === 'pinned') return CHAIN_WORDS.pinned;
   return 'semver' in track ? track.semver : track.tag;
 }
 
 /** The sheet's opening sentence: what a service follows. */
 export function tracksSentence(service: Pick<StackServiceView, 'image' | 'track'>): string {
   const track = service.track;
-  if (track === 'pinned') return `${service.image} is pinned; Shipyard never moves it.`;
-  if ('semver' in track) return `Tracks ${service.image} at ${track.semver} — the highest ${track.semver} release the registry has.`;
-  return `Tracks ${service.image} at the ${track.tag} tag — whatever it points at when the update runs.`;
+  if (track === 'pinned') return tracksWords(service.image, { kind: 'pinned' });
+  return 'semver' in track ? tracksWords(service.image, { kind: 'semver', range: track.semver }) : tracksWords(service.image, { kind: 'tag', tag: track.tag });
 }
 
-/** "Soak 2 min", "Soak 45 s", "Soak 90 s". */
-export function soakWords(seconds: number): string {
-  return seconds >= 60 && seconds % 60 === 0 ? `Soak ${String(seconds / 60)} min` : `Soak ${String(seconds)} s`;
-}
+export { soakWords };
 
 /**
  * The What happens chain, from the manifest (SHP-ADR-010): Re-check <track> → Back up (when the
@@ -230,32 +240,30 @@ export function soakWords(seconds: number): string {
  */
 export function whatHappens(stack: Pick<StackView, 'soakSeconds' | 'backup'>, updating: readonly Pick<StackServiceView, 'track'>[]): string[] {
   const tracks = [...new Set(updating.map((s) => trackWords(s.track)))];
-  const chain = [tracks.length === 0 ? 'Re-check the track' : `Re-check ${tracks.join(', ')}`];
+  const chain = [recheckWords(tracks)];
   const backup = stack.backup ?? null;
-  if (backup !== null) {
-    const what = backup.argv?.slice(0, 2).join(' ') ?? '';
-    chain.push(what === '' ? 'Back up' : `Back up (${what})`);
-  }
-  chain.push('Pull by digest', 'Swap the image line', 'Health');
+  if (backup !== null) chain.push(backUpWords(backup.argv?.slice(0, 2).join(' ') ?? ''));
+  chain.push(CHAIN_WORDS.pull, CHAIN_WORDS.swap, CHAIN_WORDS.health);
   if (stack.soakSeconds !== null && stack.soakSeconds > 0) chain.push(soakWords(stack.soakSeconds));
   return chain;
 }
 
 /** What happens if the update fails: image-only rollback, and the backup when there is one. */
 export function rollbackNote(from: string, hasBackup: boolean): string {
-  const base = `If health or the soak fails, Shipyard puts ${from} back by its digest — images only. Data the new version changed stays changed`;
-  return hasBackup ? `${base}; the backup taken first is listed under Backups.` : `${base}.`;
+  return rollbackNoteWords(from, hasBackup);
 }
 
 // ── Progress and results ─────────────────────────────────────────────────
 
-/** "Soaking · 74 s of 120 s" while it soaks; the step's words otherwise; the state before a step. */
-export function progressHeadline(status: Pick<StackUpdateStatus, 'state' | 'step'>, soak: { elapsed: number; of: number } | null): string {
+/**
+ * The banner's headline: "Soaking · 120 s soak" while it soaks — the length, never a countdown, as
+ * the status carries no time the soak began (one counted here would start over on a reload); the
+ * step's words otherwise; the state before a step.
+ */
+export function progressHeadline(status: Pick<StackUpdateStatus, 'state' | 'step'>, soakSeconds: number | null): string {
   if (status.state === 'awaiting_approval') return STACK_UPDATE_STATE_WORDS.awaiting_approval;
   if (status.step === null) return stackUpdateStateWords(status.state);
-  if (status.step === 'soaking' && soak !== null && soak.of > 0) {
-    return `${STACK_UPDATE_STEP_WORDS.soaking} · ${String(Math.min(soak.elapsed, soak.of))} s of ${String(soak.of)} s`;
-  }
+  if (status.step === 'soaking' && soakSeconds !== null && soakSeconds > 0) return soakingWords(soakSeconds);
   return stackUpdateStepWords(status.step);
 }
 
@@ -265,16 +273,15 @@ const STEP_ORDER: readonly StackUpdateStep[] = ['verifying', 'backing_up', 'pull
 export function stepsDone(step: StackUpdateStep | null, hasBackup: boolean): string[] {
   if (step === null || step === 'rolling_back') return [];
   const at = STEP_ORDER.indexOf(step);
-  const past: Record<StackUpdateStep, string> = {
-    verifying: 're-checked',
-    backing_up: 'backed up',
-    pulling: 'pulled',
-    swapping: 'swapped',
-    checking: 'healthy',
-    soaking: 'soaked',
-    rolling_back: 'rolled back',
-  };
-  return STEP_ORDER.slice(0, Math.max(0, at)).filter((s) => hasBackup || s !== 'backing_up').map((s) => past[s]);
+  return STEP_ORDER.slice(0, Math.max(0, at))
+    .filter((s) => hasBackup || s !== 'backing_up')
+    .map((s) => STACK_STEP_DONE_WORDS[s]);
+}
+
+/** The digest an update asked for, for its first service; undefined for a rollback before it ends. */
+function askedDigest(update: Pick<StackUpdateStatus, 'images' | 'digests'>): string | undefined {
+  const service = update.images[0]?.service ?? Object.keys(update.digests ?? {})[0];
+  return service === undefined ? undefined : update.digests?.[service];
 }
 
 /**
@@ -288,12 +295,12 @@ export function changeWords(
 ): string | null {
   const after = update.images[0];
   const service = after?.service ?? Object.keys(update.digests ?? {})[0];
-  const asked = service === undefined ? undefined : update.digests?.[service];
+  const asked = askedDigest(update);
   const before = update.previous.find((p) => p.service === service) ?? (update.state === 'succeeded' ? undefined : after);
   const beforeWords = before === undefined ? null : versionWords(before.tag, before.digest);
   if (update.state !== 'succeeded' && asked !== undefined && after?.digest !== asked) {
     const to = tagFor(asked) ?? shortDigest(asked);
-    return beforeWords === null ? `to ${to}` : `${beforeWords} → ${to}`;
+    return beforeWords === null ? toWords(to) : `${beforeWords} → ${to}`;
   }
   if (after === undefined) return null;
   const to = versionWords(after.tag, after.digest);
@@ -304,26 +311,29 @@ export function changeWords(
  * The one line a finished update says: "Updated forgejo to 17.1.2", "Update of forgejo to 17.1.2
  * rolled back — 17.1.1 is running again". The refusal's message and fix follow it verbatim.
  */
-export function resultHeadline(update: Pick<StackUpdateStatus, 'stack' | 'kind' | 'state' | 'images' | 'previous'>, to: string | null): string {
-  const target = to === null ? '' : ` to ${to}`;
+export function resultHeadline(
+  update: Pick<StackUpdateStatus, 'stack' | 'kind' | 'state' | 'images' | 'digests'>,
+  tagFor: (digest: string) => string | null = () => null,
+): string {
+  const asked = update.kind === 'update' ? askedDigest(update) : undefined;
+  const target = asked === undefined ? null : (tagFor(asked) ?? shortDigest(asked));
   const now = update.images[0];
-  if (update.kind === 'rollback') {
-    if (update.state === 'succeeded') return `Rolled ${update.stack} back${now === undefined ? target : ` to ${versionWords(now.tag, now.digest)}`}`;
-    return `Rollback of ${update.stack}${target} ${stackUpdateStateWords(update.state).toLowerCase()}`;
-  }
-  switch (update.state) {
-    case 'succeeded':
-      return `Updated ${update.stack}${now === undefined ? target : ` to ${versionWords(now.tag, now.digest)}`}`;
-    case 'rolled_back':
-      return `Update of ${update.stack}${target} rolled back${now === undefined ? '' : ` — ${versionWords(now.tag, now.digest)} is running again`}`;
-    default:
-      return `Update of ${update.stack}${target} ${stackUpdateStateWords(update.state).toLowerCase()}`;
-  }
+  return stackResultWords(update.kind, update.state, update.stack, target, now === undefined ? null : versionWords(now.tag, now.digest));
 }
 
 /** Who asked, and who approved when someone did: "claude: forgejo (approved by Matthew)". */
 export function requesterLine(update: Pick<StackUpdateStatus, 'requesterLabel' | 'approvedBy'>): string {
-  return update.approvedBy === null ? update.requesterLabel : `${update.requesterLabel} (approved by ${update.approvedBy})`;
+  return requesterLineWords(update.requesterLabel, update.approvedBy);
+}
+
+/** A failed, rolled-back or refused update whose message and fix must be shown (SHP-REQ-200). */
+export function isUnfixedFailure(update: Pick<StackUpdateStatus, 'state' | 'refusal'> | null): boolean {
+  return update !== null && (update.state === 'failed' || update.state === 'rolled_back' || update.state === 'refused');
+}
+
+/** The stack's candidate tag for a digest, so a result names "17.1.2" rather than its digest. */
+export function candidateTag(stack: Pick<StackView, 'services'> | undefined): (digest: string) => string | null {
+  return (digest) => stack?.services.find((s) => s.candidate?.digest === digest)?.candidate?.tag ?? null;
 }
 
 /**
@@ -401,8 +411,8 @@ export type StackPhase =
   | { kind: 'idle' }
   /** The POST is in flight. */
   | { kind: 'starting'; request: StackRequest }
-  /** Held, queued or running: `soakStartedAt` is when this console first saw it soaking. */
-  | { kind: 'following'; status: StackUpdateStatus; soakStartedAt: number | null }
+  /** Held, queued or running. */
+  | { kind: 'following'; status: StackUpdateStatus }
   | { kind: 'done'; status: StackUpdateStatus }
   /** The server refused the request itself (locked, forbidden, updates disabled, agent offline …). */
   | { kind: 'refused'; request: StackRequest; error: RefusalError };
@@ -442,7 +452,7 @@ export function useStackUpdate(onEnded?: () => void): {
     [],
   );
 
-  const track = useCallback((gen: number, status: StackUpdateStatus, soakStartedAt: number | null, onLost: (error: RefusalError) => void): void => {
+  const track = useCallback((gen: number, status: StackUpdateStatus, onLost: (error: RefusalError) => void): void => {
     const live = () => gen === generation.current;
     if (isTerminalStackUpdate(status.state)) {
       busy.current = false;
@@ -450,8 +460,7 @@ export function useStackUpdate(onEnded?: () => void): {
       ended.current?.();
       return;
     }
-    const soakAt = status.step === 'soaking' ? (soakStartedAt ?? Date.now()) : null;
-    setPhase({ kind: 'following', status, soakStartedAt: soakAt });
+    setPhase({ kind: 'following', status });
     const next = (failures: number): void => {
       setTimeout(
         () => {
@@ -459,7 +468,7 @@ export function useStackUpdate(onEnded?: () => void): {
           stacks
             .get(status.id)
             .then((fresh) => {
-              if (live()) track(gen, fresh, soakAt, onLost);
+              if (live()) track(gen, fresh, onLost);
             })
             .catch((error: unknown) => {
               if (!live()) return;
@@ -487,7 +496,7 @@ export function useStackUpdate(onEnded?: () => void): {
       const asked = req.kind === 'update' ? stacks.update(req.stack) : stacks.rollback(req.stack, req.toUpdateId);
       asked
         .then((status) => {
-          if (live()) track(gen, status, null, refuse);
+          if (live()) track(gen, status, refuse);
         })
         .catch((error: unknown) => {
           if (live()) refuse(problemOf(error));
@@ -503,7 +512,7 @@ export function useStackUpdate(onEnded?: () => void): {
       const gen = ++generation.current;
       const req: StackRequest =
         status.kind === 'rollback' ? { kind: 'rollback', stack: status.stack, toUpdateId: status.toUpdateId ?? '' } : { kind: 'update', stack: status.stack };
-      track(gen, status, null, (error) => {
+      track(gen, status, (error) => {
         busy.current = false;
         setPhase({ kind: 'refused', request: req, error });
       });
@@ -518,20 +527,4 @@ export function useStackUpdate(onEnded?: () => void): {
   }, []);
 
   return { phase, run, follow, reset };
-}
-
-/** Seconds since `start`, ticking each second while `start` is set. */
-export function useSecondsSince(start: number | null): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (start === null) return;
-    setNow(Date.now());
-    const timer = setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [start]);
-  return start === null ? 0 : Math.max(0, Math.floor((now - start) / 1000));
 }

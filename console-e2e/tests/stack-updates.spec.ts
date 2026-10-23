@@ -132,6 +132,13 @@ for (const width of ['desktop', 'phone'] as const satisfies readonly Width[]) {
         const rows = sheet.getByRole('list', { name: 'Update history' }).getByRole('listitem');
         await expect(rows).toHaveCount(3);
         await expect(rows.nth(0).getByText('Rolled back', { exact: true })).toBeVisible();
+        // A failure is shown to whoever opens the sheet, not only the session that asked (SHP-REQ-200):
+        // on its history row, and as the sheet's note from the stack's newest update.
+        await expect(rows.nth(0).getByText(STACK_FIXTURE.rolledBackMessage, { exact: true })).toBeVisible();
+        await expect(rows.nth(0).getByText(STACK_FIXTURE.rolledBackFix, { exact: true })).toBeVisible();
+        const note = sheet.locator('.shp-stack-outcome');
+        await expect(note.getByText(STACK_FIXTURE.rolledBackMessage, { exact: true })).toBeVisible();
+        await expect(note.getByText(STACK_FIXTURE.rolledBackFix, { exact: true })).toBeVisible();
         await expect(rows.nth(1).getByText(`v1.139.0 → ${STACK_FIXTURE.running}`)).toBeVisible();
         await expect(rows.nth(2).getByText(`claude: immich (approved by ${USERS.admin.displayName})`)).toBeVisible();
         await expect(rows.nth(0).getByRole('button')).toHaveCount(0);
@@ -174,6 +181,7 @@ test.describe('at 1440 px', () => {
     await expect(rows).toHaveCount(3);
     const rolledBack = rows.filter({ hasText: 'Rolled back' });
     await expect(rolledBack).toContainText(STACK_FIXTURE.rolledBackMessage);
+    await expect(rolledBack).toContainText(STACK_FIXTURE.rolledBackFix);
     await expect(rolledBack.getByRole('link')).toHaveAttribute('href', `/host?stack=${NAME}`);
     await settle(page);
     const { blocking } = await axeViolations(page);
@@ -218,6 +226,7 @@ test.describe('Needs you', () => {
           await expect(held.getByRole('button', { name: `Deny the ${NAME} update` })).toBeVisible();
           const failed = rows.filter({ hasText: 'update rolled back' });
           await expect(failed).toContainText(STACK_FIXTURE.rolledBackMessage);
+          await expect(failed).toContainText(STACK_FIXTURE.rolledBackFix);
           await expect(failed.getByRole('link', { name: `Open ${NAME} on Host` })).toHaveAttribute('href', `/host?stack=${NAME}`);
           await expectClean(page, `Needs you with a held stack update (${theme}, ${width})`, width);
         });

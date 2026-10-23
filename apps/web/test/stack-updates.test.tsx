@@ -204,9 +204,10 @@ function posts(calls: readonly Call[], path: string): Call[] {
   return calls.filter((c) => c.method === 'POST' && c.path === path);
 }
 
+/** The forgejo group's header; `hidden` because an open sheet makes the page behind it inert. */
 async function forgejoHeader(): Promise<HTMLElement> {
-  const groups = await screen.findByRole('list', { name: 'Compose projects' });
-  const toggle = await within(groups).findByRole('button', { name: 'forgejo' });
+  const groups = await screen.findByRole('list', { name: 'Compose projects', hidden: true });
+  const toggle = await within(groups).findByRole('button', { name: 'forgejo', hidden: true });
   const head = toggle.closest('.shp-hg__head');
   if (!(head instanceof HTMLElement)) throw new Error('no forgejo group header');
   return head;
@@ -269,15 +270,18 @@ describe('the stack update model (SHP-ADR-010)', () => {
     expect(checkError(forgejo())).toBeNull();
   });
 
-  it('words progress, the soak countdown and results', () => {
-    expect(progressHeadline({ state: 'running', step: 'soaking' }, { elapsed: 74, of: 120 })).toBe('Soaking · 74 s of 120 s');
+  it('words progress, the soak by its length (never a countdown that restarts on reload) and results', () => {
+    expect(progressHeadline({ state: 'running', step: 'soaking' }, 120)).toBe('Soaking · 120 s soak');
+    expect(progressHeadline({ state: 'running', step: 'soaking' }, null)).toBe('Soaking');
     expect(progressHeadline({ state: 'running', step: 'pulling' }, null)).toBe('Pulling by digest');
     expect(progressHeadline({ state: 'queued', step: null }, null)).toBe('Queued');
     expect(progressHeadline({ state: 'awaiting_approval', step: null }, null)).toBe('Waiting for approval');
     expect(stepsDone('soaking', true)).toEqual(['re-checked', 'backed up', 'pulled', 'swapped', 'healthy']);
     expect(stepsDone('pulling', false)).toEqual(['re-checked']);
-    expect(resultHeadline(ROLLED_BACK, '17.1.2')).toBe('Update of forgejo to 17.1.2 rolled back — 17.1.1 is running again');
-    expect(resultHeadline(status({ state: 'succeeded', images: [{ service: 'server', tag: '17.1.2', digest: D2 }] }), '17.1.2')).toBe('Updated forgejo to 17.1.2');
+    const tagFor = (d: string) => (d === D2 ? '17.1.2' : null);
+    expect(resultHeadline(ROLLED_BACK, tagFor)).toBe('Update of forgejo to 17.1.2 rolled back — 17.1.1 is running again');
+    expect(resultHeadline(ROLLED_BACK)).toBe('Update of forgejo to sha256:9b07…3d22 rolled back — 17.1.1 is running again');
+    expect(resultHeadline(status({ state: 'succeeded', images: [{ service: 'server', tag: '17.1.2', digest: D2 }] }), tagFor)).toBe('Updated forgejo to 17.1.2');
     expect(changeWords(PREVIOUS)).toBe('17.0.4 → 17.1.1');
     // One that did not stick names what it asked for: by tag when the candidate is known.
     expect(changeWords(ROLLED_BACK, (d) => (d === D2 ? '17.1.2' : null))).toBe('17.1.1 → 17.1.2');
@@ -431,7 +435,7 @@ describe('the update sheet (SHP-REQ-194, SHP-REQ-199)', () => {
     renderAt('/host?stack=forgejo&update=1');
     const sheet = await screen.findByRole('dialog', { name: 'Update forgejo' });
     await user.click(within(sheet).getByRole('button', { name: 'Update to 17.1.2' }));
-    expect(await within(sheet).findByText(/^Soaking · \d+ s of 120 s$/, {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(await within(sheet).findByText('Soaking · 120 s soak', {}, { timeout: 4000 })).toBeInTheDocument();
     expect(within(sheet).getByText(/^Re-checked · backed up · pulled · swapped · healthy/)).toBeInTheDocument();
     expect(await within(sheet).findByText('Updated forgejo to 17.1.2', {}, { timeout: 6000 })).toBeInTheDocument();
     expect(within(sheet).getByRole('button', { name: 'Done' })).toBeInTheDocument();
@@ -696,5 +700,103 @@ describe('Activity lists stack updates (SHP-REQ-200)', () => {
     expect(new URLSearchParams(window.location.search).get('kind')).toBe('stack-update');
     expect(screen.getByRole('button', { name: 'Stack updates' })).toHaveAttribute('aria-pressed', 'true');
     expect(await screen.findByText(/Health check: the container reported unhealthy 3 times in 60 s\./)).toBeInTheDocument();
+  });
+});
+
+// ── A failure seen by whoever looks, not only the session that asked (SHP-REQ-200) ──
+
+describe("a failed update's message and fix, outside the session that asked", () => {
+  const MESSAGE = 'Health check: the container reported unhealthy 3 times in 60 s.';
+  const FIX = "Read the container's logs, then update again or pin 17.1.1.";
+
+  it.each(['history', 'update'] as const)('shows the stack’s rolled-back lastUpdate on the %s sheet, with no request of its own', async (mode) => {
+    const calls = hostRoutes('deployer', forgejo({ lastUpdate: ROLLED_BACK }));
+    renderAt(mode === 'update' ? '/host?stack=forgejo&update=1' : '/host?stack=forgejo');
+    const sheet = await screen.findByRole('dialog', { name: mode === 'update' ? 'Update forgejo' : 'forgejo' });
+    const note = sheet.querySelector('.shp-stack-outcome');
+    if (!(note instanceof HTMLElement)) throw new Error('no outcome note on the sheet');
+    expect(within(note).getByText('Update of forgejo to 17.1.2 rolled back — 17.1.1 is running again')).toBeInTheDocument();
+    expect(within(note).getByText(MESSAGE)).toBeInTheDocument();
+    expect(within(note).getByText(FIX)).toBeInTheDocument();
+    // Nothing was asked for: the note is the stack's own record.
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('leaves the note out when the newest update succeeded', async () => {
+    hostRoutes('deployer');
+    renderAt('/host?stack=forgejo');
+    const sheet = await screen.findByRole('dialog', { name: 'forgejo' });
+    await within(sheet).findByRole('list', { name: 'Update history' });
+    expect(sheet.querySelector('.shp-stack-outcome')).toBeNull();
+  });
+
+  it('shows message and fix on every failed, rolled-back or refused history row', async () => {
+    const refused = status({
+      id: HELD_ID,
+      state: 'refused',
+      refusal: { code: 'digest_not_tracked', gate: 'none', message: 'The track no longer resolves to that digest.', fix: 'Wait for the agent to report the new candidate.' },
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    hostRoutes('deployer', forgejo(), {
+      'GET /api/stacks/forgejo/updates': { status: 200, body: { items: [refused, ROLLED_BACK, PREVIOUS], nextCursor: null } },
+    });
+    renderAt('/host?stack=forgejo');
+    const sheet = await screen.findByRole('dialog', { name: 'forgejo' });
+    const rows = within(await within(sheet).findByRole('list', { name: 'Update history' })).getAllByRole('listitem');
+    expect(within(rows[0] as HTMLElement).getByText('The track no longer resolves to that digest.')).toBeInTheDocument();
+    expect(within(rows[0] as HTMLElement).getByText('Wait for the agent to report the new candidate.')).toBeInTheDocument();
+    expect(within(rows[1] as HTMLElement).getByText(MESSAGE)).toBeInTheDocument();
+    expect(within(rows[1] as HTMLElement).getByText(FIX)).toBeInTheDocument();
+    expect((rows[2] as HTMLElement).querySelector('.shp-stack-history__why')).toBeNull();
+  });
+
+  it('shows both in Needs you’s failed row', async () => {
+    appsRoutes('viewer', { 'GET /api/stack-updates/needs-you': { status: 200, body: { approvals: [], failed: [ROLLED_BACK] } } });
+    renderAt('/');
+    const needs = await screen.findByRole('list', { name: 'Needs you' });
+    expect(needs).toHaveTextContent(`forgejo update rolled back — ${MESSAGE}`);
+    expect(within(needs).getByText(FIX)).toBeInTheDocument();
+  });
+
+  it('shows both in the Activity row', async () => {
+    activityRoutes([status({ ...ROLLED_BACK, createdAt: new Date(Date.now() - 5 * 60_000).toISOString() })]);
+    renderAt('/activity');
+    const badge = await screen.findByText('Rolled back');
+    const row = badge.closest('li') as HTMLElement;
+    expect(row).toHaveTextContent(MESSAGE);
+    expect(row).toHaveTextContent(FIX);
+  });
+});
+
+describe('the header follows the open sheet, and a held rollback says so', () => {
+  it('shows the step from the sheet’s own poll on the group header, and hides Update… while it runs', async () => {
+    hostRoutes('deployer', forgejo(), {
+      'POST /api/stacks/forgejo/updates': { status: 202, body: status() },
+      [`GET /api/stack-updates/${UPDATE_ID}`]: { status: 200, body: status({ state: 'running', step: 'pulling', startedAt: new Date().toISOString() }) },
+    });
+    const user = userEvent.setup();
+    renderAt('/host?stack=forgejo&update=1');
+    const sheet = await screen.findByRole('dialog', { name: 'Update forgejo' });
+    const head = await forgejoHeader();
+    expect(within(head).getByRole('button', { name: 'Update… forgejo', hidden: true })).toBeInTheDocument();
+    await user.click(within(sheet).getByRole('button', { name: 'Update to 17.1.2' }));
+    await waitFor(
+      () => {
+        expect(within(head).getByText('Pulling by digest')).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
+    expect(within(head).queryByRole('button', { name: 'Update… forgejo', hidden: true })).not.toBeInTheDocument();
+  }, 15_000);
+
+  it('names a held rollback’s approve "Approve and roll back"', async () => {
+    const heldRollback = status({ id: HELD_ID, kind: 'rollback', state: 'awaiting_approval', digests: null, toUpdateId: OLDER_ID, requesterLabel: 'claude: homelab upkeep' });
+    appsRoutes('deployer', { 'GET /api/stack-updates/needs-you': { status: 200, body: { approvals: [heldRollback], failed: [] } } });
+    renderAt('/');
+    const needs = await screen.findByRole('list', { name: 'Needs you' });
+    expect(within(needs).getByRole('button', { name: 'Approve and roll back forgejo' })).toHaveTextContent('Approve and roll back');
+    expect(within(needs).getByRole('button', { name: 'Deny the forgejo rollback' })).toBeInTheDocument();
+    expect(within(needs).queryByRole('button', { name: /Approve and update/ })).not.toBeInTheDocument();
+    expect(needs).toHaveTextContent('forgejo rollback · asked by claude: homelab upkeep');
   });
 });

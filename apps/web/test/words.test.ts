@@ -181,3 +181,82 @@ describe('a check is never named by its gate code alone (SHP-REQ-171)', () => {
     expect(hits).toEqual([]);
   });
 });
+
+/**
+ * SHP-T-16.6: the stack-update screens spell no copy of their own — every word is in lib/words.ts.
+ * In the scopes below a JSX text node may hold only punctuation and spaces, and no string or
+ * template literal may read like a sentence (a letter and a space, other than class names) or be a
+ * capitalised word given to an attribute a person reads.
+ */
+describe('stack updates speak only from lib/words.ts (SHP-T-16.6)', () => {
+  const READ_ATTRIBUTES = new Set(['title', 'closeLabel', 'aria-label', 'heading', 'description', 'placeholder', 'label']);
+
+  function isClassNames(text: string): boolean {
+    return text
+      .trim()
+      .split(/\s+/)
+      .every((token) => token.startsWith('shp-') || token.startsWith('d3-'));
+  }
+
+  function offences(file: string, inScope: (node: ts.Node) => boolean, text: string = readFileSync(file, 'utf8')): string[] {
+    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const found: string[] = [];
+    const where = (node: ts.Node) => `${relative(SRC, file)}:${String(source.getLineAndCharacterOfPosition(node.getStart()).line + 1)}`;
+    const check = (node: ts.Node): void => {
+      if (ts.isJsxText(node) && /\p{L}/u.test(node.text)) found.push(`${where(node)} JSX text ${JSON.stringify(node.text.trim())}`);
+      if (
+        ts.isStringLiteral(node) ||
+        ts.isNoSubstitutionTemplateLiteral(node) ||
+        ts.isTemplateHead(node) ||
+        ts.isTemplateMiddle(node) ||
+        ts.isTemplateTail(node)
+      ) {
+        const text = node.text;
+        if (/\p{L}/u.test(text) && /\s/.test(text.trim()) && !isClassNames(text)) found.push(`${where(node)} ${JSON.stringify(text)}`);
+        const parent = node.parent;
+        if (ts.isStringLiteral(node) && ts.isJsxAttribute(parent) && READ_ATTRIBUTES.has(parent.name.getText(source)) && /^\p{Lu}/u.test(text)) {
+          found.push(`${where(node)} ${parent.name.getText(source)}=${JSON.stringify(text)}`);
+        }
+      }
+      ts.forEachChild(node, check);
+    };
+    const visit = (node: ts.Node): void => {
+      if (inScope(node)) check(node);
+      else ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return found;
+  }
+
+  const whole = (): boolean => true;
+  const named = (names: readonly string[]) => (node: ts.Node): boolean =>
+    (ts.isFunctionDeclaration(node) && node.name !== undefined && names.includes(node.name.text)) ||
+    (ts.isCaseClause(node) && ts.isStringLiteral(node.expression) && names.includes(node.expression.text)) ||
+    ((ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      (ts.isJsxElement(node) ? node.openingElement : node).attributes.getText().includes('denyingStack') &&
+      names.includes('denyingStack'));
+
+  it.each([
+    ['screens/host/StackSheet.tsx', whole],
+    ['screens/host/StackProgress.tsx', whole],
+    ['lib/stacks.ts', whole],
+    ['components/NeedsYou.tsx', named(['stack-approval', 'stack-failed', 'heldStackLine', 'failedStackLine', 'denyingStack'])],
+    ['screens/activity/FeedRow.tsx', named(['StackUpdateRow', 'stackUpdateDetail'])],
+  ])('%s', (path, scope) => {
+    expect(offences(join(SRC, path), scope)).toEqual([]);
+  });
+
+  it('catches copy in a component (the guard itself works)', () => {
+    const probe = [
+      'const a = <p>Stack not found</p>;',
+      "const b = <Modal title=\"Close\" />;",
+      "const c = `Update of ${'x'} rolled back`;",
+      "const d = <div className=\"shp-a shp-b\">{WORDS}</div>;",
+    ].join('\n');
+    const found = offences(join(SRC, 'probe.tsx'), whole, probe).join('\n');
+    expect(found).toContain('JSX text "Stack not found"');
+    expect(found).toContain('title="Close"');
+    expect(found).toContain('"Update of "');
+    expect(found).not.toContain('shp-a');
+  });
+});

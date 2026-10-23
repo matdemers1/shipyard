@@ -591,6 +591,11 @@ export class Ledger {
     return this.volumeArchives().find((a) => a.archiveId === archiveId) ?? null;
   }
 
+  /** True when this ledger has ever recorded a volume archive (the boot sweep deletes nothing otherwise). */
+  hasVolumeArchives(): boolean {
+    return this.lines.some(({ entry }) => entry.kind === 'volume-archive');
+  }
+
   /** True when `archiveId` was ever recorded, live or since removed: recovery adopts only one that never was. */
   volumeArchiveRecorded(archiveId: string): boolean {
     return this.lines.some(({ entry }) => entry.kind === 'volume-archive' && entry.archiveId === archiveId);

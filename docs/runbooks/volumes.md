@@ -62,8 +62,8 @@ volumeBackups:
 
 Host › Volumes lists orphans first, then owned volumes (Deployed and Operated), then Observed ones.
 **Back up** on an owned volume queues a job; the row shows "Archiving · <volume>" and then the new
-archive. **Archives · N** lists them newest first with time, size, quiesced or live copy, and who
-took it. A failed backup shows its message and fix in the row and in Needs you.
+archive. **Archives · N** lists them newest first with time, size, and whether the stack was
+stopped for the copy. A failed backup shows its message and fix in the row and in Needs you.
 
 From a Claude Code session: `shipyard_volume_backup { volume, requester }` with a token scoped to
 the volume's app or stack, then `shipyard_maintenance_status` if it is still running.

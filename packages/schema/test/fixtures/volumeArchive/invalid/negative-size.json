@@ -1,0 +1,12 @@
+{
+  "archiveId": "01a16650-7a32-7202-bfdb-41c03c80417a",
+  "volume": "forgejo_data",
+  "owner": {
+    "kind": "stack",
+    "name": "forgejo"
+  },
+  "createdAt": "2026-10-22T03:00:00Z",
+  "sizeBytes": -1,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "quiesced": true
+}

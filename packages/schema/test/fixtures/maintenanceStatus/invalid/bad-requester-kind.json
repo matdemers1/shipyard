@@ -1,0 +1,34 @@
+{
+  "id": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "kind": "volume-backup",
+  "state": "succeeded",
+  "step": null,
+  "volume": "forgejo_data",
+  "owner": {
+    "kind": "stack",
+    "name": "forgejo"
+  },
+  "requester": {
+    "kind": "robot",
+    "label": "x"
+  },
+  "createdAt": "2026-10-22T03:00:00Z",
+  "startedAt": "2026-10-22T03:00:01Z",
+  "finishedAt": "2026-10-22T03:01:00Z",
+  "archive": {
+    "archiveId": "01a16650-7a32-7202-bfdb-41c03c80417a",
+    "volume": "forgejo_data",
+    "owner": {
+      "kind": "stack",
+      "name": "forgejo"
+    },
+    "createdAt": "2026-10-22T03:00:00Z",
+    "sizeBytes": 734003200,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "quiesced": true
+  },
+  "removedArchives": [],
+  "prune": null,
+  "refusal": null,
+  "output": null
+}

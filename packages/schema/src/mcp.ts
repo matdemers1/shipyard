@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { AppName, Sha40 } from './primitives.js';
 import { Requester } from './api.js';
+import { VolumeName } from './maintenance.js';
 
 /**
  * MCP tool input shapes (SHP-REQ-004): one Zod schema per tool, so the MCP
@@ -105,6 +106,35 @@ export const ShipyardStackUpdateInput = z
   .meta({ id: 'ShipyardStackUpdateInput', description: 'Input for the shipyard_stack_update tool' });
 export type ShipyardStackUpdateInput = z.infer<typeof ShipyardStackUpdateInput>;
 
+/**
+ * `shipyard_prune` (SHP-REQ-205, SHP-ADR-012): a dry run by default; a real prune follows one.
+ * Thresholds are the console's defaults, not an MCP choice.
+ */
+export const ShipyardPruneInput = z
+  .strictObject({
+    dryRun: z.boolean().default(true),
+    fromDryRunId: z.uuid().optional(),
+    requester: Requester,
+  })
+  .refine((v) => v.dryRun || v.fromDryRunId !== undefined, {
+    message: 'a prune that is not a dry run needs fromDryRunId',
+    path: ['fromDryRunId'],
+  })
+  .meta({ id: 'ShipyardPruneInput', description: 'Input for the shipyard_prune tool' });
+export type ShipyardPruneInput = z.infer<typeof ShipyardPruneInput>;
+
+/**
+ * `shipyard_volume_backup` (SHP-REQ-201, SHP-ADR-012). There is no restore or delete tool: both
+ * are console-only, behind admin, step-up and the typed volume name.
+ */
+export const ShipyardVolumeBackupInput = z
+  .strictObject({
+    volume: VolumeName,
+    requester: Requester,
+  })
+  .meta({ id: 'ShipyardVolumeBackupInput', description: 'Input for the shipyard_volume_backup tool' });
+export type ShipyardVolumeBackupInput = z.infer<typeof ShipyardVolumeBackupInput>;
+
 export const MCP_TOOLS = {
   shipyard_status: ShipyardStatusInput,
   shipyard_dry_run: ShipyardDryRunInput,
@@ -117,4 +147,6 @@ export const MCP_TOOLS = {
   shipyard_action: ShipyardActionInput,
   shipyard_logs: ShipyardLogsInput,
   shipyard_stack_update: ShipyardStackUpdateInput,
+  shipyard_prune: ShipyardPruneInput,
+  shipyard_volume_backup: ShipyardVolumeBackupInput,
 } as const;

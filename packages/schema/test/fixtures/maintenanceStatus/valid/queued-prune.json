@@ -1,0 +1,20 @@
+{
+  "id": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "kind": "prune",
+  "state": "queued",
+  "step": null,
+  "volume": null,
+  "owner": null,
+  "requester": {
+    "kind": "token",
+    "label": "ci"
+  },
+  "createdAt": "2026-10-22T03:00:00Z",
+  "startedAt": null,
+  "finishedAt": null,
+  "archive": null,
+  "removedArchives": [],
+  "prune": null,
+  "refusal": null,
+  "output": null
+}

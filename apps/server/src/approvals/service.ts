@@ -5,6 +5,7 @@ import type { ServiceDeps } from '../deps.js';
 import { callerCanActOn, isUniqueViolation, lockRefusal, type DeployCaller } from '../deploys/service.js';
 import { assertDeployable } from '../apps/drift.js';
 import { assertNotFrozen } from '../freeze/service.js';
+import { expireHeldStackUpdates } from '../stack-updates/service.js';
 
 /**
  * Approvals (SHP-T-3.6). A token-requested deploy of an app whose manifest says
@@ -79,13 +80,16 @@ export async function expireApprovals(deps: ServiceDeps, now: Date = new Date())
   return expired;
 }
 
-/** Runs `expireApprovals` every 30 s until `stop()`, which waits for a sweep in flight. */
+/**
+ * Runs `expireApprovals` — and, for held stack updates, `expireHeldStackUpdates` (SHP-T-16.3) —
+ * every 30 s until `stop()`, which waits for a sweep in flight.
+ */
 export function startApprovalExpiry(deps: ServiceDeps, intervalMs = EXPIRY_INTERVAL_MS): { stop(): Promise<void> } {
   let stopped = false;
   let inFlight: Promise<void> = Promise.resolve();
 
   const tick = (): void => {
-    inFlight = expireApprovals(deps)
+    inFlight = Promise.all([expireApprovals(deps), expireHeldStackUpdates(deps)])
       .then(() => undefined)
       .catch((err: unknown) => {
         deps.logger.error({ err }, 'approval expiry failed');

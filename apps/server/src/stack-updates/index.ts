@@ -9,6 +9,7 @@ import { sendRefusal } from '../errors.js';
 import {
   approveStackUpdate,
   denyStackUpdate,
+  expireHeldStackUpdates,
   getStackUpdate,
   isStackUpdateTerminal,
   listStackUpdates,
@@ -109,6 +110,7 @@ export function stacksRouter(deps: ServiceDeps): Router {
       return;
     }
     await sweepStaleStackUpdates(deps);
+    await expireHeldStackUpdates(deps);
     res.json({ stacks: await listStacks(db, tokenScope(req)) });
   });
 
@@ -213,6 +215,7 @@ export function stackUpdatesRouter(deps: ServiceDeps): Router {
       return;
     }
     await sweepStaleStackUpdates(deps);
+    await expireHeldStackUpdates(deps);
     res.json(await stackNeedsYou(db));
   });
 

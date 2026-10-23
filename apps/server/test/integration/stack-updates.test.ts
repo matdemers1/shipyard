@@ -8,7 +8,17 @@ import { loadConfig } from '../../src/config.js';
 import { createDb, type Db, type Prisma } from '../../src/db.js';
 import type { ServiceDeps } from '../../src/deps.js';
 import { Bus } from '../../src/events.js';
-import { STACK_UPDATE_STALE_MS, requestStackUpdate, sweepStaleStackUpdates, waitForStackUpdate, type StackNeedsYou, type StackView } from '../../src/stack-updates/service.js';
+import {
+  STACK_APPROVAL_EXPIRED_MESSAGE,
+  STACK_APPROVAL_TTL_MS,
+  STACK_UPDATE_STALE_MS,
+  expireHeldStackUpdates,
+  requestStackUpdate,
+  sweepStaleStackUpdates,
+  waitForStackUpdate,
+  type StackNeedsYou,
+  type StackView,
+} from '../../src/stack-updates/service.js';
 import { agentPost, enrol, makeKey, poll, seedApp, seedStack, signIn, type Key } from './agent-work-fixtures.js';
 
 /**
@@ -363,6 +373,92 @@ describe('approval, dispatch, progress and result', () => {
     expect((await update({ cookie }, 'forgejo')).status).toBe(202);
     const approved = await request(app).post(`/api/stack-updates/${held.id}/approve`).set('Cookie', cookie);
     expect(err(approved).code).toBe('locked');
+    expect((await db.stackUpdate.findUniqueOrThrow({ where: { id: held.id } })).state).toBe('awaiting_approval');
+  });
+});
+
+describe('the lock runs both ways with lifecycle actions (SHP-T-16.3)', () => {
+  it('refuses a stack action while an update of it is queued, naming the update and its requester', async () => {
+    await poll(app, key, ['stack-updates', 'actions']);
+    const { cookie, email } = await signIn(db, 'deployer');
+    const queued = (await update({ cookie }, 'forgejo')).body as StackUpdateStatus;
+    const res = await request(app).post('/api/actions').set('Cookie', cookie).send({ target: { kind: 'stack', name: 'forgejo' }, verb: 'restart' });
+    expect(res.status).toBe(409);
+    expect(err(res).code).toBe('locked');
+    expect(err(res).message).toContain(queued.id);
+    expect(err(res).message).toContain(`${email} (console)`);
+    expect(await db.action.count()).toBe(0);
+    // Another stack is not locked by it.
+    expect((await request(app).post('/api/actions').set('Cookie', cookie).send({ target: { kind: 'stack', name: 'immich' }, verb: 'restart' })).status).toBe(202);
+  });
+
+  it('never dispatches a queued stack action while an update of that stack holds it', async () => {
+    const stackId = (await db.stack.findUniqueOrThrow({ where: { name: 'forgejo' } })).id;
+    const action = await db.action.create({ data: { targetKind: 'stack', targetName: 'forgejo', agentId, verb: 'restart', requesterLabel: 'someone' } });
+    const holding = await seedUpdate(stackId, 'forgejo', 'running', new Date());
+    const blocked = await poll(app, key, ['actions']);
+    expect('action' in blocked).toBe(false);
+    expect((await db.action.findUniqueOrThrow({ where: { id: action.id } })).state).toBe('queued');
+
+    await db.stackUpdate.update({ where: { id: holding }, data: { state: 'succeeded', endedAt: new Date() } });
+    const freed = await poll(app, key, ['actions']);
+    expect('action' in freed ? freed.action.actionId : undefined).toBe(action.id);
+  });
+});
+
+describe('held updates expire and are decided only on the adopted stack', () => {
+  it('expires a held update after an hour: cancelled with approval_required, audited, no longer approvable (SHP-REQ-061)', async () => {
+    await poll(app, key, ['stack-updates']);
+    const { cookie } = await signIn(db, 'deployer');
+    const token = await stackToken(cookie, ['forgejo']);
+    const held = (await update({ token }, 'forgejo')).body as StackUpdateStatus;
+    expect(await expireHeldStackUpdates(deps, new Date(Date.now() + STACK_APPROVAL_TTL_MS - 60_000))).toEqual([]);
+    expect(await expireHeldStackUpdates(deps, new Date(Date.now() + STACK_APPROVAL_TTL_MS + 60_000))).toEqual([held.id]);
+    const row = await db.stackUpdate.findUniqueOrThrow({ where: { id: held.id } });
+    expect(row.state).toBe('cancelled');
+    expect(row.endedAt).not.toBeNull();
+    expect(row.refusal).toMatchObject({ code: 'approval_required', message: STACK_APPROVAL_EXPIRED_MESSAGE });
+    const audit = await db.auditEvent.findFirstOrThrow({ where: { action: 'stack_update.expired', entityId: held.id } });
+    expect(audit.actorType).toBe('system');
+    const approved = await request(app).post(`/api/stack-updates/${held.id}/approve`).set('Cookie', cookie);
+    expect(approved.status).toBe(409);
+    expect(err(approved)).toMatchObject({ code: 'approval_required', message: STACK_APPROVAL_EXPIRED_MESSAGE });
+    const needs = (await request(app).get('/api/stack-updates/needs-you').set('Cookie', cookie)).body as StackNeedsYou;
+    expect(needs.approvals).toEqual([]);
+  });
+
+  it('expires lazily on approve: one held past its hour is refused, never queued', async () => {
+    await poll(app, key, ['stack-updates']);
+    const { cookie } = await signIn(db, 'deployer');
+    const token = await stackToken(cookie, ['forgejo']);
+    const held = (await update({ token }, 'forgejo')).body as StackUpdateStatus;
+    await db.stackUpdate.update({ where: { id: held.id }, data: { heldAt: new Date(Date.now() - STACK_APPROVAL_TTL_MS - 1000) } });
+    const approved = await request(app).post(`/api/stack-updates/${held.id}/approve`).set('Cookie', cookie);
+    expect(err(approved).code).toBe('approval_required');
+    expect((await db.stackUpdate.findUniqueOrThrow({ where: { id: held.id } })).state).toBe('cancelled');
+  });
+
+  it('refuses to approve or deny one whose stack is no longer the adopted stack it was requested for', async () => {
+    await poll(app, key, ['stack-updates']);
+    const { cookie } = await signIn(db, 'deployer');
+    const token = await stackToken(cookie, ['forgejo']);
+    const held = (await update({ token }, 'forgejo')).body as StackUpdateStatus;
+    // The agent stops naming the stack: the report retires it.
+    const report: AgentReport = {
+      agentVersion: '0.1.0',
+      composeVersion: '5.0.1',
+      engineApiVersion: '1.51',
+      patExpiresAt: null,
+      apps: [],
+      stacks: [{ manifest: { kind: 'stack', name: 'immich', compose: { files: ['/DATA/AppData/immich/docker-compose.yml'], project: 'immich' }, updates: 'none' }, manifestSha256: 'e'.repeat(64) }],
+    };
+    expect((await agentPost(app, key, '/api/agent/report', report)).status).toBe(200);
+    expect((await db.stack.findUniqueOrThrow({ where: { name: 'forgejo' } })).retiredAt).not.toBeNull();
+    for (const decision of ['approve', 'deny']) {
+      const res = await request(app).post(`/api/stack-updates/${held.id}/${decision}`).set('Cookie', cookie);
+      expect(res.status).toBe(409);
+      expect(err(res).code).toBe('conflict');
+    }
     expect((await db.stackUpdate.findUniqueOrThrow({ where: { id: held.id } })).state).toBe('awaiting_approval');
   });
 });

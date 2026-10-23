@@ -1,21 +1,25 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
+  ShipyardActionInput,
   ShipyardBuildInput,
   ShipyardBuildStatusInput,
   ShipyardDeployInput,
   ShipyardDeployStatusInput,
   ShipyardDryRunInput,
   ShipyardHostInput,
+  ShipyardLogsInput,
   ShipyardRollbackInput,
   ShipyardStatusInput,
   refusal,
+  type ActionStatus,
   type DeployStatus,
   type Refusal,
 } from '@shipyard/schema';
 import type { GitHubPort } from '@shipyard/sequence/github';
 import { z } from 'zod';
 import type { ServiceDeps } from '../deps.js';
+import { getAction, isActionTerminal, requestAction, waitForAction } from '../actions/service.js';
 import { enqueueBuild, getBuild, type BuildRequester } from '../builds/service.js';
 import {
   MAX_WAIT_SECONDS,
@@ -27,15 +31,18 @@ import {
   type DeployCaller,
 } from '../deploys/service.js';
 import { getGroupDeployStatus, waitForGroupChange } from '../groups/service.js';
-import { readHostSnapshots } from '../host/index.js';
+import { readHostSnapshots, snapshotContainers } from '../host/index.js';
+import { logsViewerOf, readLogsTail } from '../logs/service.js';
 import { appStatuses } from './status.js';
 
 /**
- * The eight MCP tools (SHP-REQ-041, SHP-REQ-144, SHP-REQ-179). Every tool is a thin shell over the
- * deploy, build or host service: no deploy or build logic lives here, and no tool accepts a command,
+ * The ten MCP tools (SHP-REQ-041, SHP-REQ-144, SHP-REQ-179, SHP-REQ-184, SHP-REQ-193). Every tool is a
+ * thin shell over the deploy, build, host, action or logs service: no deploy or build logic lives here, and no tool accepts a command,
  * a path or an image reference (SHP-REQ-053) — only app names, 40-hex SHAs, deploy/build IDs and who
  * is asking. `shipyard_host` takes nothing at all and is not scoped to an app: the host inventory
- * is the same read-only snapshot for any token (SHP-ADR-009, SHP-REQ-181).
+ * is the same read-only snapshot for any token (SHP-ADR-009, SHP-REQ-181). `shipyard_action` offers
+ * start, restart and recreate and never stop — an API token cannot stop (SHP-ADR-010, SHP-REQ-188);
+ * `shipyard_logs` returns a bounded, redacted tail and never follows (SHP-ADR-011, SHP-REQ-193).
  * Freeze, schedule, restore and approval are console-only (SHP-D-072).
  */
 
@@ -50,6 +57,13 @@ export interface McpOptions {
 }
 
 export const DEFAULT_DRY_RUN_WAIT_SECONDS = 85;
+
+/** How long `shipyard_action` waits for the agent's result before it answers "still running". */
+export const ACTION_WAIT_MS = 60_000;
+/** How long `shipyard_logs` waits for the agent to send the tail. */
+export const LOGS_TAIL_WAIT_MS = 30_000;
+
+const CONTAINER_ID_RE = /^[0-9a-f]{64}$/;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -92,6 +106,12 @@ function outOfScope(caller: DeployCaller, app: string): Refusal | null {
   if (scopeOf(caller).has(app)) return null;
   return refusal('forbidden', `This token is not scoped to ${app}.`, `Use a token issued for ${app}, or issue a new one that names it.`);
 }
+
+const LOGS_NOT_ALLOWED = refusal(
+  'forbidden',
+  "This token can't read logs.",
+  'Issue a token with logs allowed in Settings › Claude & tokens.',
+);
 
 const NO_SUCH_DEPLOY = refusal('not_found', 'No such deploy.', 'Use the deployId that shipyard_deploy or shipyard_rollback returned.');
 
@@ -348,6 +368,86 @@ export function buildMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async () => ok(await readHostSnapshots(deps.db, deps.logger)),
+  );
+
+  server.registerTool(
+    'shipyard_action',
+    {
+      title: 'Start, restart or recreate',
+      description:
+        'Restart, recreate or start a Deployed app or an Operated stack (or one `service` of it), by `name`, and ' +
+        'waits up to 60 s for the agent to finish. Returns { action, finished }: the action\'s id and state ' +
+        '(queued, running, succeeded, failed or refused) with the refusal or output if any. If `finished` is ' +
+        'false the agent has not answered yet — the action is still in flight and its final state is in Activity ' +
+        'in the console; do not repeat the call. Stop is console-only: an API token can never stop a service. ' +
+        'Observed containers can\'t be acted on. An app that is being deployed is Locked and the call is ' +
+        'refused naming who holds it. `requester` (repo, branch, label) is required and recorded; the label ' +
+        'shows in Activity (e.g. "claude: <session>"). The token must be scoped to `name`.',
+      inputSchema: toolInput(ShipyardActionInput),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ name, verb, service, requester }) => {
+      const denied = outOfScope(caller, name);
+      if (denied !== null) return refused(denied);
+      // An app wins over an adopted stack of the same name; a name that is neither is passed on as
+      // an app so the service says why (unknown_app, or not_adopted for an Observed project).
+      const isApp = (await deps.db.app.findFirst({ where: { name, retiredAt: null }, select: { id: true } })) !== null;
+      const isStack = !isApp && (await deps.db.stack.findFirst({ where: { name, retiredAt: null }, select: { id: true } })) !== null;
+      const queued = await requestAction(deps, caller, {
+        target: { kind: isStack ? 'stack' : 'app', name },
+        verb,
+        ...(service === undefined ? {} : { service }),
+        requester,
+      });
+      if ('code' in queued) return refused(queued);
+      const settled: ActionStatus = (await waitForAction(deps, queued.id, ACTION_WAIT_MS, signal)) ?? (await getAction(deps.db, queued.id)) ?? queued;
+      const finished = isActionTerminal(settled.state);
+      return ok({
+        action: settled,
+        finished,
+        ...(finished
+          ? {}
+          : { message: 'Still in flight after 60 s. Its final state is in Activity in the console; do not repeat the call.' }),
+      });
+    },
+  );
+
+  server.registerTool(
+    'shipyard_logs',
+    {
+      title: 'Container logs',
+      description:
+        'Read-only. The last `tail` lines (1 to 500, default 100) of one container\'s logs, by `container` — the ' +
+        'name the Host view shows, or its full 64-character ID — redacted on the host and never stored. Returns ' +
+        '{ container: { id, name }, lines: [{ at, stream, text }] } within 30 s. Any container in the host ' +
+        'inventory can be read, whatever its tier (shipyard_host lists them). Needs a token issued with ' +
+        'logs allowed (Settings › Claude & tokens); a token without it is refused. A tail only: it never follows.',
+      inputSchema: toolInput(ShipyardLogsInput),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ container, tail }) => {
+      // Who may read comes before what exists, so a token that cannot read learns nothing about names.
+      const viewer = await logsViewerOf(deps, caller);
+      if ('code' in viewer) {
+        return refused(caller.actor?.type === 'token' && viewer.message.startsWith('This token may not read') ? LOGS_NOT_ALLOWED : viewer);
+      }
+      const all = await snapshotContainers(deps.db);
+      const found = CONTAINER_ID_RE.test(container)
+        ? all.find((c) => c.container.id === container)
+        : all.find((c) => c.container.name === container);
+      if (found === undefined) {
+        return refused(
+          refusal('unknown_container', `The agent does not report a container ${container}.`, 'Use a name or ID from shipyard_host.'),
+        );
+      }
+      const lines = await readLogsTail(deps, caller, { containerId: found.container.id, tail }, LOGS_TAIL_WAIT_MS);
+      if (!Array.isArray(lines)) return refused(lines);
+      return ok({
+        container: { id: found.container.id, name: found.container.name },
+        lines,
+        note: 'Redacted on the host; never stored.',
+      });
+    },
   );
 
   return server;

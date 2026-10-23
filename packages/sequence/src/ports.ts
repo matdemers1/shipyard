@@ -408,7 +408,8 @@ export interface DockerPort {
   /** The Engine's build cache records (`/system/df`'s BuildCache). */
   buildCacheRecords?(): Promise<BuildCacheRecord[]>;
   /**
-   * Removes one build cache record through the Engine's `POST /build/prune`, its full ID anchored
+   * Removes one build cache record through the Engine's `POST /build/prune` with `all=true` (or the
+   * Engine skips a record that is not dangling), its full ID anchored
    * (`id=^<id>$`: the Engine matches `id` as a regular expression, so a bare ID is a prefix).
    */
   pruneBuildCacheRecord?(id: string): Promise<void>;

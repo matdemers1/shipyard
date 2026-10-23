@@ -123,6 +123,8 @@ const IMAGE_ID_RE = /^sha256:[0-9a-f]{64}$/;
 const CACHE_ID_RE = /^[a-z0-9]{1,64}$/;
 const TIMEOUT_EXIT_CODE = 124;
 const ARCHIVE_SUFFIX = '.tar.zst';
+/** Container states that still hold a volume after the owner's project is stopped. */
+const HOLDING_STATES: ReadonlySet<string> = new Set(['running', 'restarting', 'paused']);
 const TMP_SUFFIX = '.tmp';
 
 function message(err: unknown): string {
@@ -364,9 +366,11 @@ async function composeStep(env: JobEnv, which: 'stop' | 'start', compose: Compos
 }
 
 /** Runs one helper container, journaled. On a timeout the container is removed by name. */
-async function runHelper(env: JobEnv, stepName: string, argv: string[], detail: Record<string, unknown>): Promise<ExecResult> {
+async function runHelper(env: JobEnv, stepName: string, argv: string[], detail: Record<string, unknown>, beforeRun?: () => void): Promise<ExecResult> {
   const name = argv[argv.indexOf('--name') + 1] ?? '';
   await env.journal.begin(line(env, stepName, { argv: ['docker', ...argv], detail: { ...detail, helper: name } }));
+  // Journaled; from here on the helper may change what it touches.
+  beforeRun?.();
   let res: ExecResult;
   try {
     res = await cli(env.ports.docker)(argv, { timeoutMs: env.helperTimeoutMs });
@@ -681,9 +685,12 @@ export function toVolumeArchive(record: VolumeArchiveRecord): NonNullable<Mainte
 }
 
 /** Empties `volume` and extracts `archive` into it: the two helper runs of a restore. True when both exited 0. */
-async function emptyAndExtract(env: JobEnv, o: { volume: string; archive: VolumeArchiveRecord; imageId: string; prefix: '' | 'safety-'; purpose: string }): Promise<{ ok: boolean; failed?: string }> {
+async function emptyAndExtract(
+  env: JobEnv,
+  o: { volume: string; archive: VolumeArchiveRecord; imageId: string; prefix: '' | 'safety-'; purpose: string; onWipe?: () => void },
+): Promise<{ ok: boolean; failed?: string }> {
   const { volume, archive, imageId } = o;
-  const wipe = await runHelper(env, `${o.prefix}empty`, wipeHelperArgv({ name: helperName(env.jobId, `${o.purpose}empty`), imageId, volume }), { volume });
+  const wipe = await runHelper(env, `${o.prefix}empty`, wipeHelperArgv({ name: helperName(env.jobId, `${o.purpose}empty`), imageId, volume }), { volume }, o.onWipe);
   if (wipe.exitCode !== 0) return { ok: false, failed: `emptying the volume exited ${String(wipe.exitCode)}` };
   const extract = await runHelper(
     env,
@@ -743,11 +750,29 @@ async function runRestoreJob(env: JobEnv, ctx: MaintenanceContext, job: VolumeRe
   }
 }
 
+/** A restore that left its volume half-restored and could not put it back: the stack stays stopped. */
+function leftStoppedResult(jobId: string, volume: string, resolved: ResolvedOwner, safetyId: string | null, why: string): MaintenanceResult {
+  const safety = safetyId === null ? 'its safety archive' : `safety archive ${safetyId}`;
+  return {
+    jobId,
+    state: 'failed',
+    refusal: refusal(
+      'step_failed',
+      `Restoring ${volume} failed (${why}). The stack ${resolved.owner.name} was left stopped so nothing writes to a half-restored volume; what the volume held before is in ${safety}.`,
+      `Restore ${safety} (what the volume held before) by hand, then start ${resolved.owner.name}.`,
+    ),
+  };
+}
+
 async function restoreLocked(env: JobEnv, ctx: MaintenanceContext, job: VolumeRestoreJob, resolved: ResolvedOwner, archive: VolumeArchiveRecord, imageId: string): Promise<MaintenanceResult> {
   const { jobId, volume } = job;
   let result: MaintenanceResult | undefined;
   // Set only when the volume may be half-restored and could not be put back: nothing must write to it.
   let leaveStopped = false;
+  // True from the moment the restore begins emptying the volume until an extract has finished.
+  // An object, so a write from the wipe's callback is seen by the checks below.
+  const volumeState = { dirty: false };
+  let safetyId: string | null = null;
   try {
     step(env, 'stopping');
     const stop = await composeStep(env, 'stop', resolved.compose);
@@ -762,12 +787,17 @@ async function restoreLocked(env: JobEnv, ctx: MaintenanceContext, job: VolumeRe
       result = { jobId, state: 'failed', refusal: list };
       return result;
     }
-    const users = list.filter((c) => c.state === 'running' && mounts(c, volume));
+    // Running, restarting or paused all hold the volume; only a stopped container does not.
+    const users = list.filter((c) => HOLDING_STATES.has(c.state) && mounts(c, volume));
     if (users.length > 0) {
       result = {
         jobId,
         state: 'refused',
-        refusal: refusal('volume_in_use', `The volume ${volume} is still mounted by running ${users.map((c) => c.name).join(', ')}; it was not restored.`, 'Stop the other containers that mount it, then restore again.'),
+        refusal: refusal(
+          'volume_in_use',
+          `The volume ${volume} is still mounted by ${users.map((c) => `${c.name} (${c.state})`).join(', ')}; it was not restored.`,
+          'Stop the other containers that mount it, then restore again.',
+        ),
       };
       return result;
     }
@@ -779,42 +809,73 @@ async function restoreLocked(env: JobEnv, ctx: MaintenanceContext, job: VolumeRe
       result = { jobId, state: 'failed', refusal: { ...safety.refusal, message: `The safety backup failed, so the volume was not touched: ${safety.refusal.message}` } };
       return result;
     }
-    const safetyId = safety.record.archiveId;
+    safetyId = safety.record.archiveId;
     env.say(`Safety archive of what ${volume} held before the restore: ${safetyId}.`);
 
     step(env, 'restoring');
-    const restored = await emptyAndExtract(env, { volume, archive, imageId, prefix: '', purpose: '' });
-    if (restored.ok) {
-      env.say(`Restored ${volume} from archive ${archive.archiveId} (taken ${archive.createdAt}).`);
-      result = { jobId, state: 'succeeded' };
+    // From the moment the wipe begins the volume may be half-restored: anything but a successful
+    // extract — a returned failure or a throw (a journal append on a full disk) — goes through the
+    // safety put-back, and nothing starts the stack unless that left the volume whole.
+    let failedWhy: string;
+    try {
+      const restored = await emptyAndExtract(env, {
+        volume,
+        archive,
+        imageId,
+        prefix: '',
+        purpose: '',
+        onWipe: () => {
+          volumeState.dirty = true;
+        },
+      });
+      if (restored.ok) {
+        volumeState.dirty = false;
+        env.say(`Restored ${volume} from archive ${archive.archiveId} (taken ${archive.createdAt}).`);
+        result = { jobId, state: 'succeeded' };
+        return result;
+      }
+      failedWhy = restored.failed ?? 'unknown';
+    } catch (err) {
+      failedWhy = safeError(err);
+    }
+    if (!volumeState.dirty) {
+      // The wipe was never run (its journal line could not be written): the volume is as it was.
+      result = { jobId, state: 'failed', refusal: refusal('step_failed', `The restore of ${volume} could not begin (${failedWhy}); the volume was not touched.`) };
       return result;
     }
 
     // Put back what was there before, the same way.
-    env.say(`The restore failed (${restored.failed ?? 'unknown'}); putting back safety archive ${safetyId}.`);
-    const back = await emptyAndExtract(env, { volume, archive: safety.record, imageId, prefix: 'safety-', purpose: 'safety-' });
+    env.say(`The restore failed (${failedWhy}); putting back safety archive ${safetyId}.`);
+    let back: { ok: boolean; failed?: string };
+    try {
+      back = await emptyAndExtract(env, { volume, archive: safety.record, imageId, prefix: 'safety-', purpose: 'safety-' });
+    } catch (err) {
+      back = { ok: false, failed: safeError(err) };
+    }
     if (back.ok) {
+      volumeState.dirty = false;
       result = {
         jobId,
         state: 'failed',
         refusal: refusal(
           'step_failed',
-          `Restoring ${volume} from archive ${archive.archiveId} failed (${restored.failed ?? 'unknown'}); its previous contents were put back from safety archive ${safetyId} and the stack was started again.`,
+          `Restoring ${volume} from archive ${archive.archiveId} failed (${failedWhy}); its previous contents were put back from safety archive ${safetyId} and the stack was started again.`,
           'Check the archive and the host, then restore again.',
         ),
       };
       return result;
     }
     leaveStopped = true;
-    result = {
-      jobId,
-      state: 'failed',
-      refusal: refusal(
-        'step_failed',
-        `Restoring ${volume} failed (${restored.failed ?? 'unknown'}), and putting back safety archive ${safetyId} failed too (${back.failed ?? 'unknown'}). The stack ${resolved.owner.name} was left stopped so nothing writes to a half-restored volume.`,
-        `Restore archive ${safetyId} (what the volume held before) by hand, then start ${resolved.owner.name}.`,
-      ),
-    };
+    result = leftStoppedResult(jobId, volume, resolved, safetyId, `${failedWhy}, and putting back safety archive ${safetyId} failed too (${back.failed ?? 'unknown'})`);
+    return result;
+  } catch (err) {
+    // Anything that escaped above. With the volume half-restored: fail closed, never start it.
+    if (volumeState.dirty) {
+      leaveStopped = true;
+      result = leftStoppedResult(jobId, volume, resolved, safetyId, `the restore stopped part-way: ${safeError(err)}`);
+    } else {
+      result = { jobId, state: 'failed', refusal: refusal('step_failed', `The restore of ${volume} stopped before the volume was touched (${safeError(err)}).`) };
+    }
     return result;
   } finally {
     if (!leaveStopped) {
@@ -985,8 +1046,9 @@ async function pruneFromPlan(env: JobEnv, ctx: MaintenanceContext, job: PruneJob
     for (const c of eligible) {
       const isCache = c.item.kind === 'build-cache';
       // A cache record goes through the Engine's /build/prune with its full ID anchored, never a prefix.
-      const argv = isCache ? ['builder', 'prune', '--filter', `id=^${c.item.id}$`] : pruneRemoveArgv(c);
-      await env.journal.begin(line(env, 'remove', { argv: ['docker', ...argv], detail: { kind: c.item.kind, id: c.item.id } }));
+      // The journal says what really runs: an Engine call for a cache record, the CLI for an image.
+      const argv = isCache ? ['engine', 'POST', '/build/prune', 'all=true', `id=^${c.item.id}$`] : ['docker', ...pruneRemoveArgv(c)];
+      await env.journal.begin(line(env, 'remove', { argv, detail: { kind: c.item.kind, id: c.item.id } }));
       let exitCode = 0;
       let why = '';
       try {
@@ -994,7 +1056,7 @@ async function pruneFromPlan(env: JobEnv, ctx: MaintenanceContext, job: PruneJob
           if (ports.docker.pruneBuildCacheRecord === undefined) throw new Error("this agent's Docker adapter cannot prune a build cache record");
           await ports.docker.pruneBuildCacheRecord(c.item.id);
         } else {
-          const res = await cli(ports.docker)(argv, { timeoutMs });
+          const res = await cli(ports.docker)(pruneRemoveArgv(c), { timeoutMs });
           exitCode = res.exitCode;
           why = res.stderr.trim();
         }
@@ -1002,7 +1064,7 @@ async function pruneFromPlan(env: JobEnv, ctx: MaintenanceContext, job: PruneJob
         exitCode = 1;
         why = safeError(err);
       }
-      await env.journal.end(line(env, 'remove', { argv: ['docker', ...argv], exitCode, detail: { kind: c.item.kind, id: c.item.id } }));
+      await env.journal.end(line(env, 'remove', { argv, exitCode, detail: { kind: c.item.kind, id: c.item.id } }));
       if (exitCode !== 0) env.say(`Could not remove ${c.item.kind} ${c.item.id}: ${stripPaths(tail(why, 500))}`);
     }
 
@@ -1145,7 +1207,7 @@ export async function backupVolumesBeforeUpdate(ports: MaintenancePorts, ctx: Ma
 
 export interface MaintenanceRecoveryContext {
   backupRoot: string;
-  ledger: Pick<Ledger, 'refresh' | 'append' | 'volumeArchives' | 'volumeArchive' | 'volumeArchiveRecorded'>;
+  ledger: Pick<Ledger, 'refresh' | 'append' | 'volumeArchives' | 'volumeArchive' | 'volumeArchiveRecorded' | 'hasVolumeArchives'>;
   /** The agent's own image ID, to put back a half-restored volume. */
   helperImage: () => Promise<string>;
   composeTimeoutMs?: number;
@@ -1201,6 +1263,9 @@ async function sweepBackupRoot(ports: Pick<MaintenancePorts, 'fs' | 'files' | 'l
   const adopted = new Map<string, string[]>();
   const root = ctx.backupRoot.replace(/\/+$/, '');
   await ctx.ledger.refresh();
+  // Judged before any adoption: a ledger that never recorded an archive (lost, replaced, empty)
+  // must never be the reason every archive on disk is deleted.
+  const ledgerKnowsArchives = ctx.ledger.hasVolumeArchives();
   for (const job of jobs) {
     const volume = job.detail?.['volume'];
     const owner = ownerFromDetail(job.detail);
@@ -1231,15 +1296,24 @@ async function sweepBackupRoot(ports: Pick<MaintenancePorts, 'fs' | 'files' | 'l
     return adopted;
   }
   const live = new Set(ctx.ledger.volumeArchives().map((a) => a.file));
+  let keptUnknown = 0;
   for (const { path } of found) {
     const rel = path.slice(`${root}/volumes/`.length);
     // Only files directly in a volume's directory.
     if (!path.startsWith(`${root}/volumes/`) || rel.split('/').length !== 2) continue;
-    const stray = path.endsWith(TMP_SUFFIX) || (path.endsWith(ARCHIVE_SUFFIX) && !live.has(path));
+    const unrecorded = path.endsWith(ARCHIVE_SUFFIX) && !live.has(path);
+    if (unrecorded && !ledgerKnowsArchives) {
+      keptUnknown += 1;
+      continue;
+    }
+    const stray = path.endsWith(TMP_SUFFIX) || unrecorded;
     if (!stray) continue;
     await ports.files.remove(path).catch((err: unknown) => {
       ports.log.warn({ err: safeError(err) }, 'could not remove a stray archive file');
     });
+  }
+  if (keptUnknown > 0) {
+    ports.log.warn({ files: keptUnknown }, 'the ledger has no volume archives but the backup root holds archive files; leaving them all in place');
   }
   return adopted;
 }

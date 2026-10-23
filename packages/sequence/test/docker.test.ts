@@ -627,7 +627,8 @@ describe('maintenance reads and the CLI seam (SHP-T-17.2)', () => {
     } as unknown as Dockerode;
     const adapter = createDockerAdapter({ docker });
     await adapter.pruneBuildCacheRecord('abc123');
-    expect(dials).toEqual([{ path: '/build/prune?', method: 'POST', options: { filters: { id: ['^abc123$'] } } }]);
+    // `all=true`, or the Engine skips a record that is not dangling; the anchored ID keeps it to this one.
+    expect(dials).toEqual([{ path: '/build/prune?', method: 'POST', options: { all: true, filters: { id: ['^abc123$'] } } }]);
     await expect(adapter.pruneBuildCacheRecord('.*')).rejects.toThrow();
     expect(dials).toHaveLength(1);
   });

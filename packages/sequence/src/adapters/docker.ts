@@ -723,7 +723,9 @@ export function createDockerAdapter(
           {
             path: '/build/prune?',
             method: 'POST',
-            options: { filters: { id: [`^${id}$`] } },
+            // `all`: without it the Engine skips a record that is not dangling or unused-shared, so
+            // a listed old record could survive; the anchored `id` still restricts it to this one.
+            options: { all: true, filters: { id: [`^${id}$`] } },
             statusCodes: { 200: true, 400: 'bad parameter', 500: 'server error' },
           },
           (err: unknown) => {

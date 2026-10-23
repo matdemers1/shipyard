@@ -8,8 +8,23 @@ import { RefusalError, request } from '../lib/api';
 import { newestWithRun, sha7 } from '../lib/appstatus';
 import type { HomeApp, PendingApproval } from '../lib/home';
 import type { NeedsYouItem } from '../lib/needsyou';
-import { requestedChange, stackUpdateStateWords, stacks as stackApi, type StackNeeds, type StackView } from '../lib/stacks';
-import { APPROVE_AND_UPDATE, STATUS_WORDS, VERBS, approveVerb } from '../lib/words';
+import { requestedChange, stacks as stackApi, type StackNeeds, type StackView } from '../lib/stacks';
+import {
+  DENY_STACK_CONSEQUENCE,
+  FAILED_STACK_FALLBACK,
+  HELD_STACK_FALLBACK,
+  OPEN_STACK,
+  SHEET_WORDS,
+  STATUS_WORDS,
+  VERBS,
+  approveStackLabel,
+  approveStackVerb,
+  approveVerb,
+  denyStackWords,
+  failedStackWords,
+  heldStackWords,
+  openStackOnHostWords,
+} from '../lib/words';
 import { AdoptLiveButton, RedeployButton } from './DriftBanner';
 import type { SheetAction } from './DryRunSheet';
 import { agoShort } from './pipeline/stages';
@@ -26,18 +41,15 @@ import { agoShort } from './pipeline/stages';
  * row that opens the stack's sheet on Host.
  */
 
-/** "update 17.1.1 → 17.1.2", "update to 17.1.2", "rollback": what a held stack request would do. */
-export function heldStackWords(update: Pick<StackUpdateStatus, 'kind' | 'digests'>, stack: StackView | undefined): string {
-  if (update.kind === 'rollback') return 'rollback';
-  const { from, to } = requestedChange(update, stack);
-  if (to === null) return 'update';
-  return from === null ? `update to ${to}` : `update ${from} → ${to}`;
+/** "update 17.1.1 → 17.1.2 · asked by …": what a held stack request would do, and who asked. */
+export function heldStackLine(update: Pick<StackUpdateStatus, 'kind' | 'digests' | 'requesterLabel'>, stack: StackView | undefined): string {
+  const { from, to } = update.kind === 'rollback' ? { from: null, to: null } : requestedChange(update, stack);
+  return heldStackWords(update.kind, from, to, update.requesterLabel);
 }
 
-/** "update rolled back — <message>": a failed or rolled-back stack update, in one line. */
-export function failedStackWords(update: Pick<StackUpdateStatus, 'kind' | 'state' | 'refusal'>): string {
-  const what = `${update.kind === 'rollback' ? 'rollback' : 'update'} ${stackUpdateStateWords(update.state).toLowerCase()}`;
-  return update.refusal === null ? what : `${what} — ${update.refusal.message}`;
+/** "update rolled back — <message>": a failed or rolled-back stack update; its fix is the row's second line. */
+export function failedStackLine(update: Pick<StackUpdateStatus, 'kind' | 'state' | 'refusal'>): string {
+  return failedStackWords(update.kind, update.state, update.refusal?.message ?? null);
 }
 
 type Tone = 'attention' | 'warning' | 'danger';
@@ -49,6 +61,8 @@ interface Row {
   /** The app's name, or null for the host. */
   app: string | null;
   what: string;
+  /** A second line, verbatim: a failed stack update's fix (SHP-REQ-200). */
+  detail?: string;
   at: string | null;
   actions: ReactNode;
 }
@@ -194,7 +208,7 @@ export function NeedsYou({
           tone: 'warning',
           icon: <UserCheck />,
           app: item.stack,
-          what: held === undefined ? 'update waiting for approval' : `${heldStackWords(held, stack)} · asked by ${held.requesterLabel}`,
+          what: held === undefined ? HELD_STACK_FALLBACK : heldStackLine(held, stack),
           at: held?.createdAt ?? null,
           actions:
             canAct && held !== undefined ? (
@@ -204,12 +218,13 @@ export function NeedsYou({
                   variant="danger-ghost"
                   size="sm"
                   disabled={stackBusy !== null}
+                  aria-label={denyStackWords(item.stack, held.kind)}
                   onClick={() => {
                     setDenyError(null);
                     setDenyingStack(held);
                   }}
                 >
-                  {VERBS.deny} <span className="shp-visually-hidden">the {item.stack} update</span>
+                  {VERBS.deny}
                 </Button>
                 <Button
                   type="button"
@@ -217,11 +232,12 @@ export function NeedsYou({
                   size="sm"
                   loading={stackBusy === held.id}
                   disabled={stackBusy !== null && stackBusy !== held.id}
+                  aria-label={approveStackLabel(held.kind, item.stack)}
                   onClick={() => {
                     void decideStack(held, 'approve');
                   }}
                 >
-                  {APPROVE_AND_UPDATE} <span className="shp-visually-hidden">{item.stack}</span>
+                  {approveStackVerb(held.kind)}
                 </Button>
               </>
             ) : null,
@@ -234,12 +250,13 @@ export function NeedsYou({
           tone: failed?.state === 'failed' ? 'danger' : 'warning',
           icon: <Layers />,
           app: item.stack,
-          what: failed === undefined ? 'update did not finish' : failedStackWords(failed),
+          what: failed === undefined ? FAILED_STACK_FALLBACK : failedStackLine(failed),
+          ...(failed === undefined || failed.refusal === null ? {} : { detail: failed.refusal.fix }),
           at: failed?.endedAt ?? failed?.createdAt ?? null,
           actions: (
             <Link asChild className="shp-row-link">
-              <RouterLink to={`/host?stack=${encodeURIComponent(item.stack)}`} aria-label={`Open ${item.stack} on Host`}>
-                Open stack
+              <RouterLink to={`/host?stack=${encodeURIComponent(item.stack)}`} aria-label={openStackOnHostWords(item.stack)}>
+                {OPEN_STACK}
               </RouterLink>
             </Link>
           ),
@@ -334,6 +351,7 @@ export function NeedsYou({
               <p className="shp-needs__text">
                 {row.app === null ? null : <strong>{row.app} </strong>}
                 {row.what}
+                {row.detail === undefined ? null : <span className="shp-needs__detail">{row.detail}</span>}
                 {row.at === null ? null : <span className="shp-needs__age">{agoShort(row.at, now)}</span>}
               </p>
               {row.actions === null ? null : <div className="shp-action-row shp-needs__actions">{row.actions}</div>}
@@ -380,14 +398,14 @@ export function NeedsYou({
         onOpenChange={(open) => {
           if (!open) setDenyingStack(null);
         }}
-        title={denyingStack === null ? `${VERBS.deny} update` : `${VERBS.deny} the ${denyingStack.stack} ${denyingStack.kind === 'rollback' ? 'rollback' : 'update'}`}
-        description="It will not run. It can be requested again later."
+        title={denyingStack === null ? VERBS.deny : denyStackWords(denyingStack.stack, denyingStack.kind)}
+        description={DENY_STACK_CONSEQUENCE}
         destructive
         footer={
           <FormActions>
             <ModalClose>
               <Button type="button" variant="secondary">
-                Cancel
+                {SHEET_WORDS.cancel}
               </Button>
             </ModalClose>
             <Button

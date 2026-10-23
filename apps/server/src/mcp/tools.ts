@@ -124,6 +124,13 @@ function withoutPrune(status: MaintenanceStatus): Omit<MaintenanceStatus, 'prune
   return Object.fromEntries(Object.entries(status).filter(([name]) => name !== 'prune')) as Omit<MaintenanceStatus, 'prune'>;
 }
 
+/**
+ * `shipyard_host` sends only the newest samples per container. The full series (up to 500 per
+ * container) runs to megabytes on a busy host, more than an MCP client can read; the console's
+ * `GET /api/host` keeps all of it for the sparklines.
+ */
+export const MCP_HOST_SAMPLES_PER_CONTAINER = 12;
+
 const CONTAINER_ID_RE = /^[0-9a-f]{64}$/;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -432,13 +439,22 @@ export function buildMcpServer(
         'last reported): every container with its tier — Shipped (a D3 app Shipyard deploys), Operated (a ' +
         'third-party stack adopted with a manifest) or Observed (seen only) — state, health, restarts, compose ' +
         'project, ports, mounts and sampled CPU/memory; volumes with size, who mounts them and orphans; images ' +
-        'with size and use; Docker\'s build cache; free space on the data root and Docker root; and recent ' +
-        'CPU/memory samples per container. `hosts` is empty until an agent has reported an inventory. Takes no ' +
+        'with size and use; Docker\'s build cache; free space on the data root and Docker root; and the last ' +
+        String(MCP_HOST_SAMPLES_PER_CONTAINER) +
+        ' CPU/memory samples per container. `hosts` is empty until an agent has reported an inventory. Takes no ' +
         'input and works for any token whatever apps it is scoped to. Changes nothing.',
       inputSchema: toolInput(ShipyardHostInput),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
-    async () => ok(await readHostSnapshots(deps.db, deps.logger)),
+    async () => {
+      const { hosts } = await readHostSnapshots(deps.db, deps.logger);
+      return ok({
+        hosts: hosts.map((host) => ({
+          ...host,
+          samples: Object.fromEntries(Object.entries(host.samples).map(([name, series]) => [name, series.slice(-MCP_HOST_SAMPLES_PER_CONTAINER)])),
+        })),
+      });
+    },
   );
 
   server.registerTool(

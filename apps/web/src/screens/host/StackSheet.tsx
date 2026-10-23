@@ -5,10 +5,12 @@ import { Link as RouterLink, useLocation, type To } from 'react-router-dom';
 import { RefusalError, unreachableRefusal } from '../../lib/api';
 import { useMe } from '../../lib/auth';
 import {
+  candidateTag,
   candidates,
   canUpdateStacks,
   changeWords,
   isStackBusy,
+  isUnfixedFailure,
   outcomeTone,
   requesterLine,
   rollbackNote,
@@ -20,11 +22,37 @@ import {
   useStackUpdate,
   versionWords,
   whatHappens,
+  type StackPhase,
   type StackView,
 } from '../../lib/stacks';
 import { formatFeedTime } from '../../lib/timeline';
-import { STACK_HISTORY, TIER_WORDS, VERBS, stackRollBackVerb, updateToVerb } from '../../lib/words';
-import { StackProgress } from './StackProgress';
+import {
+  AN_EARLIER_UPDATE,
+  LOADING_HISTORY,
+  NO_UPDATES_YET,
+  SHEET_WORDS,
+  STACK_HISTORY,
+  STACK_NOT_FOUND,
+  STACK_ROLL_BACK_CONSEQUENCE,
+  STACK_UPDATE_NONE,
+  TIER_WORDS,
+  UPDATE_HISTORY,
+  VERBS,
+  UPDATE_SHEET_COLUMNS,
+  WHAT_HAPPENS,
+  WHAT_RUNS_NOW,
+  historyOfWords,
+  noUpdatesYetWords,
+  rollBackToWords,
+  stackChangeWords,
+  stackNotFoundWords,
+  stackRollBackVerb,
+  updateStackTitle,
+  updateToLinkWords,
+  updateToVerb,
+  updatesNoneWords,
+} from '../../lib/words';
+import { StackOutcome, StackProgress } from './StackProgress';
 
 /**
  * An adopted stack's sheet on Host (SHP-T-16.6, SHP-ADR-010), opened from its group's header or by
@@ -34,15 +62,15 @@ import { StackProgress } from './StackProgress';
  * The update sheet (SHP-REQ-194) shows, per service, what runs and what the track resolves to now
  * (tag and short digest; the full digest in its title), the What happens chain from the manifest,
  * the image-only rollback note, and "Update to <tag>" for a deployer and above. A held request says
- * it waits for a deployer (SHP-REQ-199); a running one shows its step and the soak's countdown; a
- * finished one its result, or the refusal's message and fix verbatim.
+ * it waits for a deployer (SHP-REQ-199); a running one shows its step; a finished one its result,
+ * or the refusal's message and fix verbatim.
  *
- * The history (SHP-REQ-200) lists every update and rollback, newest first: what moved, how it ended,
- * who asked and who approved. An earlier success can be rolled back to — the agent takes the
- * digests from its own ledger — after a small confirmation.
+ * Whoever opens it sees the stack's newest failure — failed, rolled back or refused — with its
+ * message and fix, not only the session that asked (SHP-REQ-200). The history lists every update
+ * and rollback, newest first: what moved, how it ended, who asked and who approved, and for one that
+ * did not work its message and fix. An earlier success can be rolled back to — the agent takes the
+ * digests from its own ledger — after a small confirmation. Every word comes from lib/words.ts.
  */
-
-export const UPDATE_NONE = 'Every tracked service runs what its track resolves to now.';
 
 const HISTORY_LIMIT = 20;
 
@@ -58,6 +86,8 @@ export interface StackSheetProps {
   onClose: () => void;
   /** An update was asked for or ended: read the stacks again. */
   onChanged: () => void;
+  /** Where this sheet's own request is, so the group header behind it follows its poll. */
+  onPhase?: (stack: string, phase: StackPhase) => void;
 }
 
 function useHistory(name: string, reloads: number): { items: StackUpdateStatus[] | null; error: RefusalError | null } {
@@ -129,35 +159,42 @@ function HistoryList({
   // What runs now is the newest success: rolling back to it would change nothing.
   const newestSuccess = items.find((u) => u.state === 'succeeded')?.id ?? null;
   return (
-    <ul className="shp-stack-history" aria-label="Update history">
+    <ul className="shp-stack-history" aria-label={UPDATE_HISTORY}>
       {items.map((u) => {
-        const change = changeWords(u, tagFor) ?? (u.kind === 'rollback' ? 'Rollback' : 'Update');
         const target = u.images[0];
         const offer = canRollBack && u.state === 'succeeded' && u.id !== newestSuccess && target !== undefined;
+        const refusal = u.state === 'succeeded' ? null : u.refusal;
         return (
           <li key={u.id} className="shp-stack-history__row">
             <time className="shp-stack-history__time" dateTime={u.createdAt} title={new Date(u.createdAt).toLocaleString()}>
               {formatFeedTime(u.createdAt, now)}
             </time>
-            <span className="shp-stack-history__change">{u.kind === 'rollback' ? `Rollback · ${change}` : change}</span>
+            <span className="shp-stack-history__change">{u.kind === 'rollback' ? stackChangeWords('rollback', changeWords(u, tagFor)) : (changeWords(u, tagFor) ?? stackChangeWords('update', null))}</span>
             <span className="shp-stack-history__badge">
               <Badge size="sm" tone={outcomeTone(u.state)}>
                 {stackUpdateStateWords(u.state)}
               </Badge>
             </span>
             <span className="shp-stack-history__who">{requesterLine(u)}</span>
+            {refusal === null ? null : (
+              <span className="shp-stack-history__why">
+                <span className="shp-stack-history__message">{refusal.message}</span>
+                <span className="shp-stack-history__fix">{refusal.fix}</span>
+              </span>
+            )}
             {offer ? (
               <span className="shp-stack-history__act">
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
+                  aria-label={rollBackToWords(versionWords(target.tag, target.digest))}
                   disabled={busy}
                   onClick={() => {
                     onRollBack(u);
                   }}
                 >
-                  {VERBS.rollBack} <span className="shp-visually-hidden">to {versionWords(target.tag, target.digest)}</span>
+                  {VERBS.rollBack}
                 </Button>
               </span>
             ) : null}
@@ -180,7 +217,7 @@ function RollBackConfirm({
   onConfirm: (update: StackUpdateStatus) => void;
 }) {
   const target = update?.images[0];
-  const to = target === undefined ? 'an earlier update' : versionWords(target.tag, target.digest);
+  const to = target === undefined ? AN_EARLIER_UPDATE : versionWords(target.tag, target.digest);
   const verb = stackRollBackVerb(stack, to);
   return (
     <Modal
@@ -190,11 +227,11 @@ function RollBackConfirm({
       }}
       size="sm"
       title={`${verb}?`}
-      description={`Shipyard puts back the images that update ran, by digest, from the agent's own ledger. Images only: data stays as it is.`}
+      description={STACK_ROLL_BACK_CONSEQUENCE}
       footer={
         <>
           <Button type="button" variant="secondary" onClick={onCancel}>
-            Cancel
+            {SHEET_WORDS.cancel}
           </Button>
           <Button
             type="button"
@@ -211,7 +248,7 @@ function RollBackConfirm({
   );
 }
 
-export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, onChanged }: StackSheetProps) {
+export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, onChanged, onPhase }: StackSheetProps) {
   const me = useMe();
   const may = canUpdateStacks(me?.role);
   const [reloads, setReloads] = useState(0);
@@ -222,11 +259,15 @@ export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, on
   const { phase, run, follow } = useStackUpdate(ended);
   const location = useLocation();
   const navState: unknown = location.state;
-  // Accepted: read the stacks again, so the header and the other mode see it under way.
+  // Accepted: read the stacks again, so the other mode sees it under way.
   const following = phase.kind === 'following';
   useEffect(() => {
     if (following) onChanged();
   }, [following, onChanged]);
+  // The header behind the sheet follows this sheet's own poll (its step, or that it ended).
+  useEffect(() => {
+    onPhase?.(name, phase);
+  }, [name, phase, onPhase]);
   const history = useHistory(name, reloads);
   const [confirming, setConfirming] = useState<StackUpdateStatus | null>(null);
 
@@ -242,8 +283,8 @@ export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, on
 
   if (stack === null) {
     return (
-      <Modal open onOpenChange={onOpenChange} title="Stack not found" closeLabel="Close" size="md">
-        <p>No adopted stack is named {name}. It may have been retired since the link was made.</p>
+      <Modal open onOpenChange={onOpenChange} title={STACK_NOT_FOUND} closeLabel={SHEET_WORDS.close} size="md">
+        <p>{stackNotFoundWords(name)}</p>
       </Modal>
     );
   }
@@ -254,38 +295,47 @@ export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, on
   const rows = updating.map((s) => ({ service: s, from: runningTag(s, known, containers, stack.composeProject) }));
   const first = rows[0];
   const to = first?.service.candidate?.tag ?? null;
-  const fromWords = first === undefined ? 'what runs now' : versionWords(first.from, first.service.running);
+  const fromWords = first === undefined ? WHAT_RUNS_NOW : versionWords(first.from, first.service.running);
   const hasBackup = (stack.backup ?? null) !== null;
-  const tagFor = (digest: string): string | null => stack.services.find((s) => s.candidate?.digest === digest)?.candidate?.tag ?? null;
+  const tagFor = candidateTag(stack);
   const asked = phase.kind !== 'idle';
+  const offerUpdate = may && to !== null && !busy && active === null;
 
-  const progress = <StackProgress phase={phase} to={to} soakSeconds={stack.soakSeconds} hasBackup={hasBackup} />;
+  // The stack's newest failure, for whoever opens the sheet (this session's own result replaces it).
+  const lastFailure = !asked && active === null && isUnfixedFailure(stack.lastUpdate) ? stack.lastUpdate : null;
+
+  const progress = (
+    <>
+      {lastFailure === null ? null : <StackOutcome status={lastFailure} tagFor={tagFor} dynamic={false} />}
+      <StackProgress phase={phase} tagFor={tagFor} soakSeconds={stack.soakSeconds} hasBackup={hasBackup} />
+    </>
+  );
 
   const closeButton = (
     <span className="shp-csheet__close">
       <Button type="button" variant="ghost" size="sm" onClick={onClose}>
-        Close
+        {SHEET_WORDS.close}
       </Button>
     </span>
   );
 
   if (mode === 'update') {
-    const canSubmit = may && stack.updates === 'digest' && to !== null && !busy && !asked;
+    const canSubmit = may && stack.updates === 'digest' && to !== null && !busy && !asked && active === null;
     return (
       <Modal
         open
         onOpenChange={onOpenChange}
         className="shp-csheet shp-ssheet"
         size="lg"
-        closeLabel="Close"
-        title={`Update ${stack.name}`}
+        closeLabel={SHEET_WORDS.close}
+        title={updateStackTitle(stack.name)}
         description={<Facts stack={stack} />}
         footer={
           <>
             <Button type="button" variant="secondary" onClick={onClose}>
-              {asked ? 'Done' : 'Cancel'}
+              {asked ? SHEET_WORDS.done : SHEET_WORDS.cancel}
             </Button>
-            {may && to !== null && !asked ? (
+            {may && to !== null && !asked && active === null ? (
               <Button
                 type="button"
                 variant="primary"
@@ -303,17 +353,17 @@ export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, on
         {closeButton}
         <div className="shp-csheet__body">
           {stack.updates !== 'digest' ? (
-            <p className="shp-csheet__muted">{stack.name} is adopted with updates: none. Shipyard only starts, stops, restarts and recreates it.</p>
+            <p className="shp-csheet__muted">{updatesNoneWords(stack.name)}</p>
           ) : rows.length === 0 ? (
-            <p className="shp-csheet__muted">{UPDATE_NONE}</p>
+            <p className="shp-csheet__muted">{STACK_UPDATE_NONE}</p>
           ) : (
             <>
               <table className="shp-stack-table">
                 <thead>
                   <tr>
-                    <th scope="col">Service</th>
-                    <th scope="col">Running</th>
-                    <th scope="col">Update to</th>
+                    <th scope="col">{UPDATE_SHEET_COLUMNS.service}</th>
+                    <th scope="col">{UPDATE_SHEET_COLUMNS.running}</th>
+                    <th scope="col">{UPDATE_SHEET_COLUMNS.to}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -337,7 +387,7 @@ export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, on
               </table>
               <section className="shp-stack-section" aria-labelledby={`what-${stack.name}`}>
                 <h3 id={`what-${stack.name}`} className="shp-stack-section__title">
-                  What happens
+                  {WHAT_HAPPENS}
                 </h3>
                 <ol className="shp-stack-chain">
                   {whatHappens(stack, updating).map((step) => (
@@ -354,7 +404,7 @@ export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, on
           <p className="shp-csheet__muted">
             <Link asChild>
               <RouterLink to={hrefFor('history')} replace state={navState}>
-                {STACK_HISTORY} of {stack.name}
+                {historyOfWords(stack.name)}
               </RouterLink>
             </Link>
           </p>
@@ -369,15 +419,15 @@ export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, on
       onOpenChange={onOpenChange}
       className="shp-csheet shp-ssheet"
       size="lg"
-      closeLabel="Close"
+      closeLabel={SHEET_WORDS.close}
       title={stack.name}
       description={<Facts stack={stack} />}
-      {...(may && to !== null && !busy && active === null
+      {...(offerUpdate
         ? {
             footer: (
               <Link asChild>
                 <RouterLink to={hrefFor('update')} replace state={navState} className="shp-ssheet__update">
-                  {updateToVerb(to)}…
+                  {updateToLinkWords(to)}
                 </RouterLink>
               </Link>
             ),
@@ -400,14 +450,14 @@ export function StackSheet({ name, stack, mode, containers, hrefFor, onClose, on
             history.error === null ? (
               <div aria-busy="true">
                 <span role="status" className="shp-visually-hidden">
-                  Loading the history
+                  {LOADING_HISTORY}
                 </span>
                 <Skeleton variant="text" lines={3} />
               </div>
             ) : null
           ) : history.items.length === 0 ? (
-            <EmptyState kind="empty" size="inline" heading="No updates yet" headingLevel={4}>
-              An update or rollback of {stack.name} shows up here with who asked and how it ended.
+            <EmptyState kind="empty" size="inline" heading={NO_UPDATES_YET} headingLevel={4}>
+              {noUpdatesYetWords(stack.name)}
             </EmptyState>
           ) : (
             <HistoryList items={history.items} canRollBack={may} busy={busy} onRollBack={setConfirming} tagFor={tagFor} />

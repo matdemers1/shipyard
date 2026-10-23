@@ -1,8 +1,8 @@
 import { EmptyState, Page, PageHeader, Skeleton, Stack } from '@d3cloud/ui';
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ageWords, chipFromParams, paramsForChip, useHost, type HostChip } from '../lib/host';
-import { useStacks } from '../lib/stacks';
+import { isTerminalStackUpdate, useStacks, type StackPhase, type StackView } from '../lib/stacks';
 import { ContainerSheet } from './host/ContainerSheet';
 import { StackSheet } from './host/StackSheet';
 import { AgentStatus, HostView } from './host/HostView';
@@ -39,6 +39,31 @@ export function Host() {
   const stackName = params.get('stack');
   const stackMode = params.get('update') === '1' ? 'update' : 'history';
   const stackData = useStacks();
+  // The open sheet's own poll, so its group header shows the step it is on — and that it ended —
+  // without waiting for the next read of the stacks (SHP-T-16.6).
+  const [sheetPhase, setSheetPhase] = useState<{ stack: string; phase: StackPhase } | null>(null);
+  const onPhase = useCallback((stack: string, phase: StackPhase) => {
+    setSheetPhase({ stack, phase });
+  }, []);
+  // Only while that sheet is open: closed (or Back), the stacks' own reads speak for it again.
+  const openPhase = sheetPhase !== null && sheetPhase.stack === stackName && containerId === null ? sheetPhase : null;
+  const stacksShown = useMemo(() => {
+    if (openPhase === null) return stackData.byName;
+    const { stack: name, phase } = openPhase;
+    const stack = stackData.byName.get(name);
+    if (stack === undefined) return stackData.byName;
+    let next: StackView = stack;
+    if (phase.kind === 'following') next = { ...stack, activeUpdate: phase.status };
+    else if (phase.kind === 'done' && isTerminalStackUpdate(phase.status.state)) {
+      next = { ...stack, activeUpdate: stack.activeUpdate?.id === phase.status.id ? null : stack.activeUpdate, lastUpdate: phase.status };
+    }
+    if (next === stack) return stackData.byName;
+    return new Map([...stackData.byName, [name, next]]);
+  }, [stackData.byName, openPhase]);
+  const busyStacks = useMemo(
+    () => new Set(openPhase !== null && (openPhase.phase.kind === 'starting' || openPhase.phase.kind === 'following') ? [openPhase.stack] : []),
+    [openPhase],
+  );
   const stackHref = useCallback(
     (name: string, update: boolean) => {
       const next = new URLSearchParams(params);
@@ -119,8 +144,9 @@ export function Host() {
             now={data.now}
             headingLevel={2}
             hrefFor={hrefFor}
-            stacks={stackData.byName}
+            stacks={stacksShown}
             stackHref={stackHref}
+            busyStacks={busyStacks}
           />
         ) : (
           data.hosts.map((snapshot) => (
@@ -137,8 +163,9 @@ export function Host() {
                   now={data.now}
                   headingLevel={3}
                   hrefFor={hrefFor}
-                  stacks={stackData.byName}
+                  stacks={stacksShown}
                   stackHref={stackHref}
+                  busyStacks={busyStacks}
                 />
               </Stack>
             </section>
@@ -158,6 +185,7 @@ export function Host() {
           hrefFor={(mode) => stackHref(stackName, mode === 'update')}
           onClose={closeSheet}
           onChanged={stackData.refresh}
+          onPhase={onPhase}
         />
       ) : null}
     </Page>

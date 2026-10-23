@@ -16,6 +16,7 @@ compose:
 envFiles:
   - /DATA/forgejo/forgejo.env
   - /DATA/forgejo/postgres.env
+  - /DATA/forgejo/tunnel.env
 updates: digest
 services:
   forgejo:

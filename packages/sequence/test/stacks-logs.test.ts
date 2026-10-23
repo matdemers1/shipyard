@@ -4,11 +4,11 @@ import { PassThrough } from 'node:stream';
 import type Dockerode from 'dockerode';
 import { describe, expect, it } from 'vitest';
 
-import { createDockerAdapter, DockerLogDecoder, splitLogTimestamp } from '../src/adapters/docker.js';
+import { createDockerAdapter, DockerLogDecoder, MAX_LOG_LINE_CHARS, splitLogTimestamp } from '../src/adapters/docker.js';
 import { ACTION_STEP, Journal } from '../src/journal.js';
 import { loadStacks, ManifestLoadError } from '../src/manifest.js';
 import type { Clock, ContainerLogLine, FsPort, Log } from '../src/ports.js';
-import { REDACTED, createRedactor, redactionValues } from '../src/redact.js';
+import { REDACTED, createRedactor, redactionValues, safeCut } from '../src/redact.js';
 
 /**
  * SHP-T-15.3: stack manifests under `<data root>/stacks/` (SHP-REQ-183), the action journal bracket
@@ -100,6 +100,25 @@ describe('log and action redaction (SHP-REQ-190)', () => {
     expect(values.sort()).toEqual(['abcd', 'hunter2-long', 'nine99999', 'production'].sort());
   });
 
+  it('adds each line of eight or more characters of a multi-line value, so a PEM key is caught line by line', () => {
+    const pem = ['-----BEGIN PRIVATE KEY-----', 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7', 'shortln', '-----END PRIVATE KEY-----'].join('\n');
+    const values = redactionValues(new Map([['TLS_KEY', 'line-one-of-file\r\nline-two-of-file']]), [pem]);
+    expect(values).toContain(pem);
+    expect(values).toContain('MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7');
+    expect(values).toContain('-----BEGIN PRIVATE KEY-----');
+    expect(values).toContain('line-one-of-file');
+    expect(values).toContain('line-two-of-file');
+    expect(values).not.toContain('shortln');
+  });
+
+  it('safeCut moves a cut back past any secret that would straddle it', () => {
+    const text = 'aaaaSECRET-VALUEbbbb';
+    expect(safeCut(text, ['SECRET-VALUE'], 10)).toBe(4);
+    expect(safeCut(text, ['SECRET-VALUE'], 4)).toBe(4);
+    expect(safeCut(text, ['SECRET-VALUE'], 18)).toBe(18);
+    expect(safeCut(text, ['other'], 10)).toBe(10);
+  });
+
   it('replaces each value with [redacted], longest first, in one pass', () => {
     const redact = createRedactor(['s3cret-value', 's3cret-value-and-more', 'a.b*c']);
     expect(redact('x s3cret-value-and-more y s3cret-value z a.b*c q abc')).toBe(`x ${REDACTED} y ${REDACTED} z ${REDACTED} q abc`);
@@ -155,6 +174,33 @@ describe('DockerLogDecoder', () => {
       { stream: 'stderr', at: '2026-10-22T12:00:01.000Z', text: 'an error' },
       { stream: 'stdout', at: '2026-10-22T12:00:00.500Z', text: 'second line ✓' },
     ]);
+  });
+
+  it('keeps a line past the old 64 KiB cut whole, so a secret straddling 64 KiB is redacted', () => {
+    const secret = 'straddling-secret-value';
+    const decoder = new DockerLogDecoder(false);
+    const text = `${'x'.repeat(64 * 1024 - 5)}${secret} end`;
+    const out = [...decoder.push(frame(1, `2026-10-22T12:00:00Z ${text}\n`)), ...decoder.end()];
+    expect(out).toHaveLength(1);
+    expect(out[0]?.continues).toBeUndefined();
+    const redact = createRedactor([secret]);
+    expect(redact(out[0]?.text ?? '')).not.toContain(secret.slice(0, 5));
+  });
+
+  it('cuts only a line longer than 1 MiB, flags the piece as continuing, and parses no timestamp off the continuation', () => {
+    const decoder = new DockerLogDecoder(true);
+    // The line's newline has not arrived yet when the decoder must give the piece up.
+    const out = [
+      ...decoder.push(Buffer.from(`2026-10-22T12:00:00Z ${'y'.repeat(MAX_LOG_LINE_CHARS)}2026-10-22T12:00:09Z`)),
+      ...decoder.push(Buffer.from(' tail\n')),
+      ...decoder.end(),
+    ];
+    expect(out.map((l) => [l.at, l.text.length, l.continues])).toEqual([
+      ['2026-10-22T12:00:00.000Z', MAX_LOG_LINE_CHARS - 21, true],
+      [null, 21 + '2026-10-22T12:00:09Z tail'.length, undefined],
+    ]);
+    // Continuation text is kept as it is, a timestamp-looking start included.
+    expect(out[1]?.text).toBe(`${'y'.repeat(21)}2026-10-22T12:00:09Z tail`);
   });
 
   it('reads a TTY container as raw stdout and flushes a last line with no newline', () => {

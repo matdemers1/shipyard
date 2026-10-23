@@ -176,6 +176,12 @@ export interface ContainerLogLine {
   at: string | null;
   /** Without the timestamp and the line ending. */
   text: string;
+  /**
+   * True when the line was longer than the decoder holds and was cut: the next line of the same
+   * stream continues it. A reader that redacts must carry the end of this piece into the next, so
+   * a secret straddling the cut is still matched whole (SHP-REQ-190).
+   */
+  continues?: boolean;
 }
 
 /**

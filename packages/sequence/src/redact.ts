@@ -91,15 +91,34 @@ export const REDACTED = '[redacted]';
 export const MIN_REDACTED_ENV_LENGTH = 9;
 
 /**
- * The values to redact from an action's output or a container's logs: every env-file value of the
- * matching manifest or stack (less the trivial ones `redact` already skips, so `true` or `3000`
- * never blanks a log), and every inspected container Env value longer than eight characters. Only
- * values: a variable's name is never a secret and stays readable.
+ * A line of a multi-line secret at least this long is a pattern of its own: log lines are split on
+ * newlines before they are redacted, so a PEM key's body lines (64 characters) would otherwise
+ * reach the server one by one (SHP-REQ-190).
+ */
+export const MIN_SECRET_LINE_LENGTH = 8;
+
+/**
+ * The values to redact from an action's output or a container's logs (SHP-REQ-190): every
+ * env-file value of the matching manifest or stack, and every inspected container Env value longer
+ * than eight characters. Only values: a variable's name is never a secret and stays readable.
+ *
+ * Deliberately, env-file values `redact` already treats as trivial — under four characters,
+ * `true`/`false`, digit runs under six — are left out, the same rule step output has followed
+ * since SHP-REQ-030: redacting them would blank every `true` and `3000` in a log, and none of
+ * them is a secret worth the noise.
+ *
+ * A multi-line value is kept whole and each of its lines of eight characters or more is added as
+ * well, since the log reader matches one line at a time.
  */
 export function redactionValues(envFileSecrets: ReadonlyMap<string, string>, inspectedEnvValues: readonly string[]): string[] {
   const values = new Set<string>();
-  for (const value of envFileSecrets.values()) if (!isTrivial(value)) values.add(value);
-  for (const value of inspectedEnvValues) if (value.length >= MIN_REDACTED_ENV_LENGTH) values.add(value);
+  const add = (value: string): void => {
+    values.add(value);
+    if (!/[\r\n]/.test(value)) return;
+    for (const line of value.split(/\r?\n|\r/)) if (line.length >= MIN_SECRET_LINE_LENGTH) values.add(line);
+  };
+  for (const value of envFileSecrets.values()) if (!isTrivial(value)) add(value);
+  for (const value of inspectedEnvValues) if (value.length >= MIN_REDACTED_ENV_LENGTH) add(value);
   return [...values];
 }
 
@@ -113,4 +132,27 @@ export function createRedactor(values: readonly string[]): (text: string) => str
   if (usable.length === 0) return (text) => text;
   const pattern = new RegExp(usable.map(escapeRegExp).join('|'), 'g');
   return (text) => text.replace(pattern, REDACTED);
+}
+
+/**
+ * Where text that continues in a next piece may be cut without splitting a secret: `cut`, moved
+ * left to the start of any occurrence of one of `values` that would straddle it. What lies after
+ * the returned index is carried into the next piece and redacted there, whole.
+ */
+export function safeCut(text: string, values: readonly string[], cut: number): number {
+  let at = Math.max(0, Math.min(cut, text.length));
+  for (let moved = true; moved; ) {
+    moved = false;
+    for (const value of values) {
+      if (value.length < 2) continue;
+      for (let i = text.indexOf(value, Math.max(0, at - value.length + 1)); i !== -1 && i < at; i = text.indexOf(value, i + 1)) {
+        if (i + value.length > at) {
+          at = i;
+          moved = true;
+          break;
+        }
+      }
+    }
+  }
+  return at;
 }

@@ -111,6 +111,9 @@ function job(extra: Partial<LogsJob> = {}): LogsJob {
   return { logsId: LOGS_ID, containerId: CONTAINER, tail: 200, follow: false, followSeconds: 0, ...extra };
 }
 
+const PEM_BODY = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj', 'MZlD2sOq5dwvY5n0kWb4fGAd0k3JqvPz3eL9xq2n1R3t8yV5hOmXk7aB6cDeFgHi'];
+const PEM_LINES = ['-----BEGIN PRIVATE KEY-----', ...PEM_BODY, 'Zg==', '-----END PRIVATE KEY-----'];
+
 function setup(source: LogSource, over: Partial<LogsRunnerOptions> & { dockerOpts?: DockerOpts } = {}) {
   const logged: unknown[] = [];
   const record = (obj: object, msg?: string): void => {
@@ -161,6 +164,34 @@ describe('the logs runner (SHP-REQ-189, SHP-REQ-190)', () => {
     const wire = JSON.stringify(client.chunks());
     for (const l of body) expect(wire).not.toContain(l);
     expect(client.chunks().flatMap((c) => c.lines.map((l) => l.text))).toEqual(['loading key:', '[redacted]', '[redacted]', '[redacted]', '[redacted]', 'ready']);
+  });
+
+  it("redacts a multi-line value from the env file, even printed by a sibling container with no Env of its own", async () => {
+    const envFile = `SMTP_PASSWORD=${FILE_SECRET}\nTLS_KEY="${PEM_LINES.join('\n')}"\nOTHER=x\n`;
+    const { runner, client } = setup(() => lines(['dumping the key:', ...PEM_LINES, 'done']), {
+      fs: memFs({ '/srv/mail/.env': envFile }),
+      dockerOpts: { envValues: [] },
+    });
+    await runner.run(job());
+    const wire = JSON.stringify(client.chunks());
+    for (const l of PEM_LINES.filter((x) => x.length >= 8)) expect(wire).not.toContain(l);
+    expect(wire).not.toContain('"-----BEGIN');
+    // `Zg==` (under eight characters) is the accepted residue of the amended SHP-REQ-190.
+    expect(client.chunks().flatMap((c) => c.lines.map((l) => l.text))).toEqual(['dumping the key:', '[redacted]', '[redacted]', '[redacted]', 'Zg==', '[redacted]', 'done']);
+  });
+
+  it('keeps the timestamp of a piece carried over whole for the piece that sends it', async () => {
+    const { runner, client } = setup(
+      () =>
+        (async function* () {
+          await Promise.resolve();
+          yield { stream: 'stdout' as const, at: '2026-10-22T12:00:05.000Z', text: ENV_SECRET.slice(0, 6), continues: true };
+          yield { stream: 'stdout' as const, at: null, text: `${ENV_SECRET.slice(6)} ok` };
+        })(),
+      { dockerOpts: { envValues: [ENV_SECRET] } },
+    );
+    await runner.run(job());
+    expect(client.chunks().flatMap((c) => c.lines)).toEqual([{ at: '2026-10-22T12:00:05.000Z', stream: 'stdout', text: '[redacted] ok' }]);
   });
 
   it('redacts a secret straddling the old 64 KiB line cut: the decoder keeps the line whole', async () => {

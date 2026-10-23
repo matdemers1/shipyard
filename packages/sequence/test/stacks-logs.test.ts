@@ -8,7 +8,7 @@ import { createDockerAdapter, DockerLogDecoder, MAX_LOG_LINE_CHARS, splitLogTime
 import { ACTION_STEP, Journal } from '../src/journal.js';
 import { loadStacks, ManifestLoadError } from '../src/manifest.js';
 import type { Clock, ContainerLogLine, FsPort, Log } from '../src/ports.js';
-import { REDACTED, createRedactor, redactionValues, safeCut } from '../src/redact.js';
+import { REDACTED, createRedactor, envFileRedactionValues, loadRedactionValues, redactionValues, safeCut } from '../src/redact.js';
 
 /**
  * SHP-T-15.3: stack manifests under `<data root>/stacks/` (SHP-REQ-183), the action journal bracket
@@ -109,6 +109,34 @@ describe('log and action redaction (SHP-REQ-190)', () => {
     expect(values).toContain('line-one-of-file');
     expect(values).toContain('line-two-of-file');
     expect(values).not.toContain('shortln');
+  });
+
+  it('reads a quoted value spanning lines the way compose does: a PEM key in an env file is caught line by line', () => {
+    const body = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj', 'MZlD2sOq5dwvY5n0kWb4fGAd0k3JqvPz3eL9xq2n1R3t8yV5hOmXk7aB6cDeFgHi'];
+    const pem = ['-----BEGIN PRIVATE KEY-----', ...body, 'Zg==', '-----END PRIVATE KEY-----'].join('\n');
+    const file = `# keys\nKEY="${pem}"\nOTHER=x\nSINGLE='a b\nc d e f g h'\nESCAPED="one-line\\nsecond-line"\nPLAIN=plain-value # a comment\n`;
+    const fromFile = envFileRedactionValues(file);
+    expect(fromFile).toContain(pem);
+    expect(fromFile).toContain('a b\nc d e f g h');
+    expect(fromFile).toContain('one-line\nsecond-line');
+    expect(fromFile).toContain('plain-value');
+    const values = redactionValues(fromFile, []);
+    for (const line of ['-----BEGIN PRIVATE KEY-----', ...body, '-----END PRIVATE KEY-----', 'c d e f g h', 'second-line']) expect(values).toContain(line);
+    // No leading quote left on a first line; `Zg==` is accepted residue (under eight characters).
+    expect(values.some((v) => v.startsWith('"-----BEGIN'))).toBe(false);
+    expect(values).not.toContain('Zg==');
+  });
+
+  it('runs an unterminated quote to the end of the file, and adds stray non-assignment lines', () => {
+    const values = envFileRedactionValues('A="starts here\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw==\nB=after\n');
+    expect(values).toContain('starts here\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw==\nB=after\n');
+    expect(envFileRedactionValues('A=1\nthis-line-is-not-an-assignment\n')).toContain('this-line-is-not-an-assignment');
+  });
+
+  it('loadRedactionValues reads every env file and names a missing one', async () => {
+    const fs = memoryFs({ '/srv/a.env': 'TOKEN=abcdefghij\n' });
+    expect(await loadRedactionValues(fs, ['/srv/a.env'])).toContain('abcdefghij');
+    await expect(loadRedactionValues(fs, ['/srv/missing.env'])).rejects.toThrow('/srv/missing.env');
   });
 
   it('safeCut moves a cut back past any secret that would straddle it', () => {

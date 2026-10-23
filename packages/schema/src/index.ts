@@ -6,6 +6,7 @@ export * from './host.js';
 export * from './stack.js';
 export * from './actions.js';
 export * from './stack-updates.js';
+export * from './maintenance.js';
 export * from './agent.js';
 export * from './api.js';
 export * from './mcp.js';

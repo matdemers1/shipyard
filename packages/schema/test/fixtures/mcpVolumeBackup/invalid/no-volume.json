@@ -1,0 +1,7 @@
+{
+  "requester": {
+    "repo": "D3Cloud-io/shipyard",
+    "branch": "main",
+    "label": "claude"
+  }
+}

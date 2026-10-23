@@ -1,0 +1,8 @@
+{
+  "kind": "build-cache",
+  "id": "NOT VALID!",
+  "ref": null,
+  "sizeBytes": 5000000,
+  "createdAt": null,
+  "reason": "old-cache"
+}

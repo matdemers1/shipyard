@@ -1,0 +1,13 @@
+{
+  "jobId": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "kind": "prune",
+  "dryRun": false,
+  "fromDryRunId": "01a16651-1b2c-7d3e-8f40-5a6b7c8d9e0f",
+  "images": {
+    "dangling": true,
+    "unusedOlderThanHours": null
+  },
+  "buildCache": {
+    "olderThanHours": 168
+  }
+}

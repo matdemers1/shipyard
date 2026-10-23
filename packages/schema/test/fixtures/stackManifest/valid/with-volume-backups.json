@@ -1,0 +1,17 @@
+{
+  "kind": "stack",
+  "name": "plex",
+  "compose": {
+    "files": [
+      "/x/docker-compose.yml"
+    ],
+    "project": "plex"
+  },
+  "volumeBackups": {
+    "volumes": [
+      "jellyfin_config"
+    ],
+    "retain": 3,
+    "nightly": true
+  }
+}

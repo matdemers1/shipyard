@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { AppName, GhRepo, ProjectCode, Step } from './primitives.js';
 import { BuildConfig } from './build.js';
+import { VolumeBackupSettings } from './maintenance.js';
 
 /**
  * The host-local app manifest (SHP-REQ-004). Written as YAML on the host and
@@ -123,6 +124,8 @@ export const Manifest = z
     canary: z.boolean().optional(),
     /** Env files whose values are redacted from stored step output (SHP-D-082). Absolute paths. */
     envFiles: z.array(z.string().regex(/^\//, 'env file paths must be absolute')).optional(),
+    /** Named-volume backups (SHP-ADR-012, SHP-REQ-201); a built-in step, no argv. `beforeUpdate` backs up before a deploy. */
+    volumeBackups: VolumeBackupSettings.optional(),
     /** Refuse before locking when the Docker root has less free space than this (SHP-D-083). */
     diskFloorGb: z.number().min(0).max(1000).default(5),
     /** Old Shipyard-deployed images kept per service after a success. */

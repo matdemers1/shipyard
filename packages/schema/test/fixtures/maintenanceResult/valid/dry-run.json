@@ -1,0 +1,26 @@
+{
+  "jobId": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "state": "succeeded",
+  "prune": {
+    "items": [
+      {
+        "kind": "image",
+        "id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ref": "codeberg.org/forgejo/forgejo:17.0.1",
+        "sizeBytes": 120000000,
+        "createdAt": "2026-09-01T10:00:00Z",
+        "reason": "unused"
+      },
+      {
+        "kind": "build-cache",
+        "id": "x7k2m9q4w1",
+        "ref": null,
+        "sizeBytes": 5000000,
+        "createdAt": null,
+        "reason": "old-cache"
+      }
+    ],
+    "reclaimableBytes": 125000000,
+    "reclaimedBytes": null
+  }
+}

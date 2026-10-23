@@ -1,0 +1,11 @@
+{
+  "jobId": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "kind": "volume-restore",
+  "volume": "forgejo_data",
+  "owner": {
+    "kind": "stack",
+    "name": "forgejo"
+  },
+  "archiveId": "01a16650-7a32-7202-bfdb-41c03c80417a",
+  "path": "/etc/passwd"
+}

@@ -4,6 +4,7 @@
     "build",
     "actions",
     "logs",
-    "stack-updates"
+    "stack-updates",
+    "maintenance"
   ]
 }

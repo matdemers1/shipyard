@@ -197,3 +197,66 @@ export const StackRollbackRequest = z
   })
   .meta({ id: 'StackRollbackRequest', description: 'Roll an adopted stack back to an earlier update' });
 export type StackRollbackRequest = z.infer<typeof StackRollbackRequest>;
+
+// ─── SHP-P-17: volumes and prune (SHP-ADR-012) ────────────────────────────────
+
+/**
+ * `POST /api/volumes/:volume/backup` (SHP-REQ-201). The volume is the path parameter, so the body
+ * names nothing: the server finds the owner from the agent's inventory and the agent archives it
+ * with its own image, the volume read-only.
+ */
+export const VolumeBackupRequest = z
+  .strictObject({})
+  .meta({ id: 'VolumeBackupRequest', description: 'Back up the volume named in the path (no body fields)' });
+export type VolumeBackupRequest = z.infer<typeof VolumeBackupRequest>;
+
+/**
+ * `POST /api/volumes/:volume/restore` (SHP-REQ-202): console-only, admin and step-up. The archive
+ * is named by ID and must be in the agent's own ledger; the owning stack must be stopped.
+ * `confirmVolume` is the volume's name typed back and must equal the path parameter.
+ */
+export const VolumeRestoreRequest = z
+  .strictObject({
+    archiveId: z.uuid(),
+    confirmVolume: z.string().max(255),
+  })
+  .meta({ id: 'VolumeRestoreRequest', description: 'Restore a volume from an archive in the agent ledger, with the volume name typed to confirm' });
+export type VolumeRestoreRequest = z.infer<typeof VolumeRestoreRequest>;
+
+/** `DELETE /api/volumes/:volume` (SHP-REQ-203): console-only, admin and step-up, orphans only. */
+export const VolumeDeleteRequest = z
+  .strictObject({
+    confirmVolume: z.string().max(255),
+  })
+  .meta({ id: 'VolumeDeleteRequest', description: 'Delete an orphan volume, with its name typed to confirm' });
+export type VolumeDeleteRequest = z.infer<typeof VolumeDeleteRequest>;
+
+const PruneAgeHours = z.int().min(24).max(8760).nullable();
+
+/**
+ * `POST /api/prune` (SHP-REQ-205). A dry run (the default) lists what would go; a real prune
+ * names that dry run in `fromDryRunId` and removes only what it listed and is still eligible
+ * (`dry_run_required` otherwise). `null` hours leaves that kind alone.
+ */
+export const PruneRequest = z
+  .strictObject({
+    dryRun: z.boolean().default(true),
+    fromDryRunId: z.uuid().optional(),
+    images: z
+      .strictObject({
+        dangling: z.boolean().default(true),
+        unusedOlderThanHours: PruneAgeHours.default(168),
+      })
+      .optional(),
+    buildCache: z
+      .strictObject({
+        olderThanHours: PruneAgeHours.default(168),
+      })
+      .optional(),
+  })
+  .refine((v) => v.dryRun || v.fromDryRunId !== undefined, {
+    message: 'a prune that is not a dry run needs fromDryRunId',
+    path: ['fromDryRunId'],
+  })
+  .meta({ id: 'PruneRequest', description: 'Dry-run or run a prune of dangling and old unused images and old build cache' });
+export type PruneRequest = z.infer<typeof PruneRequest>;

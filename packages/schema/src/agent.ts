@@ -9,6 +9,7 @@ import { HostInventory } from './host.js';
 import { AgentStack } from './stack.js';
 import { ActionJob, LogsJob } from './actions.js';
 import { StackUpdateJob } from './stack-updates.js';
+import { MaintenanceJob, VolumeArchive } from './maintenance.js';
 
 /**
  * The agent protocol (SHP-REQ-004): what the portless agent reports and what it
@@ -134,6 +135,12 @@ export const AgentReport = z
      * compose projects are what the inventory tiers Operated.
      */
     stacks: z.array(AgentStack).max(500).optional(),
+    /**
+     * The volume archives in the agent's own ledger (SHP-REQ-201, SHP-ADR-012). The server mirrors
+     * them to list and to choose a restore from; it never turns one into a path. Absent from older
+     * agents.
+     */
+    volumeArchives: z.array(VolumeArchive).max(5000).optional(),
   })
   .meta({ id: 'AgentReport', description: 'What the agent reports about itself and the apps it manages' });
 export type AgentReport = z.infer<typeof AgentReport>;
@@ -142,7 +149,7 @@ export const PollRequest = z
   .strictObject({
     waitSeconds: z.int().min(0).max(25),
     /** An agent that sends `['build']` can receive a build job; older agents omit it and never are sent one. */
-    capabilities: z.array(z.enum(['build', 'actions', 'logs', 'stack-updates'])).max(10).optional(),
+    capabilities: z.array(z.enum(['build', 'actions', 'logs', 'stack-updates', 'maintenance'])).max(10).optional(),
   })
   .meta({ id: 'PollRequest', description: 'The agent long-poll request body' });
 export type PollRequest = z.infer<typeof PollRequest>;
@@ -190,8 +197,10 @@ export const PollResponse = z
     z.strictObject({ target: z.null(), logs: LogsJob, ...buildSettingsField }),
     // SHP-P-16: only for an agent that advertised `stack-updates`.
     z.strictObject({ target: z.null(), stackUpdate: StackUpdateJob, ...buildSettingsField }),
+    // SHP-P-17: only for an agent that advertised `maintenance` (volume backup/restore/delete, prune).
+    z.strictObject({ target: z.null(), maintenance: MaintenanceJob, ...buildSettingsField }),
   ])
-  .meta({ id: 'PollResponse', description: 'No work, one target, one build, one lifecycle action, one log read or one stack update' });
+  .meta({ id: 'PollResponse', description: 'No work, one target, one build, one lifecycle action, one log read, one stack update or one maintenance job' });
 export type PollResponse = z.infer<typeof PollResponse>;
 
 export const StepJournal = z

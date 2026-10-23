@@ -102,8 +102,8 @@ never over SSH: no `sed` on a compose file, no `docker compose pull/up` on the h
 hand is drift, and Shipyard refuses the next one until someone resolves it.
 
 - **Connect once:** remote MCP server `https://shipyard.d3cloud.io/mcp`, header
-  `Authorization: Bearer <token>`. A token is scoped to the apps it names; make one on the console's
-  **Connect Claude** page (`https://shipyard.d3cloud.io/connect`), which also gives the exact
+  `Authorization: Bearer <token>`. A token is scoped to the apps and adopted stacks it names; make one on the
+  console's **Connect Claude** page (`https://shipyard.d3cloud.io/connect`), which also gives the exact
   `claude mcp add` command and confirms the connection. Never paste a token into a file in this repo.
 - **What exists:** `shipyard_status` (live release, commits waiting, CI) · `shipyard_dry_run` ·
   `shipyard_deploy` (an `app`, or a `group`, and a 40-hex `sha`) · `shipyard_deploy_status` ·
@@ -111,7 +111,9 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   `shipyard_build` (queue a build for a `build: shipyard` app and SHA) · `shipyard_build_status`
   (poll it; see `docs/runbooks/build.md`) · `shipyard_host` (read-only inventory of everything on the
   host: containers with their tier, volumes, images, disk; takes no input and works for any token) ·
-  `shipyard_action` (start, restart or recreate an app or adopted stack; stop is console-only) · `shipyard_logs` (a redacted tail; the token needs logs allowed).
+  `shipyard_action` (start, restart or recreate an app or adopted stack; stop is console-only) ·
+  `shipyard_logs` (a redacted tail; the token needs logs allowed and reads only containers of the apps
+  and stacks it is scoped to, never Observed ones).
 - **What you can deploy:** only a SHA on the default branch that is ahead of what is live and whose
   images are proven: the image workflow is green, or, for a `build: shipyard` app, Shipyard's own
   build of that SHA succeeded and its digests still match GHCR (`build_not_green` /

@@ -6,7 +6,7 @@ never over SSH: no `sed` on a compose file, no `docker compose pull/up` on the h
 hand is drift, and Shipyard refuses the next one until someone resolves it.
 
 - **Connect once:** remote MCP server `https://shipyard.d3cloud.io/mcp`, header
-  `Authorization: Bearer <token>`. A token is scoped to the apps it names; make one on the console's
+  `Authorization: Bearer <token>`. A token is scoped to the apps and adopted stacks it names; make one on the console's
   **Connect Claude** page (`https://shipyard.d3cloud.io/connect`), which also gives the exact
   `claude mcp add` command and confirms the connection. Never paste a token into a file in this repo.
 - **What exists:** `shipyard_status` (live release, `buildSource`, commits waiting with their build
@@ -19,7 +19,8 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   any token) · `shipyard_action` (start, restart or recreate an app or an adopted stack, or one
   service of it, and wait for the result; stop is console-only, and Observed containers can't be acted
   on) · `shipyard_logs` (a redacted tail of one container, up to 500 lines; the token must be issued
-  with logs allowed).
+  with logs allowed, and reads only containers of the apps and adopted stacks it is scoped to, never
+  Observed ones).
 - **What you can deploy:** only a SHA on the default branch whose image workflow is green and that
   is ahead of what is live. For a `build: shipyard` app, "green" means a Shipyard build of that SHA
   has succeeded — queue one with `shipyard_build` if none has, then poll `shipyard_build_status`

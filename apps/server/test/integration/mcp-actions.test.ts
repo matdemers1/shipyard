@@ -45,6 +45,8 @@ const logger = pino({ enabled: false });
 
 const WEB = container('web-1', { tier: 'shipped', app: 'web', compose: { project: 'web', service: 'web' } });
 const WATCHTOWER = container('watchtower', { compose: { project: 'watchtower', service: 'watchtower' } });
+const API = container('api-1', { tier: 'shipped', app: 'api', compose: { project: 'api', service: 'api' } });
+const PG = container('pg', { tier: 'operated', app: 'pg-stack', compose: { project: 'pg-stack', service: 'pg' } });
 const REQUESTER = { label: 'claude: mcp-actions test', repo: 'matdemers1/shipyard', branch: 'main' };
 
 let bus: Bus;
@@ -72,10 +74,22 @@ async function listen(): Promise<void> {
   baseUrl = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 }
 
-/** A token scoped to `apps`, owned by a user of `role`; `canReadLogs` is the token's own flag. */
-async function tokenFor(label: string, apps: string[], role: 'operator' | 'viewer' = 'operator', canReadLogs = false): Promise<string> {
+interface TokenOptions {
+  /** The owner's role; an operator unless a test needs less. */
+  role?: 'operator' | 'viewer';
+  /** The token's own can_read_logs flag. */
+  canReadLogs?: boolean;
+  /** Adopted stacks the token names, beside its apps (SHP-ADR-011). */
+  stacks?: string[];
+}
+
+/** A token scoped to `apps` (and `options.stacks`), owned by a user of `options.role`. */
+async function tokenFor(label: string, apps: string[], options: TokenOptions = {}): Promise<string> {
+  const { role = 'operator', canReadLogs = false, stacks = [] } = options;
   const user = await db.user.create({ data: { email: `${label}-${randomUUID()}@example.com`, displayName: label, role } });
   const { token, hash, prefix } = generateToken();
+  const stackRows = await db.stack.findMany({ where: { name: { in: stacks } }, select: { id: true } });
+  expect(stackRows).toHaveLength(stacks.length);
   await db.apiToken.create({
     data: {
       userId: user.id,
@@ -84,6 +98,7 @@ async function tokenFor(label: string, apps: string[], role: 'operator' | 'viewe
       prefix,
       canReadLogs,
       apps: { create: apps.map((a) => ({ appId: appIds.get(a) ?? '' })) },
+      stacks: { create: stackRows.map((r) => ({ stackId: r.id })) },
     },
   });
   return token;
@@ -163,7 +178,7 @@ beforeEach(async () => {
     ['api', await seedApp(db, 'api', agentId)],
   ]);
   await seedStack(db, 'pg-stack', agentId);
-  await seedSnapshot(db, agentId, [WEB, WATCHTOWER]);
+  await seedSnapshot(db, agentId, [WEB, API, PG, WATCHTOWER]);
   // The server only queues work for an agent it has heard advertise the capability.
   bus = new Bus();
   app = createApp({ db, logger, config, bus });
@@ -245,7 +260,7 @@ describe('shipyard_action', () => {
     expect(await db.action.count()).toBe(0);
   });
 
-  it('refuses a name outside the token scope, an adopted stack included (a token cannot name one)', async () => {
+  it('refuses a name outside the token scope: another app, and a stack an app-scoped token does not name', async () => {
     const client = await connect(await tokenFor('claude', ['api']));
     for (const name of ['web', 'pg-stack']) {
       const refusal = refusalOf(await call(client, 'shipyard_action', { name, verb: 'restart', requester: REQUESTER }));
@@ -255,8 +270,30 @@ describe('shipyard_action', () => {
     expect(await db.action.count()).toBe(0);
   });
 
+  it('lets a stack-scoped token restart its stack, as kind stack, and sees it succeed', async () => {
+    const client = await connect(await tokenFor('claude', [], { stacks: ['pg-stack'] }));
+    const answered = agentAnswers('succeeded', 'restarted pg-stack');
+    const result = await call(client, 'shipyard_action', { name: 'pg-stack', verb: 'restart', service: 'pg', requester: REQUESTER });
+    const job = await answered;
+    expect(result.isError ?? false).toBe(false);
+    expect(job).toMatchObject({ target: { kind: 'stack', name: 'pg-stack' }, verb: 'restart', service: 'pg' });
+    const body = result.structuredContent as { action: ActionStatus; finished: boolean };
+    expect(body.finished).toBe(true);
+    expect(body.action).toMatchObject({ target: { kind: 'stack', name: 'pg-stack' }, state: 'succeeded' });
+  });
+
+  it('refuses a stack-scoped token naming an app, and an app-scoped token naming a stack', async () => {
+    const stackToken = await connect(await tokenFor('stacky', [], { stacks: ['pg-stack'] }));
+    const onApp = refusalOf(await call(stackToken, 'shipyard_action', { name: 'web', verb: 'restart', requester: REQUESTER }));
+    expect(onApp.code).toBe('forbidden');
+    const appToken = await connect(await tokenFor('appy', ['web']));
+    const onStack = refusalOf(await call(appToken, 'shipyard_action', { name: 'pg-stack', verb: 'restart', requester: REQUESTER }));
+    expect(onStack.code).toBe('forbidden');
+    expect(await db.action.count()).toBe(0);
+  });
+
   it('refuses a viewer-owned token (forbidden), the same as the console would', async () => {
-    const client = await connect(await tokenFor('claude', ['web'], 'viewer'));
+    const client = await connect(await tokenFor('claude', ['web'], { role: 'viewer' }));
     const refusal = refusalOf(await call(client, 'shipyard_action', { name: 'web', verb: 'restart', requester: REQUESTER }));
     expect(refusal.code).toBe('forbidden');
     expect(await db.action.count()).toBe(0);
@@ -298,12 +335,12 @@ describe('shipyard_logs', () => {
   });
 
   it('is refused when the token may read logs but its owner no longer can', async () => {
-    const client = await connect(await tokenFor('claude', ['web'], 'viewer', true));
+    const client = await connect(await tokenFor('claude', ['web'], { role: 'viewer', canReadLogs: true }));
     expect(refusalOf(await call(client, 'shipyard_logs', { container: 'web-1' })).code).toBe('forbidden');
   });
 
   it('returns the lines the agent sends, in order, for a container named as the Host view shows it', async () => {
-    const client = await connect(await tokenFor('claude', ['web'], 'operator', true));
+    const client = await connect(await tokenFor('claude', ['web'], { canReadLogs: true }));
     const sent = agentSends([[line('first'), line('second')], [line('token=[redacted]')], [line('last')]]);
     const result = await call(client, 'shipyard_logs', { container: 'web-1', tail: 50 });
     const job = await sent;
@@ -319,8 +356,8 @@ describe('shipyard_logs', () => {
     expect(JSON.stringify(audit[0]?.after)).not.toContain('second');
   });
 
-  it('takes a full 64-hex ID as it is and defaults the tail to 100', async () => {
-    const client = await connect(await tokenFor('claude', ['web'], 'operator', true));
+  it('takes a full 64-hex ID as it is, and defaults the tail to 100', async () => {
+    const client = await connect(await tokenFor('claude', ['web'], { canReadLogs: true }));
     const sent = agentSends([[line('serving')]]);
     const result = await call(client, 'shipyard_logs', { container: WEB.id });
     const job = await sent;
@@ -328,20 +365,45 @@ describe('shipyard_logs', () => {
     expect((result.structuredContent as { container: { name: string } }).container.name).toBe('web-1');
   });
 
-  it("refuses a token an Observed container, even by its ID (SHP-ADR-011: tokens read only their scope)", async () => {
-    const client = await connect(await tokenFor('claude', ['web'], 'operator', true));
-    expect(refusalOf(await call(client, 'shipyard_logs', { container: WATCHTOWER.id })).code).toBe('forbidden');
-  });
-
   it('refuses a container the host does not report (unknown_container), by name and by ID', async () => {
-    const client = await connect(await tokenFor('claude', ['web'], 'operator', true));
+    const client = await connect(await tokenFor('claude', ['web'], { canReadLogs: true }));
     for (const name of ['ghost', 'f'.repeat(64)]) {
       expect(refusalOf(await call(client, 'shipyard_logs', { container: name })).code).toBe('unknown_container');
     }
   });
 
+  it("reads only what the token's scope names: not another app's Shipped container, not an unscoped stack's Operated one", async () => {
+    const client = await connect(await tokenFor('claude', ['web'], { canReadLogs: true }));
+    for (const name of ['api-1', 'pg']) {
+      const refusal = refusalOf(await call(client, 'shipyard_logs', { container: name }));
+      expect(refusal.code).toBe('forbidden');
+    }
+    expect(await db.auditEvent.count({ where: { action: 'logs.view' } })).toBe(0);
+  });
+
+  it('never reads an Observed container, even one named by its full ID', async () => {
+    const client = await connect(await tokenFor('claude', ['web'], { canReadLogs: true, stacks: ['pg-stack'] }));
+    for (const name of ['watchtower', WATCHTOWER.id]) {
+      const refusal = refusalOf(await call(client, 'shipyard_logs', { container: name }));
+      expect(refusal.code).toBe('forbidden');
+      expect(refusal.message).toContain('only observes');
+    }
+  });
+
+  it("reads its own stack's Operated container with a stack-scoped token, and its own app's Shipped one", async () => {
+    const client = await connect(await tokenFor('claude', ['api'], { canReadLogs: true, stacks: ['pg-stack'] }));
+    const fromStack = agentSends([[line('pg ready')]]);
+    const pg = await call(client, 'shipyard_logs', { container: 'pg' });
+    expect((await fromStack).containerId).toBe(PG.id);
+    expect((pg.structuredContent as { lines: LogLine[] }).lines.map((l) => l.text)).toEqual(['pg ready']);
+    const fromApp = agentSends([[line('api up')]]);
+    const api = await call(client, 'shipyard_logs', { container: API.id });
+    expect((await fromApp).containerId).toBe(API.id);
+    expect((api.structuredContent as { lines: LogLine[] }).lines.map((l) => l.text)).toEqual(['api up']);
+  });
+
   it('bounds the tail at 500: 500 is handed to the agent, 501 and 0 are rejected', async () => {
-    const client = await connect(await tokenFor('claude', ['web'], 'operator', true));
+    const client = await connect(await tokenFor('claude', ['web'], { canReadLogs: true }));
     const sent = agentSends([[line('x')]]);
     await call(client, 'shipyard_logs', { container: 'web-1', tail: 500 });
     expect((await sent).tail).toBe(500);
@@ -353,7 +415,7 @@ describe('shipyard_logs', () => {
   });
 
   it('rejects a follow flag: it is a tail only', async () => {
-    const client = await connect(await tokenFor('claude', ['web'], 'operator', true));
+    const client = await connect(await tokenFor('claude', ['web'], { canReadLogs: true }));
     const result = await call(client, 'shipyard_logs', { container: 'web-1', follow: true });
     expect(result.isError).toBe(true);
   });

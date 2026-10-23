@@ -382,7 +382,7 @@ export function buildMcpServer(
         'in the console; do not repeat the call. Stop is console-only: an API token can never stop a service. ' +
         'Observed containers can\'t be acted on. An app that is being deployed is Locked and the call is ' +
         'refused naming who holds it. `requester` (repo, branch, label) is required and recorded; the label ' +
-        'shows in Activity (e.g. "claude: <session>"). The token must be scoped to `name`.',
+        'shows in Activity (e.g. "claude: <session>"). The token must be scoped to `name` (an app, or an adopted stack it names).',
       inputSchema: toolInput(ShipyardActionInput),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -421,9 +421,11 @@ export function buildMcpServer(
       description:
         'Read-only. The last `tail` lines (1 to 500, default 100) of one container\'s logs, by `container` — the ' +
         'name the Host view shows, or its full 64-character ID — redacted on the host and never stored. Returns ' +
-        '{ container: { id, name }, lines: [{ at, stream, text }] } within 30 s. Any container in the host ' +
-        'inventory can be read, whatever its tier (shipyard_host lists them). Needs a token issued with ' +
-        'logs allowed (Settings › Claude & tokens); a token without it is refused. A tail only: it never follows.',
+        '{ container: { id, name }, lines: [{ at, stream, text }] } within 30 s. A token reads ' +
+        'only the containers of the apps and adopted stacks it is scoped to (a Deployed app\'s containers or an ' +
+        'Operated stack\'s), never an Observed one or another app\'s; the console is where an ' +
+        'operator reads anything. Needs a token issued with logs allowed (Settings › Claude & tokens); a token ' +
+        'without it is refused. A tail only: it never follows.',
       inputSchema: toolInput(ShipyardLogsInput),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },

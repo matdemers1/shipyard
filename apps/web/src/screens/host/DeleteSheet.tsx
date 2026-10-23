@@ -120,7 +120,7 @@ export function DeleteSheet({ volume, row, role, onClose, onChanged }: DeleteShe
         </Button>
       </span>
       <div className="shp-csheet__body">
-        <dl className="shp-vol-facts" aria-label={DELETE_FACTS.label}>
+        <dl className="shp-vol-facts">
           {facts.map(([term, value]) => (
             <div key={term} className="shp-vol-facts__row">
               <dt>{term}</dt>

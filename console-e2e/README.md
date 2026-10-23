@@ -31,6 +31,10 @@ pnpm --filter console-e2e test
 - **The host snapshot (Host, SHP-T-14.7):** the confirmed agent carries one `host_snapshot` and
   six `host_sample` rows per running container (`harness/host.ts`, names in `HOST_FIXTURE`);
   `setHostReportedAt` moves its report time to show it fresh or stale.
+- **Volumes and prune (SHP-T-17.6):** `seedVolumeArchives` puts two archives of `bindery_pgdata` in
+  the agent's ledger and `seedMaintenanceJobs` a few finished jobs (`harness/volumes.ts`, names in
+  `VOLUME_FIXTURE`). No agent polls, so a backup or a prune's dry run is refused `agent_offline`; the
+  admin has not stepped up, so a restore or delete is refused `step_up_required`.
 - **A different world:** `withDb(async (db) => { await wipeAppData(db); … })` keeps users and
   sessions; build what you need with `createApp`, `createDeploy`, `sha(n)`, `digest(label)`, and
   put the baseline back with `withDb(reseedWorld)` in `afterAll`. Commit SHAs the stub knows are

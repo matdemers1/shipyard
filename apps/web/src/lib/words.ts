@@ -771,7 +771,6 @@ export function deleteIntroWords(project: string | null): string {
 }
 
 export const DELETE_FACTS = {
-  label: 'About this volume',
   size: 'Size',
   created: 'Created',
   driver: 'Driver',

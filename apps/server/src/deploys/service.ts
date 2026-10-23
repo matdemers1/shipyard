@@ -16,7 +16,7 @@ import type { ServiceDeps } from '../deps.js';
 import { notifyAwaitingApproval } from '../push/notify.js';
 import { assertDeployable } from '../apps/drift.js';
 import { assertNotFrozen } from '../freeze/service.js';
-import { restoreLockRefusal } from '../maintenance/lock.js';
+import { RestoreLockedError, assertNoRestore, restoreLockRefusal } from '../maintenance/lock.js';
 import { createGroupDeploy, readGroupMeta } from '../groups/service.js';
 
 /**
@@ -228,9 +228,19 @@ export async function createDeploy(
     try {
       // A nested create is one statement batch in one transaction: the Deploy never exists
       // without its target, and the index decides who holds the lock.
-      const row = await db.deploy.create({ data, select: { id: true } });
+      // A locking deploy is inserted under the app's owner lock, after checking no volume restore
+      // holds the app (SHP-T-17.3, SHP-REQ-202; see maintenance/lock.ts). A dry run or a held
+      // deploy takes no lock, and claimTarget keeps a dry run waiting while a restore runs.
+      const row =
+        state === 'locked'
+          ? await db.$transaction(async (tx) => {
+              await assertNoRestore(tx, [appName]);
+              return tx.deploy.create({ data, select: { id: true } });
+            })
+          : await db.deploy.create({ data, select: { id: true } });
       deployId = row.id;
     } catch (err) {
+      if (err instanceof RestoreLockedError) return err.refusal;
       if (dryRun || held || !isUniqueViolation(err)) throw err;
       const locked = await lockRefusal(db, appName, app.id);
       if (locked !== null) return locked;

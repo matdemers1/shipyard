@@ -94,3 +94,8 @@ ALTER TABLE "volume_archive" ADD CONSTRAINT "volume_archive_agent_id_fkey" FOREI
 -- src/maintenance/service.ts; keep the two in sync by hand.
 CREATE UNIQUE INDEX "maintenance_job_one_in_flight_per_agent" ON "maintenance_job" ("agent_id")
   WHERE "state" IN ('dispatched','running');
+
+-- Hand-written: one dry run authorises one real prune (SHP-REQ-205). A prune the agent refused
+-- does not use it up. Two prunes racing past the service's check cannot both be recorded.
+CREATE UNIQUE INDEX "maintenance_job_one_prune_per_dry_run" ON "maintenance_job" ("dry_run_of")
+  WHERE "dry_run_of" IS NOT NULL AND "state" <> 'refused';

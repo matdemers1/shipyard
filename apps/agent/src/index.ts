@@ -166,7 +166,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // Stack updates (SHP-ADR-010): any OCI registry, with the same read-only docker config the
   // agent's pulls use; candidates are checked on the report interval, cached and rate-limit aware.
   const stackRegistry = createOciRegistry({ credentials: registryCredentials(process.env.DOCKER_CONFIG) });
-  const candidates = createCandidateChecker({ registry: stackRegistry, docker: ports.docker, log: logger });
+  const candidates = createCandidateChecker({ registry: stackRegistry, docker: ports.docker, fs: ports.fs, log: logger });
 
   // Set once builds are enabled below; a plain variable so `reporting`'s closure (built before it
   // exists) always reads whatever it is by the time a report is actually sent (SHP-T-7.11).

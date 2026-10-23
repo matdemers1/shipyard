@@ -12,7 +12,8 @@ import {
   matchesChip,
   type HostChip,
 } from '../../lib/host';
-import { ContainerGroups, type ContainerHref } from './ContainerGroups';
+import type { StackView } from '../../lib/stacks';
+import { ContainerGroups, type ContainerHref, type StackHref } from './ContainerGroups';
 import { Volumes } from './Volumes';
 
 /**
@@ -31,6 +32,9 @@ export interface HostViewProps {
   headingLevel: 2 | 3;
   /** Where a container's row opens its sheet. */
   hrefFor: ContainerHref;
+  /** Adopted stacks by name, for their update badge and sheet (SHP-T-16.6). */
+  stacks?: ReadonlyMap<string, StackView>;
+  stackHref?: StackHref;
 }
 
 function plural(n: number, one: string, other: string): string {
@@ -47,7 +51,7 @@ export function AgentStatus({ snapshot, now }: { snapshot: HostSnapshot; now: nu
   );
 }
 
-export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor }: HostViewProps) {
+export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor, stacks, stackHref }: HostViewProps) {
   const inventory = snapshot.inventory;
   const totals = useMemo(() => hostTotals(inventory), [inventory]);
   const counts = useMemo(() => chipCounts(inventory.containers), [inventory]);
@@ -125,7 +129,13 @@ export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor }:
             {chip === 'all' ? 'Docker runs no containers on this host.' : 'Choose All to see every container.'}
           </EmptyState>
         ) : (
-          <ContainerGroups groups={groups} samples={snapshot.samples} hrefFor={hrefFor} />
+          <ContainerGroups
+            groups={groups}
+            samples={snapshot.samples}
+            hrefFor={hrefFor}
+            {...(stacks === undefined ? {} : { stacks })}
+            {...(stackHref === undefined ? {} : { stackHref })}
+          />
         )}
       </Section>
 

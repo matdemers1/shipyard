@@ -676,6 +676,11 @@ export interface StackView {
   updates: 'none' | 'digest';
   approval: DigestManifest['approval'] | null;
   soakSeconds: number | null;
+  /**
+   * The manifest's backup step, so the console can name it in What happens. Only the service and the
+   * first two argv words (the program and its subcommand), never the rest of the argv or artifactsDir.
+   */
+  backup: { service: string; argv: string[] } | null;
   services: StackServiceView[];
   reportedAt: string;
   /** The update or rollback queued, awaiting approval or running now, if any. */
@@ -739,6 +744,7 @@ export async function listStacks(db: Db, scope?: ReadonlySet<string>): Promise<S
       updates: digest === null ? 'none' : 'digest',
       approval: digest?.approval ?? null,
       soakSeconds: digest?.soakSeconds ?? null,
+      backup: digest?.steps?.backup === undefined ? null : { service: digest.steps.backup.service, argv: digest.steps.backup.argv.slice(0, 2) },
       services,
       reportedAt: row.reportedAt.toISOString(),
       activeUpdate: activeRow === undefined ? null : toStackUpdateStatus(activeRow),

@@ -1,6 +1,7 @@
-import type { ActionStatus } from '@shipyard/schema';
+import type { ActionStatus, StackUpdateStatus } from '@shipyard/schema';
 import type { StageState } from '../../components/pipeline';
 import { isTerminalAction } from '../../lib/actions';
+import { isTerminalStackUpdate } from '../../lib/stacks';
 import { STAGE_LABEL, isTerminalBuild, type BuildState, type BuildSummary } from '../../lib/builds';
 import type { ScheduleEntry } from '../../lib/schedules';
 import {
@@ -12,7 +13,7 @@ import {
   type TimelineItem,
   type TimelineOutcome,
 } from '../../lib/timeline';
-import { DEPLOY_ALL_READY, checkName, stateWords } from '../../lib/words';
+import { DEPLOY_ALL_READY, STACK_UPDATES, checkName, stateWords } from '../../lib/words';
 
 /**
  * Activity's model (SHP-T-13.13, SHP-REQ-164): the filters in the address, the one feed made of
@@ -24,7 +25,7 @@ import { DEPLOY_ALL_READY, checkName, stateWords } from '../../lib/words';
 // ── Filters, in the URL ──────────────────────────────────────────────────
 
 /** The kind chips. `refusal` is a deploy outcome, not a stored kind. */
-export type ActivityKind = 'deploy' | 'rollback' | 'refusal' | 'build' | 'schedule' | 'restore' | 'action';
+export type ActivityKind = 'deploy' | 'rollback' | 'refusal' | 'build' | 'schedule' | 'restore' | 'action' | 'stack-update';
 
 export const KIND_CHIPS: readonly { value: ActivityKind; label: string }[] = [
   { value: 'deploy', label: 'Deploys' },
@@ -36,6 +37,8 @@ export const KIND_CHIPS: readonly { value: ActivityKind; label: string }[] = [
   { value: 'schedule', label: 'Schedules' },
   // Start, stop, restart and recreate of an app or stack (SHP-T-15.7, SHP-ADR-010).
   { value: 'action', label: 'Actions' },
+  // Updates and rollbacks of an adopted stack by digest (SHP-T-16.6, SHP-REQ-200).
+  { value: 'stack-update', label: STACK_UPDATES },
 ];
 
 const KIND_VALUES: readonly string[] = KIND_CHIPS.map((k) => k.value);
@@ -73,16 +76,19 @@ export interface Sources {
   showUpcoming: boolean;
   /** Lifecycle actions; refused ones under Refusals too. */
   actions: boolean;
+  /** Stack updates and rollbacks; refused ones under Refusals too. */
+  stackUpdates: boolean;
 }
 
 export function sourcesFor(filters: ActivityFilters): Sources {
   const kind = filters.kind;
   return {
-    deploys: kind !== 'build' && kind !== 'schedule' && kind !== 'action',
+    deploys: kind !== 'build' && kind !== 'schedule' && kind !== 'action' && kind !== 'stack-update',
     builds: kind === undefined || kind === 'build',
     scheduleRows: kind === undefined || kind === 'schedule' || kind === 'refusal',
     showUpcoming: kind === undefined || kind === 'schedule',
     actions: kind === undefined || kind === 'action' || kind === 'refusal',
+    stackUpdates: kind === undefined || kind === 'stack-update' || kind === 'refusal',
   };
 }
 
@@ -118,6 +124,15 @@ export function actionMatches(action: ActionStatus, filters: ActivityFilters): b
   return outcome === undefined || action.state === outcome;
 }
 
+/** A stack update against the filters: the stack for app, requester, outcome; Refusals is its refused state. */
+export function stackUpdateMatches(update: StackUpdateStatus, filters: ActivityFilters): boolean {
+  if (filters.app !== undefined && update.stack !== filters.app) return false;
+  if (!contains(update.requesterLabel, filters.requester) && !contains(update.approvedBy ?? '', filters.requester)) return false;
+  const outcome = filters.kind === 'refusal' ? 'refused' : filters.outcome;
+  if (outcome === 'active') return !isTerminalStackUpdate(update.state);
+  return outcome === undefined || update.state === outcome;
+}
+
 export function buildMatches(build: BuildSummary, filters: ActivityFilters): boolean {
   return contains(build.requesterLabel, filters.requester) && outcomeMatches(filters.outcome, build.state);
 }
@@ -147,6 +162,7 @@ export type FeedEntry =
   | { type: 'build'; key: string; at: string; build: BuildSummary }
   | { type: 'schedule'; key: string; at: string; entry: ScheduleEntry }
   | { type: 'action'; key: string; at: string; action: ActionStatus }
+  | { type: 'stack-update'; key: string; at: string; update: StackUpdateStatus }
   | {
       type: 'rollout';
       key: string;
@@ -353,6 +369,27 @@ export function actionNode(state: ActionStatus['state']): StageState {
       return 'skipped';
     case 'queued':
       return 'waiting';
+    case 'dispatched':
+    case 'running':
+      return 'running';
+  }
+}
+
+export function stackUpdateNode(state: StackUpdateStatus['state']): StageState {
+  switch (state) {
+    case 'succeeded':
+      return 'done';
+    case 'failed':
+    case 'refused':
+    case 'rolled_back':
+      return 'failed';
+    case 'cancelled':
+    case 'denied':
+      return 'skipped';
+    case 'queued':
+      return 'waiting';
+    case 'awaiting_approval':
+      return 'held';
     case 'dispatched':
     case 'running':
       return 'running';

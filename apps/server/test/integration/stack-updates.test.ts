@@ -601,7 +601,7 @@ describe('history, the list, Needs you and the stack mirror', () => {
     const { cookie } = await signIn(db, 'viewer');
     const list = (await request(app).get('/api/stacks').set('Cookie', cookie)).body as { stacks: StackView[] };
     const forgejo = list.stacks.find((s) => s.name === 'forgejo');
-    expect(forgejo).toMatchObject({ updates: 'digest', approval: 'tokens', soakSeconds: 60, activeUpdate: null, lastUpdate: null });
+    expect(forgejo).toMatchObject({ updates: 'digest', approval: 'tokens', soakSeconds: 60, backup: null, activeUpdate: null, lastUpdate: null });
     expect(forgejo?.services).toEqual([
       { service: 'db', image: 'postgres', track: 'pinned', running: D3, candidate: null, checkedAt: MIRROR.db.checkedAt, error: null },
       { service: 'server', image: 'codeberg.org/forgejo/forgejo', track: { semver: '11.x' }, running: D1, candidate: { tag: '11.0.2', digest: D2 }, checkedAt: MIRROR.server.checkedAt, error: null },

@@ -8,6 +8,8 @@ import type {
   DeployTargetState,
   Gate,
   LifecycleVerb,
+  StackUpdateState,
+  StackUpdateStep,
 } from '@shipyard/schema';
 import type { CommitEntry, CommitsInfo } from './home';
 
@@ -269,3 +271,68 @@ export const ACTION_STATE_WORDS: Record<ActionState, string> = {
   refused: 'Refused',
   cancelled: 'Cancelled',
 };
+
+// ── Stack updates (SHP-ADR-010, SHP-P-16) ────────────────────────────────
+
+/**
+ * Where a stack update or rollback is, and how it ended (SHP-REQ-200): the deploy's words where the
+ * state is the same. A total record over the schema's enum, so a state it gains fails the typecheck.
+ */
+export const STACK_UPDATE_STATE_WORDS: Record<StackUpdateState, string> = {
+  queued: 'Queued',
+  awaiting_approval: 'Waiting for approval',
+  dispatched: 'Sent to the agent',
+  running: 'Running',
+  succeeded: 'Succeeded',
+  failed: 'Failed',
+  rolled_back: 'Rolled back',
+  refused: 'Refused',
+  denied: 'Denied',
+  cancelled: 'Cancelled',
+};
+
+/** The step a running update is on, as the in-progress banner says it. */
+export const STACK_UPDATE_STEP_WORDS: Record<StackUpdateStep, string> = {
+  verifying: 'Re-checking the track',
+  backing_up: 'Backing up',
+  pulling: 'Pulling by digest',
+  swapping: 'Swapping the image line',
+  checking: 'Checking health',
+  soaking: 'Soaking',
+  rolling_back: 'Rolling back',
+};
+
+/** The group header's button: opens the update sheet. */
+export const UPDATE_STACK = 'Update…';
+
+/** The group header's link to the stack's history. */
+export const STACK_HISTORY = 'History';
+
+/** The update sheet's primary: names the tag it will update to. */
+export function updateToVerb(tag: string): string {
+  return `Update to ${tag}`;
+}
+
+/** The group header's badge: the candidate the agent found (SHP-REQ-194). */
+export function updateAvailableWords(from: string, to: string): string {
+  return `Update available · ${from} → ${to}`;
+}
+
+/** A failed registry check, said on the group header. */
+export function checkFailedWords(error: string): string {
+  return `Couldn't check for updates: ${error}`;
+}
+
+/** The approver's primary on a held stack update (SHP-REQ-199): approving is updating. */
+export const APPROVE_AND_UPDATE = 'Approve and update';
+
+/** A held request, said where it waits. */
+export const WAITING_FOR_DEPLOYER = 'Waiting for a deployer to approve';
+
+/** The history's rollback confirmation, title and primary: names the stack and what comes back. */
+export function stackRollBackVerb(stack: string, to: string): string {
+  return `Roll back ${stack} to ${to}`;
+}
+
+/** Activity's chip for the source. */
+export const STACK_UPDATES = 'Stack updates';

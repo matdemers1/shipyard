@@ -1,5 +1,5 @@
 import { Badge, Link } from '@d3cloud/ui';
-import type { ActionStatus } from '@shipyard/schema';
+import type { ActionStatus, StackUpdateStatus } from '@shipyard/schema';
 import { ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
@@ -7,6 +7,7 @@ import { PipeNode } from '../../components/pipeline';
 import { actionBadgeWords, actionDuration, actionScope, actionStateWords } from '../../lib/actions';
 import { sha7 } from '../../lib/appdetail';
 import { TRIGGER_LABEL } from '../../lib/builds';
+import { changeWords, outcomeTone, requesterLine, stackUpdateStateWords } from '../../lib/stacks';
 import { formatDuration, formatFeedTime } from '../../lib/timeline';
 import { DEPLOY_ALL_READY } from '../../lib/words';
 import {
@@ -20,6 +21,7 @@ import {
   requesterWords,
   rolloutSummary,
   scheduleHeadline,
+  stackUpdateNode,
   type FeedEntry,
 } from './model';
 import type { StageState } from '../../components/pipeline';
@@ -138,6 +140,46 @@ function ActionRow({ action, at, now }: { action: ActionStatus; at: string; now:
   );
 }
 
+/** "Update 17.1.1 → 17.1.2", "Rollback to 17.0.4", and the refusal's message when it did not work. */
+export function stackUpdateDetail(update: StackUpdateStatus): string {
+  const what = changeWords(update);
+  const verb = update.kind === 'rollback' ? 'Rollback' : 'Update';
+  const message = update.state === 'succeeded' || update.refusal === null ? null : update.refusal.message;
+  return [what === null ? verb : `${verb} ${what}`, message].filter((x): x is string => x !== null).join(' · ');
+}
+
+/**
+ * A stack update or rollback (SHP-T-16.6, SHP-REQ-200): the stack, its outcome as a badge, what
+ * moved and — when it did not work — the refusal's message, who asked (and approved) and when. The
+ * row opens the stack's history on Host.
+ */
+function StackUpdateRow({ update, at, now }: { update: StackUpdateStatus; at: string; now: Date }) {
+  const who = requesterLine(update);
+  return (
+    <li className="shp-feed-row">
+      <PipeNode state={stackUpdateNode(update.state)} size="sm" />
+      <Link asChild>
+        <RouterLink to={`/host?stack=${encodeURIComponent(update.stack)}`} className="shp-feed-row__link">
+          <span className="shp-feed-row__line">
+            <strong>{update.stack}</strong>
+            <Badge size="sm" tone={outcomeTone(update.state)}>
+              {stackUpdateStateWords(update.state)}
+            </Badge>
+          </span>
+          <span className="shp-feed-row__sub">
+            {stackUpdateDetail(update)}
+            <span className="shp-feed-row__who-inline"> · {who}</span>
+          </span>
+        </RouterLink>
+      </Link>
+      <span className="shp-feed-row__who">{who}</span>
+      <time className="shp-feed-row__time" dateTime={at} title={new Date(at).toLocaleString()}>
+        {formatFeedTime(at, now)}
+      </time>
+    </li>
+  );
+}
+
 function RolloutRow({ entry, now }: { entry: Extract<FeedEntry, { type: 'rollout' }>; now: Date }) {
   const [open, setOpen] = useState(false);
   const { members, total } = entry;
@@ -204,6 +246,8 @@ export function FeedRow({ entry, now }: { entry: FeedEntry; now: Date }) {
       );
     case 'action':
       return <ActionRow action={entry.action} at={entry.at} now={now} />;
+    case 'stack-update':
+      return <StackUpdateRow update={entry.update} at={entry.at} now={now} />;
     case 'schedule':
       return (
         <Row

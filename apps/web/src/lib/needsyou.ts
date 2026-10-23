@@ -2,6 +2,7 @@ import type { PatWarning, SystemStatus } from '@shipyard/schema';
 import { useMemo } from 'react';
 import { appStatus } from './appstatus';
 import { useAppsSnapshot, type AppRow, type AppsStore, type CommitsInfo, type PendingApproval } from './home';
+import type { StackNeeds } from './stacks';
 
 /**
  * Needs you (SHP-ADR-006, SHP-D-089): everything that is waiting on a person, in one list. There
@@ -13,12 +14,17 @@ import { useAppsSnapshot, type AppRow, type AppsStore, type CommitsInfo, type Pe
  * push) and two from the host (an agent that has stopped reporting, and a GitHub token that is
  * expiring or expired). A frozen app is held on purpose and is never "ci-failed"; `appStatus` is
  * what decides that, so the app rows and this list read one rule.
+ *
+ * Since SHP-T-16.6 two from adopted stacks too (SHP-ADR-010): a stack update held for a deployer's
+ * approval (SHP-REQ-199), and a stack whose newest update failed or was rolled back.
  */
 
-export type NeedsYouKind = 'approval' | 'drift' | 'ci-failed' | 'agent-stale' | 'agent-token';
+export type NeedsYouKind = 'approval' | 'stack-approval' | 'drift' | 'ci-failed' | 'stack-failed' | 'agent-stale' | 'agent-token';
 
 export type NeedsYouItem =
   | { kind: 'approval'; app: string; deployId: string; sha: string }
+  | { kind: 'stack-approval'; stack: string; updateId: string }
+  | { kind: 'stack-failed'; stack: string; updateId: string }
   | { kind: 'drift'; app: string; driftId: string }
   | { kind: 'ci-failed'; app: string }
   | { kind: 'agent-stale' }
@@ -32,14 +38,19 @@ export interface NeedsYouInput {
   approvals: readonly PendingApproval[];
   /** `GET /api/system`, or null when it could not be read (or the role may not read it). */
   system: SystemStatus | null;
+  /** Held and failed stack updates; null or absent from a server without them. */
+  stackNeeds?: StackNeeds | null;
 }
 
-/** The list, in the order a person should look: approvals, drift, failed builds, then the host. */
+/** The list, in the order a person should look: approvals, drift, failed builds and stack updates, then the host. */
 export function needsYouItems(input: NeedsYouInput): NeedsYouItem[] {
   const items: NeedsYouItem[] = [];
 
   for (const approval of input.approvals) {
     items.push({ kind: 'approval', app: approval.app, deployId: approval.deployId, sha: approval.sha });
+  }
+  for (const held of input.stackNeeds?.approvals ?? []) {
+    items.push({ kind: 'stack-approval', stack: held.stack, updateId: held.id });
   }
 
   for (const app of input.apps) {
@@ -59,6 +70,10 @@ export function needsYouItems(input: NeedsYouInput): NeedsYouItem[] {
       frozen: app.frozen ?? false,
     });
     if (status.kind === 'ci-failed') items.push({ kind: 'ci-failed', app: app.name });
+  }
+
+  for (const failed of input.stackNeeds?.failed ?? []) {
+    items.push({ kind: 'stack-failed', stack: failed.stack, updateId: failed.id });
   }
 
   const agent = input.system?.agent ?? null;
@@ -98,7 +113,7 @@ export interface NeedsYou {
 
 /** The list, its count and the host lines, from one snapshot: Apps and the badge both call this. */
 export function needsYouFrom(snapshot: NeedsYouInput): NeedsYou {
-  const items = needsYouItems({ apps: snapshot.apps, approvals: snapshot.approvals, system: snapshot.system });
+  const items = needsYouItems({ apps: snapshot.apps, approvals: snapshot.approvals, system: snapshot.system, stackNeeds: snapshot.stackNeeds ?? null });
   return { items, count: items.length, hostWarnings: hostWarnings(snapshot.system) };
 }
 

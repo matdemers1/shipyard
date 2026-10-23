@@ -14,11 +14,17 @@ import { RegistryError, type StackRegistryPort } from '../ports.js';
  *
  * Authentication is the registry's own challenge: a 401 names a realm, service and scope in
  * `WWW-Authenticate: Bearer …`; a token is fetched from that realm — anonymously, or with the
- * host's credential from `$DOCKER_CONFIG/config.json` when one is configured — cached per host
- * and repository, and the request retried once. Redirects are followed by hand, so each host a
+ * host's credential from `$DOCKER_CONFIG/config.json` when one is configured — cached per scheme,
+ * host and repository, and the request retried once. Redirects are followed by hand, so each host a
  * request lands on (lscr.io hands off to ghcr.io) runs its own challenge and a token is never
  * replayed to a host that did not issue it. A credential goes only to a realm on the registry's own
  * host (Docker Hub's realm is `auth.docker.io`), and is never logged.
+ *
+ * Each exchange — headers and body — runs inside one deadline, and a body is read only up to a cap
+ * (a tag page 4 MiB and 10 000 tags, a manifest or token 1 MiB): a registry that stalls mid-body or
+ * sends without end is `unreachable`, so an update refuses and the candidate checker moves on.
+ * Only https is asked — a redirect or a token realm elsewhere is refused — except a host configured
+ * for plain http; the token cache is keyed by scheme and host, and a credential never goes over http.
  *
  * Every failure is a `RegistryError`: `unreachable` (network, timeout, 5xx, a malformed answer),
  * `rate_limited` (429, with `Retry-After`), or `denied` (401/403 after a token). The candidate
@@ -33,6 +39,11 @@ const MANIFEST_ACCEPT = [
 ].join(', ');
 
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+/** Body caps (SHP-REQ-196): more than this is refused as `unreachable`, never read on. */
+const MAX_TAG_PAGE_BYTES = 4 * 1024 * 1024;
+const MAX_MANIFEST_BYTES = 1024 * 1024;
+const MAX_TOKEN_BYTES = 1024 * 1024;
+const DEFAULT_MAX_TAGS_PER_PAGE = 10_000;
 const TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 
 export const DOCKER_HUB_REGISTRY = 'registry-1.docker.io';
@@ -105,7 +116,7 @@ export function registryCredentials(configDir: string | undefined): (host: strin
 
 export interface OciRegistryOptions {
   fetch?: typeof fetch;
-  /** Per request, token fetches included. Default 10 s. */
+  /** Per exchange, headers and body, token fetches included. Default 10 s. */
   timeoutMs?: number;
   /** Hosts reached over plain HTTP (a local `registry:2` in e2e). */
   plainHttpHosts?: string[];
@@ -115,6 +126,8 @@ export interface OciRegistryOptions {
   tagsPageSize?: number;
   /** Pages followed before the list stops. Default 20. */
   maxTagPages?: number;
+  /** Tags one page may carry before it is refused. Default 10 000 (or the page size, if larger). */
+  maxTagsPerPage?: number;
   /** Epoch ms, for token expiry. Default `Date.now`. */
   now?: () => number;
 }
@@ -139,8 +152,8 @@ export function parseBearerChallenge(header: string): Challenge | null {
   return { realm, service: params.get('service'), scope: params.get('scope') };
 }
 
-function retryAfterMs(res: Response): number | undefined {
-  const header = res.headers.get('retry-after');
+function retryAfterMs(headers: Headers): number | undefined {
+  const header = headers.get('retry-after');
   if (header === null) return undefined;
   const seconds = Number(header);
   if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
@@ -163,76 +176,165 @@ export function nextLink(header: string | null): string | null {
   return null;
 }
 
+/** A response read whole, inside the request's deadline and size cap. */
+interface Fetched {
+  status: number;
+  ok: boolean;
+  headers: Headers;
+  /** The body of a 2xx answer to a GET; empty for anything else, whose body is discarded unread. */
+  body: Buffer;
+}
+
+function discard(res: Response): void {
+  if (res.body !== null && !res.bodyUsed) void res.body.cancel().catch(() => undefined);
+}
+
 export function createOciRegistry(options: OciRegistryOptions = {}): StackRegistryPort {
   const doFetch = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   const plainHttp = new Set(options.plainHttpHosts ?? []);
   const pageSize = options.tagsPageSize ?? 1000;
   const maxPages = options.maxTagPages ?? 20;
+  const maxTagsPerPage = options.maxTagsPerPage ?? Math.max(DEFAULT_MAX_TAGS_PER_PAGE, pageSize);
   const now = options.now ?? Date.now;
-  /** `host path` → bearer token and when it stops being used. */
+  /** `scheme://host path` → bearer token and when it stops being used. The scheme is in the key, so a token taken over https is never replayed over http. */
   const tokens = new Map<string, { token: string; expiresAt: number }>();
 
   const baseUrl = (host: string): string => `${plainHttp.has(host) ? 'http' : 'https'}://${host}`;
+  /** https, or plain http to a host configured for it (a local `registry:2`); nothing else is ever asked. */
+  const allowedUrl = (url: URL): boolean => url.protocol === 'https:' || (url.protocol === 'http:' && plainHttp.has(url.host));
 
-  async function rawFetch(what: string, url: string, init: RequestInit): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
+  /**
+   * Reads a body up to `maxBytes`, refusing (as `unreachable`) a declared or actual length past it.
+   * Stops reading when `signal` aborts.
+   */
+  async function readCapped(what: string, host: string, res: Response, maxBytes: number, signal: AbortSignal): Promise<Buffer> {
+    const tooLarge = (): RegistryError => new RegistryError('unreachable', `${what}: ${host} sent more than ${String(maxBytes)} bytes; the answer was refused`);
+    const declared = Number(res.headers.get('content-length') ?? '');
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      discard(res);
+      throw tooLarge();
+    }
+    if (res.body === null) return Buffer.alloc(0);
+    const reader: ReadableStreamDefaultReader<Uint8Array> = res.body.getReader();
+    const cancel = (): void => {
+      void reader.cancel().catch(() => undefined);
+    };
+    signal.addEventListener('abort', cancel, { once: true });
+    const chunks: Uint8Array[] = [];
+    let total = 0;
     try {
-      return await doFetch(url, { ...init, redirect: 'manual', signal: controller.signal });
+      for (;;) {
+        const chunk = (await reader.read()) as { done: boolean; value?: Uint8Array };
+        if (chunk.done || chunk.value === undefined) break;
+        const value = chunk.value;
+        total += value.byteLength;
+        if (total > maxBytes) throw tooLarge();
+        chunks.push(value);
+      }
     } catch (err) {
-      throw new RegistryError('unreachable', `${what}: ${new URL(url).host} unreachable (${errMessage(err)})`);
+      cancel();
+      throw err;
+    } finally {
+      signal.removeEventListener('abort', cancel);
+    }
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * One HTTP exchange, headers and body, inside one deadline (SHP-REQ-196: a registry that stalls
+   * is unreachable, and the update refuses). The deadline is raced rather than only signalled, so
+   * a fetch or a body stream that ignores its AbortSignal still ends. A 2xx answer to a GET is read
+   * whole, up to `maxBytes`; any other answer's body is discarded unread.
+   */
+  async function rawFetch(what: string, url: string, init: RequestInit, maxBytes: number): Promise<Fetched> {
+    const host = new URL(url).host;
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new RegistryError('unreachable', `${what}: ${host} unreachable (timed out after ${String(timeoutMs)} ms)`));
+      }, timeoutMs);
+    });
+    deadline.catch(() => undefined);
+    try {
+      let res: Response;
+      try {
+        res = await Promise.race([doFetch(url, { ...init, redirect: 'manual', signal: controller.signal }), deadline]);
+      } catch (err) {
+        if (err instanceof RegistryError) throw err;
+        throw new RegistryError('unreachable', `${what}: ${host} unreachable (${errMessage(err)})`);
+      }
+      const wantBody = res.status >= 200 && res.status < 300 && (init.method ?? 'GET') !== 'HEAD';
+      if (!wantBody) {
+        discard(res);
+        return { status: res.status, ok: res.ok, headers: res.headers, body: Buffer.alloc(0) };
+      }
+      let body: Buffer;
+      try {
+        body = await Promise.race([readCapped(what, host, res, maxBytes, controller.signal), deadline]);
+      } catch (err) {
+        if (err instanceof RegistryError) throw err;
+        throw new RegistryError('unreachable', `${what}: ${host} unreachable while sending its answer (${errMessage(err)})`);
+      }
+      return { status: res.status, ok: res.ok, headers: res.headers, body };
     } finally {
       clearTimeout(timer);
     }
   }
 
-  async function fetchToken(what: string, host: string, path: string, challenge: Challenge): Promise<string> {
+  function parseJson(what: string, host: string, body: Buffer, kind: string): unknown {
+    try {
+      return JSON.parse(body.toString('utf8')) as unknown;
+    } catch {
+      throw new RegistryError('unreachable', `${what}: ${host} sent ${kind} that is not JSON`);
+    }
+  }
+
+  async function fetchToken(what: string, origin: URL, path: string, challenge: Challenge): Promise<string> {
+    const host = origin.host;
     let realm: URL;
     try {
       realm = new URL(challenge.realm);
     } catch {
       throw new RegistryError('unreachable', `${what}: ${host} sent a challenge with an unreadable realm`);
     }
-    if (realm.protocol !== 'https:' && !(realm.protocol === 'http:' && plainHttp.has(realm.host))) {
+    if (!allowedUrl(realm)) {
       throw new RegistryError('unreachable', `${what}: ${host} names a token realm that is not https`);
     }
     if (challenge.service !== undefined) realm.searchParams.set('service', challenge.service);
     realm.searchParams.set('scope', challenge.scope ?? `repository:${path}:pull`);
-    // A credential goes only to the registry's own realm (Docker Hub's lives on auth.docker.io).
+    // A credential goes only to the registry's own realm (Docker Hub's lives on auth.docker.io), and
+    // only over https — never in the clear, even to a host configured for plain http.
     const ownRealm = realm.host === host || (host === DOCKER_HUB_REGISTRY && realm.host === DOCKER_HUB_AUTH);
-    const credential = ownRealm ? options.credentials?.(host) : undefined;
-    const res = await rawFetch(what, realm.toString(), credential === undefined ? {} : { headers: { Authorization: `Basic ${credential}` } });
-    if (res.status === 429) throw new RegistryError('rate_limited', `${what}: ${realm.host} is rate limiting token requests`, retryAfterMs(res));
+    const credential = ownRealm && realm.protocol === 'https:' ? options.credentials?.(host) : undefined;
+    const res = await rawFetch(what, realm.toString(), credential === undefined ? {} : { headers: { Authorization: `Basic ${credential}` } }, MAX_TOKEN_BYTES);
+    if (res.status === 429) throw new RegistryError('rate_limited', `${what}: ${realm.host} is rate limiting token requests`, retryAfterMs(res.headers));
     if (res.status >= 500) throw new RegistryError('unreachable', `${what}: ${realm.host} answered ${String(res.status)} for a token`);
     if (!res.ok) {
       throw new RegistryError('denied', `${what}: ${realm.host} refused ${credential === undefined ? 'an anonymous token' : 'a token for the configured credential'} (${String(res.status)})`);
     }
-    let body: { token?: unknown; access_token?: unknown; expires_in?: unknown };
-    try {
-      body = (await res.json()) as typeof body;
-    } catch {
-      throw new RegistryError('unreachable', `${what}: ${realm.host} sent a token response that is not JSON`);
-    }
-    const token = typeof body.token === 'string' ? body.token : typeof body.access_token === 'string' ? body.access_token : undefined;
+    const body = parseJson(what, realm.host, res.body, 'a token response') as { token?: unknown; access_token?: unknown; expires_in?: unknown } | null;
+    const token = typeof body?.token === 'string' ? body.token : typeof body?.access_token === 'string' ? body.access_token : undefined;
     if (token === undefined || token === '') throw new RegistryError('unreachable', `${what}: ${realm.host} sent no token`);
-    const ttl = typeof body.expires_in === 'number' && body.expires_in > 0 ? body.expires_in * 1000 : 60_000;
-    tokens.set(`${host} ${path}`, { token, expiresAt: now() + Math.max(ttl - 5_000, 0) });
+    const ttl = typeof body?.expires_in === 'number' && body.expires_in > 0 ? body.expires_in * 1000 : 60_000;
+    tokens.set(`${origin.origin} ${path}`, { token, expiresAt: now() + Math.max(ttl - 5_000, 0) });
     return token;
   }
 
   /**
    * One registry request: the cached token if there is one, a challenge answered once, redirects
-   * followed by hand (each hop authenticating to its own host). 429 and 5xx throw; anything else is
-   * returned for the caller to read.
+   * followed by hand (each hop authenticating to its own host, and refused unless it is https).
+   * 429 and 5xx throw; anything else is returned for the caller to read.
    */
-  async function request(what: string, path: string, startUrl: string, init: RequestInit): Promise<Response> {
+  async function request(what: string, path: string, startUrl: string, init: RequestInit, maxBytes: number): Promise<Fetched> {
     let url = startUrl;
     for (let hop = 0; hop < 5; hop++) {
-      const host = new URL(url).host;
-      const key = `${host} ${path}`;
+      const at = new URL(url);
+      if (!allowedUrl(at)) throw new RegistryError('unreachable', `${what}: refused to ask ${at.origin}, which is not https`);
+      const host = at.host;
+      const key = `${at.origin} ${path}`;
       const cached = tokens.get(key);
       const withToken = (token: string | undefined): RequestInit => {
         if (token === undefined) return init;
@@ -240,13 +342,13 @@ export function createOciRegistry(options: OciRegistryOptions = {}): StackRegist
         headers.set('Authorization', `Bearer ${token}`);
         return { ...init, headers };
       };
-      let res = await rawFetch(what, url, withToken(cached !== undefined && cached.expiresAt > now() ? cached.token : undefined));
+      let res = await rawFetch(what, url, withToken(cached !== undefined && cached.expiresAt > now() ? cached.token : undefined), maxBytes);
       if (res.status === 401) {
         const header = res.headers.get('www-authenticate');
         const challenge = header === null ? null : parseBearerChallenge(header);
         if (challenge === null) throw new RegistryError('denied', `${what}: ${host} answered 401 without a bearer challenge`);
         tokens.delete(key);
-        res = await rawFetch(what, url, withToken(await fetchToken(what, host, path, challenge)));
+        res = await rawFetch(what, url, withToken(await fetchToken(what, at, path, challenge)), maxBytes);
       }
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get('location');
@@ -254,7 +356,7 @@ export function createOciRegistry(options: OciRegistryOptions = {}): StackRegist
         url = new URL(location, url).toString();
         continue;
       }
-      if (res.status === 429) throw new RegistryError('rate_limited', `${what}: ${host} is rate limiting (429)`, retryAfterMs(res));
+      if (res.status === 429) throw new RegistryError('rate_limited', `${what}: ${host} is rate limiting (429)`, retryAfterMs(res.headers));
       if (res.status >= 500) throw new RegistryError('unreachable', `${what}: ${host} answered ${String(res.status)}`);
       if (res.status === 401 || res.status === 403) throw new RegistryError('denied', `${what}: ${host} refused access (${String(res.status)})`);
       return res;
@@ -268,19 +370,18 @@ export function createOciRegistry(options: OciRegistryOptions = {}): StackRegist
       const { host, path } = parseImageRef(image);
       const what = `${image}:${tag}`;
       const url = `${baseUrl(host)}/v2/${path}/manifests/${tag}`;
-      const head = await request(what, path, url, { method: 'HEAD', headers: { Accept: MANIFEST_ACCEPT } });
+      const head = await request(what, path, url, { method: 'HEAD', headers: { Accept: MANIFEST_ACCEPT } }, MAX_MANIFEST_BYTES);
       if (head.status === 404) return null;
       if (!head.ok) throw new RegistryError('unreachable', `${what}: ${host} answered ${String(head.status)}`);
       const digest = head.headers.get('docker-content-digest');
       if (digest !== null && DIGEST_RE.test(digest)) return digest;
       // A registry that does not send the header on HEAD: the digest is the sha256 of the manifest bytes.
-      const get = await request(what, path, url, { headers: { Accept: MANIFEST_ACCEPT } });
+      const get = await request(what, path, url, { headers: { Accept: MANIFEST_ACCEPT } }, MAX_MANIFEST_BYTES);
       if (get.status === 404) return null;
       if (!get.ok) throw new RegistryError('unreachable', `${what}: ${host} answered ${String(get.status)}`);
       const fromHeader = get.headers.get('docker-content-digest');
       if (fromHeader !== null && DIGEST_RE.test(fromHeader)) return fromHeader;
-      const bytes = Buffer.from(await get.arrayBuffer());
-      return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+      return `sha256:${createHash('sha256').update(get.body).digest('hex')}`;
     },
 
     async listTags(image) {
@@ -290,16 +391,15 @@ export function createOciRegistry(options: OciRegistryOptions = {}): StackRegist
       const tags: string[] = [];
       let url: string | null = `${baseUrl(host)}/v2/${path}/tags/list?n=${String(pageSize)}`;
       for (let page = 0; url !== null && page < maxPages; page++) {
-        const res: Response = await request(what, path, url, { headers: { Accept: 'application/json' } });
+        const res: Fetched = await request(what, path, url, { headers: { Accept: 'application/json' } }, MAX_TAG_PAGE_BYTES);
         if (res.status === 404) return tags;
         if (!res.ok) throw new RegistryError('unreachable', `${what}: ${host} answered ${String(res.status)}`);
-        let body: { tags?: unknown };
-        try {
-          body = (await res.json()) as { tags?: unknown };
-        } catch {
-          throw new RegistryError('unreachable', `${what}: ${host} sent a tag list that is not JSON`);
+        const body = parseJson(what, host, res.body, 'a tag list') as { tags?: unknown } | null;
+        const list = body?.tags;
+        if (Array.isArray(list)) {
+          if (list.length > maxTagsPerPage) throw new RegistryError('unreachable', `${what}: ${host} sent ${String(list.length)} tags in one page, more than the ${String(maxTagsPerPage)} read`);
+          for (const tag of list) if (typeof tag === 'string' && TAG_RE.test(tag)) tags.push(tag);
         }
-        if (Array.isArray(body.tags)) for (const tag of body.tags) if (typeof tag === 'string' && TAG_RE.test(tag)) tags.push(tag);
         const next = nextLink(res.headers.get('link'));
         if (next === null) break;
         const resolved: URL = new URL(next, url);

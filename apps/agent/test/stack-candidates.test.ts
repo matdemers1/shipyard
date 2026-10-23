@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { StackManifest } from '@shipyard/schema';
-import { RegistryError, type DockerPort, type RunningContainer, type StackRegistryPort } from '@shipyard/sequence';
+import { RegistryError, createOciRegistry, type DockerPort, type RunningContainer, type StackRegistryPort } from '@shipyard/sequence';
 import { CANDIDATE_RECHECK_MS, createCandidateChecker } from '../src/stack-candidates.js';
 
 // SHP-REQ-194: each tracked service's track resolved on the report interval, cached, rate-limit
@@ -167,5 +167,48 @@ describe('candidate checker', () => {
   it('a lifecycle-only stack has no services', async () => {
     const checker = createCandidateChecker({ registry: registry(), docker: docker(RUNS) });
     expect(await checker.services(StackManifest.parse({ kind: 'stack', name: 'x', compose: STACK.compose }))).toBeUndefined();
+  });
+
+  describe('a semver track never offers a downgrade (SHP-REQ-195)', () => {
+    const composeWith = (dbLine: string): { readFile: (path: string) => Promise<string> } => ({
+      readFile: (path) =>
+        path === '/srv/media/compose.yml'
+          ? Promise.resolve(`services:\n  web:\n    image: lscr.io/linuxserver/sonarr:4.0.0\n  db:\n    image: ${dbLine}\n  cache:\n    image: redis@${d('6')}\n`)
+          : Promise.reject(new Error('no such file')),
+    });
+    // db runs something other than what 16.x resolves to (16.4 → d('4')).
+    const runs = { ...RUNS, db: `postgres@${d('9')}` };
+
+    it('no candidate when the image line names a higher version than the track resolves to', async () => {
+      const checker = createCandidateChecker({ registry: registry(), docker: docker(runs), fs: composeWith(`postgres:17.0@${d('9')}`), now: () => 0 });
+      const services = await checker.services(STACK);
+      expect(services?.['db']).toMatchObject({ running: d('9'), candidate: null, error: null });
+      // A { tag } track is a moving tag: its digest changing is the update, whatever the tag reads.
+      expect(services?.['web']?.candidate).toEqual({ tag: 'latest', digest: NEW });
+    });
+
+    it('a candidate when the running version is lower', async () => {
+      const checker = createCandidateChecker({ registry: registry(), docker: docker(runs), fs: composeWith('postgres:16.3'), now: () => 0 });
+      expect((await checker.services(STACK))?.['db']?.candidate).toEqual({ tag: '16.4', digest: d('4') });
+    });
+
+    it('a running tag that is not a version, or a compose file it cannot read, keeps today’s behaviour', async () => {
+      const latest = createCandidateChecker({ registry: registry(), docker: docker(runs), fs: composeWith('postgres:latest'), now: () => 0 });
+      expect((await latest.services(STACK))?.['db']?.candidate).toEqual({ tag: '16.4', digest: d('4') });
+      const unreadable = createCandidateChecker({ registry: registry(), docker: docker(runs), fs: { readFile: () => Promise.reject(new Error('EACCES')) }, now: () => 0 });
+      expect((await unreadable.services(STACK))?.['db']?.candidate).toEqual({ tag: '16.4', digest: d('4') });
+    });
+  });
+
+  it('a registry whose body stalls clears the check: the next report starts a new one (SHP-REQ-196)', async () => {
+    const stalled = new Response(new ReadableStream({ start: () => undefined }), { status: 200 });
+    const reg = createOciRegistry({ fetch: () => Promise.resolve(stalled.clone()), timeoutMs: 50 });
+    let now = 0;
+    const checker = createCandidateChecker({ registry: reg, docker: docker(RUNS), now: () => now, deadlineMs: 2_000, errorRetryMs: 1 });
+    const first = await checker.services(STACK);
+    expect(first?.['db']).toMatchObject({ candidate: null, error: expect.stringContaining('timed out') as unknown });
+    now += 10;
+    const second = await checker.services(STACK);
+    expect(second?.['db']?.checkedAt).toBe(new Date(10).toISOString());
   });
 });

@@ -387,7 +387,9 @@ export function buildMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ name, verb, service, requester }) => {
-      const denied = outOfScope(caller, name);
+      // A token may be scoped to an adopted stack as well as to apps (SHP-ADR-011 amendment); the
+      // service then checks the scope against the resolved kind.
+      const denied = caller.tokenStacks?.has(name) === true ? null : outOfScope(caller, name);
       if (denied !== null) return refused(denied);
       // An app wins over an adopted stack of the same name; a name that is neither is passed on as
       // an app so the service says why (unknown_app, or not_adopted for an Observed project).

@@ -319,13 +319,18 @@ describe('shipyard_logs', () => {
     expect(JSON.stringify(audit[0]?.after)).not.toContain('second');
   });
 
-  it('takes a full 64-hex ID as it is, any tier, and defaults the tail to 100', async () => {
+  it('takes a full 64-hex ID as it is and defaults the tail to 100', async () => {
     const client = await connect(await tokenFor('claude', ['web'], 'operator', true));
-    const sent = agentSends([[line('watching')]]);
-    const result = await call(client, 'shipyard_logs', { container: WATCHTOWER.id });
+    const sent = agentSends([[line('serving')]]);
+    const result = await call(client, 'shipyard_logs', { container: WEB.id });
     const job = await sent;
-    expect(job).toMatchObject({ containerId: WATCHTOWER.id, tail: 100 });
-    expect((result.structuredContent as { container: { name: string } }).container.name).toBe('watchtower');
+    expect(job).toMatchObject({ containerId: WEB.id, tail: 100 });
+    expect((result.structuredContent as { container: { name: string } }).container.name).toBe('web-1');
+  });
+
+  it("refuses a token an Observed container, even by its ID (SHP-ADR-011: tokens read only their scope)", async () => {
+    const client = await connect(await tokenFor('claude', ['web'], 'operator', true));
+    expect(refusalOf(await call(client, 'shipyard_logs', { container: WATCHTOWER.id })).code).toBe('forbidden');
   });
 
   it('refuses a container the host does not report (unknown_container), by name and by ID', async () => {

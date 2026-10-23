@@ -21,4 +21,5 @@ export * from './rollback.js';
 export * from './restore.js';
 export * from './semver.js';
 export * from './stack-update.js';
+export * from './maintenance.js';
 export * from './build/index.js';

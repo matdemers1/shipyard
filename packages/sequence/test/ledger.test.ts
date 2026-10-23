@@ -387,6 +387,69 @@ describe('Ledger queries', () => {
   });
 });
 
+describe('maintenance records (SHP-ADR-012, SHP-T-17.2)', () => {
+  const archive = (archiveId: string, volume = 'bindery_data') => ({
+    kind: 'volume-archive' as const,
+    archiveId,
+    volume,
+    owner: { kind: 'app' as const, name: 'bindery' },
+    createdAt: '2026-10-22T00:00:00.000Z',
+    sizeBytes: 10,
+    sha256: 'c'.repeat(64),
+    quiesced: false,
+    file: `/data/agent/backups/volumes/${volume}/20261022T000000Z.tar.zst`,
+  });
+
+  it('are never read as a release, a backup, a restore or a stack update of any app', async () => {
+    const { fs } = memoryFs();
+    const ledger = await Ledger.open(fs, PATH);
+    await ledger.append(entry({ deployId: 'dep-1', backupArtifact: '/data/backups/x.sql' }));
+    await ledger.append(archive('a1'));
+    await ledger.append({ kind: 'prune-plan', jobId: 'p1', items: [{ kind: 'image', id: `sha256:${'d'.repeat(64)}`, ref: null, sizeBytes: 1, createdAt: null, reason: 'dangling' }], at: '2026-10-22T00:00:00.000Z' });
+    await ledger.append({ kind: 'volume-archive-removed', archiveId: 'a1', at: '2026-10-22T00:00:01.000Z' });
+    await ledger.append(entry({ deployId: 'dep-2', sha: 'e'.repeat(40) }));
+
+    expect(ledger.entries('bindery').map((e) => e.deployId)).toEqual(['dep-1', 'dep-2']);
+    expect(ledger.last('bindery')?.deployId).toBe('dep-2');
+    expect(ledger.recent('bindery').map((e) => e.deployId)).toEqual(['dep-2', 'dep-1']);
+    expect(ledger.backupArtifacts('bindery').map((b) => b.deployId)).toEqual(['dep-1']);
+    expect(ledger.restores('bindery')).toEqual([]);
+    expect(ledger.stackUpdates('bindery')).toEqual([]);
+    expect([...ledger.knownDigests('bindery')]).toEqual([`sha256:${'b'.repeat(64)}`]);
+    // Nothing keyed by a volume name either.
+    expect(ledger.entries('bindery_data')).toEqual([]);
+    expect(ledger.backupArtifacts('bindery_data')).toEqual([]);
+  });
+
+  it('volumeArchives lists the live ones; volumeArchive and prunePlan look one up; a reopened ledger agrees', async () => {
+    const { fs } = memoryFs();
+    const ledger = await Ledger.open(fs, PATH);
+    await ledger.append(archive('a1'));
+    await ledger.append(archive('a2'));
+    await ledger.append(archive('b1', 'other'));
+    await ledger.append({ kind: 'volume-archive-removed', archiveId: 'a1', at: '2026-10-22T00:00:01.000Z' });
+    await ledger.append({ kind: 'prune-plan', jobId: 'p1', items: [], at: '2026-10-22T00:00:00.000Z' });
+    expect(ledger.volumeArchives().map((a) => a.archiveId)).toEqual(['a2', 'b1']);
+    expect(ledger.volumeArchives('bindery_data').map((a) => a.archiveId)).toEqual(['a2']);
+    expect(ledger.volumeArchive('a1')).toBeNull();
+    expect(ledger.volumeArchive('a2')?.file).toContain('/bindery_data/');
+    expect(ledger.prunePlan('p1')?.items).toEqual([]);
+    expect(ledger.prunePlan('p2')).toBeNull();
+    const again = await Ledger.open(fs, PATH);
+    expect(again.volumeArchives().map((a) => a.archiveId)).toEqual(['a2', 'b1']);
+  });
+
+  it('validates them', async () => {
+    const { fs } = memoryFs();
+    const ledger = await Ledger.open(fs, PATH);
+    await expect(ledger.append({ ...archive('a1'), file: 'relative.tar.zst' })).rejects.toBeInstanceOf(LedgerEntryInvalidError);
+    await expect(ledger.append({ ...archive('a1'), sha256: 'nope' })).rejects.toBeInstanceOf(LedgerEntryInvalidError);
+    await expect(ledger.append({ ...archive('a1'), volume: '-v' })).rejects.toBeInstanceOf(LedgerEntryInvalidError);
+    await expect(ledger.append({ kind: 'volume-archive-removed', archiveId: '', at: '2026-10-22T00:00:00.000Z' })).rejects.toBeInstanceOf(LedgerEntryInvalidError);
+    await expect(ledger.append({ kind: 'prune-plan', jobId: '', items: [], at: '2026-10-22T00:00:00.000Z' })).rejects.toBeInstanceOf(LedgerEntryInvalidError);
+  });
+});
+
 describe('Ledger.append validation', () => {
   it('rejects a bad digest format', async () => {
     const { fs } = memoryFs();

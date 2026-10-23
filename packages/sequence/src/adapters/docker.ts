@@ -4,6 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import Dockerode from 'dockerode';
 
 import type {
+  BuildCacheRecord,
   BuildNetworkInfo,
   ComposeTarget,
   ContainerLogLine,
@@ -435,7 +436,8 @@ export function createDockerAdapter(
   Required<
     Pick<DockerPort, 'loadImage' | 'inspectNetwork' | 'hostContainers' | 'hostVolumes' | 'systemDf' | 'hostImages' | 'hostNetworks' | 'containerStats' | 'dockerRootSpace'>
   > &
-  Required<Pick<DockerPort, 'containerLogs' | 'inspectEnv' | 'pullImage'>> {
+  Required<Pick<DockerPort, 'containerLogs' | 'inspectEnv' | 'pullImage'>> &
+  Required<Pick<DockerPort, 'dockerCli' | 'containerImageId' | 'buildCacheRecords'>> {
   const docker = options.docker ?? dockerodeFor(options.dockerHost);
   const composeBin = options.composeBin ?? 'docker';
   const probeImage = options.probeImage ?? 'busybox:1.37';
@@ -669,6 +671,43 @@ export function createDockerAdapter(
         return { exitCode: 2, stdout: '', stderr: `refusing to pull ${reference}: not a repo@sha256 reference` };
       }
       return execFile(composeBin, ['pull', '--quiet', reference], { env: composeEnv(), timeoutMs: 600_000 });
+    },
+
+    // Volume maintenance (SHP-ADR-012, SHP-T-17.2): the helper run, `volume rm`, `image rm` and
+    // `builder prune` go through the pinned CLI as argv; the reads below are inspect/df only.
+    async dockerCli(args, opts) {
+      const runOpts: { env: NodeJS.ProcessEnv; timeoutMs?: number } = { env: composeEnv() };
+      if (opts?.timeoutMs !== undefined) runOpts.timeoutMs = opts.timeoutMs;
+      return execFile(composeBin, args, runOpts);
+    },
+
+    async containerImageId(id) {
+      try {
+        const info = await docker.getContainer(id).inspect();
+        return typeof info.Image === 'string' && info.Image !== '' ? info.Image : null;
+      } catch (err) {
+        if (statusCodeOf(err) === 404) return null;
+        throw err;
+      }
+    },
+
+    async buildCacheRecords(): Promise<BuildCacheRecord[]> {
+      const df = (await docker.df()) as {
+        BuildCache?: { ID?: string; Size?: number; CreatedAt?: string | null; LastUsedAt?: string | null; InUse?: boolean }[] | null;
+      };
+      return (df.BuildCache ?? []).flatMap((entry) =>
+        typeof entry.ID !== 'string' || entry.ID === ''
+          ? []
+          : [
+              {
+                id: entry.ID,
+                sizeBytes: typeof entry.Size === 'number' && entry.Size > 0 ? entry.Size : 0,
+                createdAt: isoOrNull(entry.CreatedAt),
+                lastUsedAt: isoOrNull(entry.LastUsedAt),
+                inUse: entry.InUse === true,
+              },
+            ],
+      );
     },
 
     async inspectNetwork(name): Promise<BuildNetworkInfo | null> {

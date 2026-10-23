@@ -23,6 +23,7 @@ import {
   openStream,
   poll,
   seedApp,
+  seedStack,
   seedSnapshot,
   signIn,
   until,
@@ -59,6 +60,7 @@ const logger = pino({ level: 'trace' }, sink);
 
 const WEB = container('web-1', { tier: 'shipped', app: 'web', compose: { project: 'web', service: 'web' } });
 const WATCHTOWER = container('watchtower');
+const PG = container('pg', { tier: 'operated', app: 'pg-stack', compose: { project: 'pg-stack', service: 'pg' } });
 
 let bus: Bus;
 let app: Express;
@@ -115,7 +117,8 @@ beforeEach(async () => {
   key = makeKey();
   agentId = await enrol(db, key);
   await seedApp(db, 'web', agentId);
-  await seedSnapshot(db, agentId, [WEB, WATCHTOWER]);
+  await seedStack(db, 'pg-stack', agentId);
+  await seedSnapshot(db, agentId, [WEB, WATCHTOWER, PG]);
   bus = new Bus();
   deps = { db, logger, config, bus };
   app = createApp({ db, logger, config, bus });
@@ -159,7 +162,7 @@ describe('POST /api/logs: who may read', () => {
     expect(err(refused).code).toBe('forbidden');
 
     const reader = await issueToken(app, admin.cookie, ['web'], true);
-    const ok = await request(app).post('/api/logs').set('Authorization', `Bearer ${reader.token}`).send({ container: WATCHTOWER.id, tail: 50 });
+    const ok = await request(app).post('/api/logs').set('Authorization', `Bearer ${reader.token}`).send({ container: WEB.id, tail: 50 });
     expect(ok.status).toBe(201);
 
     const list = await request(app).get('/api/tokens').set('Cookie', admin.cookie);
@@ -175,6 +178,29 @@ describe('POST /api/logs: who may read', () => {
     await db.user.update({ where: { id: admin.userId }, data: { role: 'deployer' } });
     const demoted = await request(app).post('/api/logs').set('Authorization', `Bearer ${reader.token}`).send({ container: WEB.id });
     expect(demoted.status).toBe(403);
+  });
+
+  it("scopes a token's reads: only Shipped or Operated containers of the apps and stacks it names (SHP-ADR-011)", async () => {
+    await poll(app, key, ['logs']);
+    const admin = await signIn(db, 'admin');
+    const webToken = await issueToken(app, admin.cookie, ['web'], true);
+    const as = (token: string, id: string) => request(app).post('/api/logs').set('Authorization', `Bearer ${token}`).send({ container: id });
+
+    const observed = await as(webToken.token, WATCHTOWER.id);
+    expect(observed.status).toBe(403);
+    expect(err(observed)).toMatchObject({ code: 'forbidden', fix: 'Use the console, or a token scoped to watchtower.' });
+    const otherStack = await as(webToken.token, PG.id);
+    expect(otherStack.status).toBe(403);
+    expect(err(otherStack)).toMatchObject({ code: 'forbidden', fix: 'Use the console, or a token scoped to pg-stack.' });
+    expect((await as(webToken.token, WEB.id)).status).toBe(201);
+
+    const stackToken = await issueToken(app, admin.cookie, ['pg-stack'], true);
+    expect((await as(stackToken.token, PG.id)).status).toBe(201);
+    expect((await as(stackToken.token, WEB.id)).status).toBe(403);
+
+    // A signed-in admin is not scoped: an Observed container is readable in the console.
+    expect((await open(admin.cookie, { container: WATCHTOWER.id })).status).toBe(201);
+    expect(await db.auditEvent.count({ where: { action: 'logs.view' } })).toBe(3);
   });
 
   it('refuses a container the snapshot does not name (unknown_container) and a tail over 2000', async () => {
@@ -318,6 +344,29 @@ describe('the SSE relay', () => {
 });
 
 describe('the no-store rule (SHP-REQ-191)', () => {
+  it('a malformed chunk is refused 400 and none of its body reaches a log or a table', async () => {
+    const marker = `SECRET_MARKER_PASSWORD-${randomUUID()}`;
+    const { session } = await openedAndDispatched();
+    const path = `/api/agent/logs/${session.id}/chunks`;
+    const text = `{"logsId":"${session.id}","seq":0,"lines":[{"text":"${marker}"`;
+    const res = await request(app).post(path).set('content-type', 'application/json').send(text);
+    expect(res.status).toBe(400);
+    expect(err(res).code).toBe('invalid_request');
+    expect(JSON.stringify(res.body)).not.toContain(marker);
+    // The report path goes through the global error handler: the same holds there.
+    const report = await request(app).post('/api/agent/report').set('content-type', 'application/json').send(`{"apps":[${marker}`);
+    expect(report.status).toBe(400);
+
+    expect(logged.join('')).not.toContain(marker);
+    const tables = await db.$queryRawUnsafe<{ name: string }[]>(
+      `select table_name as name from information_schema.tables where table_schema = current_schema() and table_type = 'BASE TABLE'`,
+    );
+    for (const { name } of tables) {
+      const rows = await db.$queryRawUnsafe<{ n: bigint }[]>(`select count(*) as n from "${name.replace(/"/g, '""')}" t where t::text like $1`, `%${marker}%`);
+      expect(Number(rows[0]?.n ?? 0), name).toBe(0);
+    }
+  });
+
   it('a marker sent in log lines reaches the viewer and no table, and nothing the server logged', async () => {
     const marker = `SHIPYARD-LOG-MARKER-${randomUUID()}`;
     const { session, cookie } = await openedAndDispatched();

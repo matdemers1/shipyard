@@ -31,7 +31,10 @@ export function lastReportedBuildCache(agentId: string): AgentBuildCache | null 
  * Stacks (SHP-T-15.4): `report.stacks` mirrors the adopted stacks under `<data root>/stacks/`. Absent
  * (an older agent) leaves the mirror as it was; a stack the reporting agent owns but no longer names
  * is retired, exactly like an app, and a report naming none retires none. Another agent naming a
- * stack is refused the same way an app is.
+ * stack is refused the same way an app is. A stack may not share an app's name — one in this report
+ * or any app row, retired ones included — so a token scope or action target name is never
+ * ambiguous: such a stack is not mirrored (and a mirrored one that now collides is retired), with a
+ * warning naming it; it stays unadopted until it is renamed.
  *
  * Retirement (SHP-REQ-174, SHP-T-3.14): an app the reporting agent owns but no longer names is
  * marked `retiredAt` — its manifest has left the host, so the agent could not deploy it anyway. The
@@ -148,6 +151,8 @@ interface StackChanges {
   created: string[];
   changed: string[];
   refused: string[];
+  /** Named like an app, so not mirrored. */
+  nameTaken: string[];
   retired: string[];
   revived: string[];
 }
@@ -162,12 +167,21 @@ async function mirrorStacks(
   tx: Prisma.TransactionClient,
   agentId: string,
   reported: AgentStack[],
+  reportedApps: readonly string[],
   now: Date,
   out: StackChanges,
   logger: ServiceDeps['logger'],
 ): Promise<void> {
+  const appRows = await tx.app.findMany({ where: { name: { in: reported.map((s) => s.manifest.name) } }, select: { name: true } });
+  const appNames = new Set([...reportedApps, ...appRows.map((a) => a.name)]);
+  const mirrored: string[] = [];
   for (const entry of reported) {
     const m = entry.manifest;
+    if (appNames.has(m.name)) {
+      out.nameTaken.push(m.name);
+      logger.warn({ stack: m.name, agentId }, 'stack has the name of an app; not adopted until it is renamed');
+      continue;
+    }
     const fields = {
       agentId,
       manifestJson: canonicalJson(m),
@@ -186,11 +200,13 @@ async function mirrorStacks(
     else if (before.manifestSha256 !== entry.manifestSha256) out.changed.push(m.name);
     if (before !== null && before.retiredAt !== null) out.revived.push(m.name);
     await tx.stack.upsert({ where: { name: m.name }, create: { name: m.name, ...fields }, update: fields });
+    mirrored.push(m.name);
   }
-  const named = reported.map((s) => s.manifest.name);
-  if (named.length === 0) return;
+  // A report naming no stacks retires none (a lost mount, not every stack un-adopted). One that
+  // names some retires the rest — a stack whose name an app took included.
+  if (reported.length === 0) return;
   const gone = await tx.stack.findMany({
-    where: { agentId, retiredAt: null, name: { notIn: named } },
+    where: { agentId, retiredAt: null, name: { notIn: mirrored } },
     select: { id: true, name: true },
     orderBy: { name: 'asc' },
   });
@@ -253,7 +269,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     const retired: { id: string; name: string }[] = [];
     const revived: { id: string; name: string }[] = [];
     // Stacks this report created, changed, refused, retired or brought back (SHP-ADR-010).
-    const stacks = { created: [] as string[], changed: [] as string[], refused: [] as string[], retired: [] as string[], revived: [] as string[] };
+    const stacks: StackChanges = { created: [], changed: [], refused: [], nameTaken: [], retired: [], revived: [] };
 
     await db.$transaction(async (tx) => {
       for (const entry of report.apps) {
@@ -313,7 +329,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       } else {
         logger.warn({ agentId }, 'agent report names no apps; retiring nothing');
       }
-      if (report.stacks !== undefined) await mirrorStacks(tx, agentId, report.stacks, now, stacks, logger);
+      if (report.stacks !== undefined) await mirrorStacks(tx, agentId, report.stacks, names, now, stacks, logger);
       await tx.agent.update({
         where: { id: agentId },
         data: {
@@ -375,7 +391,8 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     }
 
     // A periodic report that changed nothing is a heartbeat, not an event.
-    const stacksChanged = Object.values(stacks).some((list) => list.length > 0);
+    // A stack whose name an app holds is warned about on every report, not audited on every one.
+    const stacksChanged = [stacks.created, stacks.changed, stacks.refused, stacks.retired, stacks.revived].some((list) => list.length > 0);
     if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0 && redeployed.length === 0 && importClosed.length === 0 && !stacksChanged) {
       if (imported.length === 0 && retired.length === 0 && revived.length === 0) req.noAuditNeeded('unchanged report');
     } else {

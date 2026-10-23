@@ -29,6 +29,8 @@ export interface ResolvedToken {
   userId: string;
   role: Role;
   apps: Set<string>;
+  /** Adopted stacks in its scope (SHP-T-15.4); a retired stack drops out. */
+  stacks: Set<string>;
 }
 
 /**
@@ -47,6 +49,7 @@ export async function resolveToken(
     include: {
       user: { select: { role: true, disabledAt: true } },
       apps: { include: { app: { select: { name: true } } } },
+      stacks: { where: { stack: { retiredAt: null } }, include: { stack: { select: { name: true } } } },
     },
   });
   if (row === null || row.revokedAt !== null || row.user.disabledAt !== null) return null;
@@ -63,5 +66,6 @@ export async function resolveToken(
     userId: row.userId,
     role: row.user.role,
     apps: new Set(row.apps.map((a) => a.app.name)),
+    stacks: new Set(row.stacks.map((s) => s.stack.name)),
   };
 }

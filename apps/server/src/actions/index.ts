@@ -3,7 +3,7 @@ import { ActionRequest, refusal, type Refusal } from '@shipyard/schema';
 import type { ServiceDeps } from '../deps.js';
 import { callerFromRequest } from '../deploys/service.js';
 import { sendRefusal } from '../errors.js';
-import { getAction, isActionTerminal, listActions, requestAction, sweepStaleActions } from './service.js';
+import { getAction, isActionTerminal, listActions, requestAction, sweepStaleActions, tokenScopeCovers } from './service.js';
 
 export * from './service.js';
 
@@ -19,10 +19,10 @@ function readRefusal(req: Request): Refusal | null {
   return refusal('forbidden', `A ${type} actor cannot read actions.`);
 }
 
-/** A token reads only actions on the apps it is scoped to (SHP-REQ-047). */
+/** A token reads only actions on the apps and stacks it is scoped to (SHP-REQ-047), as POST checks. */
 function scopeRefusal(req: Request, kind: 'app' | 'stack', name: string): Refusal | null {
   if (req.actor?.type !== 'token') return null;
-  if (kind === 'app' && req.tokenApps?.has(name) === true) return null;
+  if (tokenScopeCovers({ tokenApps: req.tokenApps, tokenStacks: req.tokenStacks }, { kind, name })) return null;
   return refusal('forbidden', `This token is not scoped to ${name}.`, `Use a token issued for ${name}.`);
 }
 
@@ -80,7 +80,7 @@ export function actionsRouter(deps: ServiceDeps): Router {
       await listActions(db, {
         limit,
         ...(cursor === undefined ? {} : { cursor }),
-        ...(req.actor?.type === 'token' ? { apps: req.tokenApps ?? new Set<string>() } : {}),
+        ...(req.actor?.type === 'token' ? { scope: { apps: req.tokenApps ?? new Set<string>(), stacks: req.tokenStacks ?? new Set<string>() } } : {}),
       }),
     );
   });

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMe } from '../lib/auth';
 import { ageWords, chipFromParams, paramsForChip, useHost, type HostChip } from '../lib/host';
-import { volumeRows, type MaintenanceStatus } from '../lib/maintenance';
+import { useOwnerApps, volumeOwners, volumeRows, type MaintenanceStatus } from '../lib/maintenance';
 import { isTerminalStackUpdate, useStacks, type StackPhase, type StackView } from '../lib/stacks';
 import { HOST_FOOTNOTE } from '../lib/words';
 import { ContainerSheet } from './host/ContainerSheet';
@@ -164,14 +164,20 @@ export function Host() {
       next.set('prune', '1');
     });
   }, [openSheet]);
+  // Who owns a volume: the unretired apps and the adopted stacks, once both lists have answered.
+  const ownerApps = useOwnerApps();
+  const owners = useMemo(
+    () => (ownerApps === null || !stackData.loaded ? null : volumeOwners(ownerApps, [...stackData.byName.values()])),
+    [ownerApps, stackData.loaded, stackData.byName],
+  );
   const volumeRow = useMemo(() => {
-    if (volumeName === null) return null;
+    if (volumeName === null || owners === null) return null;
     for (const h of data.hosts) {
-      const row = volumeRows(h.inventory, [...stackData.byName.values()]).find((r) => r.volume.name === volumeName);
+      const row = volumeRows(h.inventory, owners).find((r) => r.volume.name === volumeName);
       if (row !== undefined) return row;
     }
     return null;
-  }, [volumeName, data.hosts, stackData.byName]);
+  }, [volumeName, data.hosts, owners]);
   // Needs you links to the Disk card: once the snapshot is on screen, bring it into view.
   const ready = data.status === 'ready';
   useEffect(() => {
@@ -239,6 +245,7 @@ export function Host() {
             onPrune={onPrune}
             pruneResult={pruneResult}
             volumeReloads={volumeReloads}
+            volumeOwners={owners}
           />
         ) : (
           data.hosts.map((snapshot) => (
@@ -266,6 +273,7 @@ export function Host() {
                   onPrune={onPrune}
                   pruneResult={pruneResult}
                   volumeReloads={volumeReloads}
+                  volumeOwners={owners}
                 />
               </Stack>
             </section>
@@ -288,10 +296,10 @@ export function Host() {
           onPhase={onPhase}
         />
       ) : null}
-      {volumeName !== null && restoreId !== null && !deleting && data.status === 'ready' ? (
+      {volumeName !== null && restoreId !== null && !deleting && data.status === 'ready' && owners !== null ? (
         <RestoreSheet key={`${volumeName}:${restoreId}`} volume={volumeName} row={volumeRow} archiveId={restoreId} role={role} onClose={closeSheet} onChanged={bumpVolumes} />
       ) : null}
-      {volumeName !== null && deleting && data.status === 'ready' ? (
+      {volumeName !== null && deleting && data.status === 'ready' && owners !== null ? (
         <DeleteSheet key={volumeName} volume={volumeName} row={volumeRow} role={role} onClose={closeSheet} onChanged={bumpVolumes} />
       ) : null}
       {pruning && data.status === 'ready' ? <PruneSheet role={role} onClose={closeSheet} onPruned={setPruneResult} /> : null}

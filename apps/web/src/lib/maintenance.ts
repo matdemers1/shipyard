@@ -12,7 +12,6 @@ import type {
   PruneRequest,
   VolumeArchive,
   VolumeDeleteRequest,
-  VolumeOwner,
   VolumeRestoreRequest,
 } from '@shipyard/schema';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -24,6 +23,7 @@ import {
   MAINTENANCE_STATE_WORDS,
   MAINTENANCE_STEP_WORDS,
   MONTHS,
+  TIER_WORDS,
   TODAY,
   YESTERDAY,
   archiveChainWords,
@@ -133,41 +133,92 @@ export interface VolumeRow {
   /** The tier the badge shows; null for an orphan. */
   tier: ContainerTier | null;
   /** The app or stack it belongs to, with its compose project. */
-  owner: (VolumeOwner & { project: string | null }) | null;
+  owner: VolumeOwnerRef | null;
   /** How many containers the owner runs: what a quiesced backup or a restore stops. */
   ownerContainers: number;
 }
 
-type Owner = NonNullable<VolumeRow['owner']> & { tier: ContainerTier };
+/**
+ * An unretired app (`GET /api/apps`, with the compose project its manifest names) or an adopted
+ * stack (`GET /api/stacks`): the only things that own a volume, as the server's `volumeIndex` reads
+ * them (SHP-ADR-012). A container that merely says it belongs to an app owns nothing by itself.
+ */
+export interface VolumeOwnerRef {
+  kind: 'app' | 'stack';
+  name: string;
+  project: string | null;
+}
 
-function ownerOf(c: HostContainer): Owner | null {
-  if (c.app === null || c.tier === 'observed') return null;
-  return { kind: isDeployedTier(c.tier) ? 'app' : 'stack', name: c.app, project: c.compose?.project ?? null, tier: c.tier };
+/** How often Host reads the apps for volume owners: the pace it reads the snapshot. */
+export const OWNER_APPS_POLL_MS = 30_000;
+
+/**
+ * The unretired apps and their compose projects (`GET /api/apps`), read on mount and every 30 s
+ * while the page is visible. Null until the first answer, and while every read has failed: who owns
+ * a volume is unknown then, so nothing is offered on it.
+ */
+export function useOwnerApps(): readonly { name: string; composeProject?: string | null }[] | null {
+  const [apps, setApps] = useState<readonly { name: string; composeProject?: string | null }[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    const load = (): void => {
+      request<{ apps: { name: string; composeProject?: string | null }[] }>('/api/apps')
+        .then((res) => {
+          if (live) setApps(res.apps);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') load();
+    }, OWNER_APPS_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, []);
+  return apps;
+}
+
+/** The owners from the console's own lists: apps (with their compose project) and adopted stacks. */
+export function volumeOwners(apps: readonly { name: string; composeProject?: string | null }[], stacks: readonly { name: string; composeProject: string }[]): VolumeOwnerRef[] {
+  return [
+    ...apps.map((a): VolumeOwnerRef => ({ kind: 'app', name: a.name, project: a.composeProject ?? null })),
+    ...stacks.map((st): VolumeOwnerRef => ({ kind: 'stack', name: st.name, project: st.composeProject })),
+  ];
+}
+
+// The API's tier names, read from the words' keys: the retired verb is never spelled as a literal.
+const TIERS = Object.keys(TIER_WORDS) as ContainerTier[];
+const APP_TIER: ContainerTier = TIERS.find(isDeployedTier) ?? 'operated';
+
+function tierOf(owner: VolumeOwnerRef): ContainerTier {
+  return owner.kind === 'app' ? APP_TIER : 'operated';
+}
+
+/** The container's agent-given tier names this owner: Deployed for an app, Operated for a stack. */
+function tieredTo(c: HostContainer, owner: VolumeOwnerRef): boolean {
+  return c.app === owner.name && c.tier !== 'observed' && (isDeployedTier(c.tier) ? owner.kind === 'app' : owner.kind === 'stack');
 }
 
 /**
- * Every volume with whose it is, the way the server's `volumeIndex` decides it (SHP-ADR-012): owned
- * when a container that mounts it belongs to a Deployed app's or an adopted stack's compose project
- * — or the agent tiered that container to one. `stacks` adds the compose projects of adopted stacks
- * the console knows of, for an orphan whose label names one.
+ * Every volume with whose it is, the way the server's `volumeIndex` and delete check decide it
+ * (SHP-ADR-012, SHP-REQ-203): owned when a container that mounts it is in the compose project of an
+ * unretired app or adopted stack — or the agent tiered that container to one of them by name. An
+ * orphan whose compose label names one of their projects is claimed (a `compose down` leaves it so)
+ * and is never offered Delete; a retired app owns nothing.
  */
-export function volumeRows(inventory: Pick<HostInventory, 'containers' | 'volumes'>, stacks: readonly { name: string; composeProject: string }[] = []): VolumeRow[] {
+export function volumeRows(inventory: Pick<HostInventory, 'containers' | 'volumes'>, owners: readonly VolumeOwnerRef[]): VolumeRow[] {
   const byName = new Map(inventory.containers.map((c) => [c.name, c]));
-  const byProject = new Map<string, Owner>();
-  for (const c of inventory.containers) {
-    const owner = ownerOf(c);
-    if (owner !== null && owner.project !== null && !byProject.has(owner.project)) byProject.set(owner.project, owner);
-  }
-  for (const s of stacks) {
-    if (!byProject.has(s.composeProject)) byProject.set(s.composeProject, { kind: 'stack', name: s.name, project: s.composeProject, tier: 'operated' });
-  }
-  const countFor = (owner: Owner): number =>
-    inventory.containers.filter((c) => (owner.project !== null && c.compose?.project === owner.project) || (c.app === owner.name && ownerOf(c)?.kind === owner.kind)).length;
-  const row = (volume: HostVolume, kind: VolumeKind, owner: Owner | null): VolumeRow => ({
+  const byProject = new Map<string, VolumeOwnerRef>();
+  for (const o of owners) if (o.project !== null && !byProject.has(o.project)) byProject.set(o.project, o);
+  const countFor = (owner: VolumeOwnerRef): number =>
+    inventory.containers.filter((c) => (owner.project !== null && c.compose?.project === owner.project) || tieredTo(c, owner)).length;
+  const row = (volume: HostVolume, kind: VolumeKind, owner: VolumeOwnerRef | null): VolumeRow => ({
     volume,
     kind,
-    tier: owner?.tier ?? (kind === 'observed' ? 'observed' : null),
-    owner: owner === null ? null : { kind: owner.kind, name: owner.name, project: owner.project },
+    tier: owner === null ? (kind === 'observed' ? 'observed' : null) : tierOf(owner),
+    owner,
     ownerContainers: owner === null ? 0 : countFor(owner),
   });
 
@@ -180,8 +231,8 @@ export function volumeRows(inventory: Pick<HostInventory, 'containers' | 'volume
       const c = byName.get(name);
       if (c === undefined) continue;
       const project = c.compose?.project ?? null;
-      const owner = (project === null ? undefined : byProject.get(project)) ?? ownerOf(c);
-      if (owner !== null) return row(volume, 'owned', owner);
+      const owner = (project === null ? undefined : byProject.get(project)) ?? owners.find((o) => tieredTo(c, o));
+      if (owner !== undefined) return row(volume, 'owned', owner);
     }
     return row(volume, 'observed', null);
   });
@@ -357,10 +408,22 @@ export function useMaintenanceJob(onEnded?: (status: MaintenanceStatus) => void)
   reset: () => void;
 } {
   const [phase, setPhase] = useState<MaintenancePhase>({ kind: 'idle' });
+  // `generation` only moves when a new request replaces the one being followed (or `reset`).
+  // Unmounting clears `mounted` instead: StrictMode's simulated unmount and remount sets it again
+  // before the request in flight answers, so that answer is followed; a real unmount stops the poll
+  // at its next tick.
   const generation = useRef(0);
+  const mounted = useRef(true);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const ended = useRef(onEnded);
   ended.current = onEnded;
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const stop = useCallback(() => {
     generation.current += 1;
@@ -368,10 +431,8 @@ export function useMaintenanceJob(onEnded?: (status: MaintenanceStatus) => void)
     timer.current = undefined;
   }, []);
 
-  useEffect(() => stop, [stop]);
-
   const track = useCallback((gen: number, status: MaintenanceStatus): void => {
-    const live = () => gen === generation.current;
+    const live = () => gen === generation.current && mounted.current;
     if (!isMaintenanceActive(status.state)) {
       setPhase({ kind: 'done', status });
       ended.current?.(status);
@@ -400,13 +461,14 @@ export function useMaintenanceJob(onEnded?: (status: MaintenanceStatus) => void)
     (start: () => Promise<MaintenanceStatus>) => {
       stop();
       const gen = generation.current;
+      const live = () => gen === generation.current && mounted.current;
       setPhase({ kind: 'starting' });
       start()
         .then((status) => {
-          if (gen === generation.current) track(gen, status);
+          if (live()) track(gen, status);
         })
         .catch((error: unknown) => {
-          if (gen === generation.current) setPhase({ kind: 'refused', error: problemOf(error) });
+          if (live()) setPhase({ kind: 'refused', error: problemOf(error) });
         });
     },
     [stop, track],
@@ -450,14 +512,12 @@ export interface StepUp {
   setCode: (code: string) => void;
   /** The step-up's own refusal, or the request's `step_up_required`: shown by the code field. */
   error: RefusalError | null;
-  /** The server asked for a step-up: the request waits for six digits now. */
-  needed: boolean;
-  /** Whether the field holds what a submit may go with: six digits, or nothing while none is asked. */
+  /** Six digits are typed: the danger button may enable. */
   ready: boolean;
   /**
-   * Wraps a restore or delete: steps up first when six digits are typed (the code is spent, so the
-   * field empties); a `step_up_required` from the request asks for the code, and the next submit
-   * steps up and asks again — the request is retried once, by the person, with a fresh code.
+   * Wraps a restore or delete (SHP-ADR-012 amendment): steps up with the typed code first, then
+   * asks. The code is spent either way, so the field empties. A refused step-up, or a request the
+   * server still answers `step_up_required`, is shown by the code field and asks for a new code.
    */
   guard: (request: () => Promise<MaintenanceStatus>) => () => Promise<MaintenanceStatus>;
 }
@@ -465,35 +525,27 @@ export interface StepUp {
 export function useStepUp(): StepUp {
   const [code, setCode] = useState('');
   const [error, setError] = useState<RefusalError | null>(null);
-  const [needed, setNeeded] = useState(false);
   const clean = normaliseCode(code);
-  const ready = isCode(clean) || (clean === '' && !needed);
+  const ready = isCode(clean);
   const guard = useCallback(
     (req: () => Promise<MaintenanceStatus>) => async (): Promise<MaintenanceStatus> => {
       setError(null);
-      if (isCode(clean)) {
-        try {
-          await maintenance.stepUp(clean);
-        } catch (err) {
-          const refusal = problemOf(err);
-          setError(refusal);
-          setNeeded(true);
-          throw refusal;
-        }
-        setCode('');
-        setNeeded(false);
+      setCode('');
+      try {
+        await maintenance.stepUp(clean);
+      } catch (err) {
+        const refusal = problemOf(err);
+        setError(refusal);
+        throw refusal;
       }
       try {
         return await req();
       } catch (err) {
-        if (err instanceof RefusalError && err.code === 'step_up_required') {
-          setError(err);
-          setNeeded(true);
-        }
+        if (err instanceof RefusalError && err.code === 'step_up_required') setError(err);
         throw err;
       }
     },
     [clean],
   );
-  return { code, setCode, error, needed, ready, guard };
+  return { code, setCode, error, ready, guard };
 }

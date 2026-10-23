@@ -926,3 +926,40 @@ export const HOST_FOOTNOTE =
 export function morePruneItemsWords(count: number, size: string): string {
   return `${String(count)} more ${count === 1 ? 'entry' : 'entries'} · ${size}`;
 }
+
+// A sheet linked on a volume it does not apply to (SHP-T-17.6): say why, instead of a dead sheet.
+
+type LinkedKind = 'owned' | 'orphan' | 'claimed' | 'observed';
+
+const OBSERVED_UNTOUCHED = (volume: string): string => `Only Observed containers mount ${volume}. Shipyard shows it and never touches it.`;
+
+/** Why a `?restore=` link offers nothing on this volume. */
+export function restoreNotOfferedWords(volume: string, kind: LinkedKind, owner: string | null): string {
+  switch (kind) {
+    case 'orphan':
+      return `No app or stack owns ${volume}, so there is nothing to restore it for. An admin can delete it from its row.`;
+    case 'claimed':
+      return `Nothing mounts ${volume} now. Shipyard restores a volume only while ${owner ?? 'its app or stack'} mounts it: start it, then restore.`;
+    case 'observed':
+      return OBSERVED_UNTOUCHED(volume);
+    case 'owned':
+      return `${volume} has no archive to restore yet.`;
+  }
+}
+
+/** Why a `?delete=1` link offers nothing on this volume. */
+export function deleteNotOfferedWords(volume: string, kind: LinkedKind, owner: string | null): string {
+  switch (kind) {
+    case 'owned':
+      return `${volume} belongs to ${owner ?? 'an app or stack'}. Shipyard deletes only orphans no app or stack claims.`;
+    case 'claimed':
+      return `Nothing mounts ${volume}, but its compose label names ${owner ?? 'an app or stack'}, so Shipyard never deletes it.`;
+    case 'observed':
+      return OBSERVED_UNTOUCHED(volume);
+    case 'orphan':
+      return `${volume} can be deleted from its row.`;
+  }
+}
+
+export const ARCHIVE_GONE_TITLE = 'That archive is not in the ledger';
+export const ARCHIVE_GONE_WORDS = 'The archive this link names is no longer one of this volume’s archives. Pick one below.';

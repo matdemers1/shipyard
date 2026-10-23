@@ -15,6 +15,8 @@ import {
   type VolumeRow,
 } from '../../lib/maintenance';
 import {
+  ARCHIVE_GONE_TITLE,
+  ARCHIVE_GONE_WORDS,
   ARCHIVE_TITLE,
   NEWEST_FIRST,
   NO_ARCHIVE_TO_RESTORE,
@@ -26,6 +28,7 @@ import {
   VOLUME_WORDS,
   WHAT_HAPPENS_TITLE,
   restoreIntroWords,
+  restoreNotOfferedWords,
   restoreTitle,
   restoreVerb,
   restoreWarningWords,
@@ -88,13 +91,23 @@ export function RestoreSheet({ volume, row, archiveId, role, onClose, onChanged 
     );
   }
 
+  if (row.kind !== 'owned') {
+    return (
+      <Modal open onOpenChange={onOpenChange} title={restoreTitle(volume)} closeLabel={SHEET_WORDS.close} size="md">
+        <p>{restoreNotOfferedWords(volume, row.kind, row.owner?.name ?? null)}</p>
+      </Modal>
+    );
+  }
+
   const owner = row.owner;
-  const selected = archives?.find((a) => a.archiveId === picked) ?? archives?.[0] ?? null;
+  // Only the archive the link or a radio names: a stale link picks nothing rather than another one.
+  const selected = archives?.find((a) => a.archiveId === picked) ?? null;
+  const stale = archives !== null && archiveId !== null && picked === archiveId && selected === null;
   const admin = canRestoreOrDelete(role);
   const busy = isMaintenanceBusy(phase);
   const finished = phase.kind === 'done';
   const locked = busy || finished;
-  const canSubmit = admin && row.kind === 'owned' && selected !== null && confirmMatches(typed, volume) && stepUp.ready && !locked;
+  const canSubmit = admin && selected !== null && confirmMatches(typed, volume) && stepUp.ready && !locked;
   const stepUpShown = phase.kind === 'refused' && phase.error === stepUp.error;
 
   return (
@@ -163,6 +176,11 @@ export function RestoreSheet({ volume, row, archiveId, role, onClose, onChanged 
             <span className="shp-host-muted">{NEWEST_FIRST}</span>
           </legend>
           {error !== null ? <RefusalAlert error={error} /> : null}
+          {stale && archives.length > 0 ? (
+            <Alert tone="warning" title={ARCHIVE_GONE_TITLE}>
+              {ARCHIVE_GONE_WORDS}
+            </Alert>
+          ) : null}
           {archives === null ? (
             error === null ? (
               <div aria-busy="true">

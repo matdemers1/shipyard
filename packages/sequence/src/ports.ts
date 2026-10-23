@@ -111,6 +111,32 @@ export interface RegistryPort {
   imageConfig(imageRepo: string, digest: Digest): Promise<ImageConfig>;
 }
 
+/**
+ * Any OCI registry, for the tracked services of an adopted stack (SHP-ADR-010, SHP-REQ-194..196):
+ * Docker Hub, GHCR, lscr.io or a private one. `image` is the stack manifest's untagged repository
+ * (`postgres`, `lscr.io/linuxserver/sonarr`). Throws `RegistryError` — never a `RefusalError` —
+ * when the registry cannot answer, so the candidate checker can report it as an error and the
+ * update path can refuse `registry_unreachable` (fail closed).
+ */
+export interface StackRegistryPort {
+  /** The manifest digest `image:tag` names now, or null when the registry has no such tag. */
+  resolveDigest(image: string, tag: string): Promise<Digest | null>;
+  /** Every tag of `image`, following `Link` pagination up to the adapter's page cap. */
+  listTags(image: string): Promise<string[]>;
+}
+
+/** Why a registry could not answer. `rate_limited` carries how long it asked the caller to wait. */
+export class RegistryError extends Error {
+  constructor(
+    readonly kind: 'unreachable' | 'rate_limited' | 'denied',
+    message: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = 'RegistryError';
+  }
+}
+
 // ─── Docker (SHP-T-1.6) ──────────────────────────────────────────────────────
 
 export interface ComposeTarget {
@@ -343,6 +369,14 @@ export interface DockerPort {
   containerLogs?(id: string, options: ContainerLogsOptions): AsyncIterable<ContainerLogLine>;
   /** The container's Env values and compose project, or null when the Engine does not know the ID. */
   inspectEnv?(id: string): Promise<ContainerRedactionFacts | null>;
+
+  /**
+   * `docker pull <repo>@sha256:…` through the pinned CLI (SHP-REQ-197), so a stack update pulls
+   * exactly the digest its track resolved to and nothing a tag might point at by then. Never throws
+   * on a non-zero exit. Optional for the same reason as `loadImage`; a stack update refuses
+   * without it.
+   */
+  pullImage?(reference: string): Promise<ExecResult>;
 }
 
 // ─── BuildKit (SHP-T-7.7) ────────────────────────────────────────────────────

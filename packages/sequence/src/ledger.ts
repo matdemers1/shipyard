@@ -60,8 +60,39 @@ export interface RestoreRecord {
   at: string;
 }
 
-/** Anything the ledger chain holds: a release (deploy or rollback), a backup, or a restore. */
-export type LedgerRecord = LedgerEntry | BackupRecord | RestoreRecord;
+/** One service's image in a stack update record: the line written was `repo:tag@digest` (`repo@digest` when tag is null). */
+export interface StackImageRecord {
+  service: string;
+  /** The stack manifest's untagged repository. */
+  repo: string;
+  tag: string | null;
+  digest: string;
+}
+
+/**
+ * A stack update or rollback that succeeded (SHP-ADR-010, SHP-REQ-197, SHP-REQ-198), keyed by the
+ * stack's name in `app`. Its own kind, so no app reader — `entries`, `last`, `recent`, rollback
+ * candidates, backups, pruning — ever reads it as an app release: they all select by kind. A stack
+ * rollback takes its digests from these records and from nowhere else (SHP-D-080).
+ */
+export interface StackUpdateRecord {
+  kind: 'stack-update';
+  /** The stack's name. */
+  app: string;
+  /** The server's update ID. */
+  deployId: string;
+  /** `update` (to what the track resolved) or `rollback` (to an earlier record's images). */
+  updateKind: 'update' | 'rollback';
+  images: StackImageRecord[];
+  /** What ran before, for the record; a rollback never reads this. */
+  previous: StackImageRecord[];
+  /** The backup the update took first, when the stack has a backup step. */
+  backupArtifact: string | null;
+  at: string;
+}
+
+/** Anything the ledger chain holds: a release (deploy or rollback), a backup, a restore, or a stack update. */
+export type LedgerRecord = LedgerEntry | BackupRecord | RestoreRecord | StackUpdateRecord;
 
 /** One physical line of the ledger file. */
 interface LedgerLine {
@@ -133,6 +164,18 @@ function validateRecord(entry: LedgerRecord): void {
   if (entry.kind === 'backup') {
     if (!entry.backupArtifact.startsWith('/')) throw new LedgerEntryInvalidError(`backupArtifact must be an absolute path: ${entry.backupArtifact}`);
     if (entry.release !== null && entry.release.length === 0) throw new LedgerEntryInvalidError('release must be null or a deploy ID');
+    return;
+  }
+  if (entry.kind === 'stack-update') {
+    const updateKind: string = entry.updateKind;
+    if (updateKind !== 'update' && updateKind !== 'rollback') throw new LedgerEntryInvalidError(`invalid stack updateKind: ${updateKind}`);
+    if (!Array.isArray(entry.images) || entry.images.length === 0) throw new LedgerEntryInvalidError('images must be non-empty');
+    for (const image of [...entry.images, ...entry.previous]) {
+      if (!image.service || !image.repo) throw new LedgerEntryInvalidError('a stack image names its service and repo');
+      if (!DIGEST_RE.test(image.digest)) throw new LedgerEntryInvalidError(`invalid digest: ${image.digest}`);
+      if (image.tag !== null && !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(image.tag)) throw new LedgerEntryInvalidError(`invalid tag: ${image.tag}`);
+    }
+    if (entry.backupArtifact !== null && !entry.backupArtifact.startsWith('/')) throw new LedgerEntryInvalidError(`backupArtifact must be an absolute path: ${entry.backupArtifact}`);
     return;
   }
   if (entry.kind === 'restore') {
@@ -329,6 +372,16 @@ export class Ledger {
   /** All release entries (deploys and rollbacks) for `app`, oldest first. Backups and restores are not releases. */
   entries(app: string): LedgerEntry[] {
     return this.lines.flatMap((l) => (l.entry.app === app && isRelease(l.entry) ? [l.entry] : []));
+  }
+
+  /** Succeeded stack updates and rollbacks of `stack`, oldest first (SHP-REQ-198). */
+  stackUpdates(stack: string): StackUpdateRecord[] {
+    return this.lines.flatMap((l) => (l.entry.app === stack && l.entry.kind === 'stack-update' ? [l.entry] : []));
+  }
+
+  /** The succeeded stack update (or rollback) `updateId` of `stack`, or null: a stack rollback's only source. */
+  stackUpdate(stack: string, updateId: string): StackUpdateRecord | null {
+    return this.stackUpdates(stack).findLast((e) => e.deployId === updateId) ?? null;
   }
 
   /** Records a backup the moment it is taken (SHP-REQ-085). */

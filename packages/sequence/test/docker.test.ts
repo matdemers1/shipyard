@@ -502,6 +502,27 @@ describe('loadImage (SHP-T-7.18)', () => {
   });
 });
 
+describe('pullImage (SHP-REQ-197)', () => {
+  const DIGEST = `sha256:${'a'.repeat(64)}`;
+
+  it('runs docker pull with exactly one repo@digest reference', async () => {
+    const { calls, execFile } = recordingExec({ exitCode: 0, stdout: '', stderr: '' });
+    const adapter = createDockerAdapter({ docker: fakeDocker().docker, execFile, env: { PATH: '/usr/bin' } });
+    await expect(adapter.pullImage(`lscr.io/linuxserver/sonarr@${DIGEST}`)).resolves.toMatchObject({ exitCode: 0 });
+    expect(calls[0]?.file).toBe('docker');
+    expect(calls[0]?.args).toEqual(['pull', '--quiet', `lscr.io/linuxserver/sonarr@${DIGEST}`]);
+  });
+
+  it('refuses anything that is not a repo@sha256 reference, running nothing', async () => {
+    const { calls, execFile } = recordingExec({ exitCode: 0, stdout: '', stderr: '' });
+    const adapter = createDockerAdapter({ docker: fakeDocker().docker, execFile });
+    for (const ref of ['postgres:16', `--help@${DIGEST}`, `a b@${DIGEST}`]) {
+      await expect(adapter.pullImage(ref)).resolves.toMatchObject({ exitCode: 2 });
+    }
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('inspectNetwork (SHP-T-7.18)', () => {
   const networkFake = (opts: { info?: unknown; statusCode?: number } = {}) => {
     const docker = {

@@ -94,6 +94,16 @@ export interface ActionRunnerOptions {
    * `deployInFlight` alone guards the app.
    */
   lockApp?: (app: string, job: ActionJob) => Promise<HeldLock | Refusal>;
+  /**
+   * True while a stack update or rollback of `stack` runs here (SHP-P-16): an action on it is
+   * refused `locked`. Absent: no stack is ever busy.
+   */
+  stackBusy?: (stack: string) => boolean;
+  /**
+   * Takes the stack's lock for the action (the one a stack update takes), so an update arriving
+   * meanwhile is refused `locked` rather than racing it. Absent: stacks are not locked.
+   */
+  lockStack?: (stack: string, job: ActionJob) => Promise<HeldLock | Refusal>;
   log: LoopLog;
   waitMs?: number;
   pollMs?: number;
@@ -225,6 +235,9 @@ export function createActionRunner(opts: ActionRunnerOptions): ActionRunner {
     if (kind === 'app' && (await opts.deployInFlight(name))) {
       return refused(job, refusal('locked', `A deploy of ${name} is running on this host; the ${job.verb} was not run.`));
     }
+    if (kind === 'stack' && opts.stackBusy?.(name) === true) {
+      return refused(job, refusal('locked', `An update of the stack ${name} is running on this host; the ${job.verb} was not run.`));
+    }
 
     let secrets: string[];
     try {
@@ -257,8 +270,9 @@ export function createActionRunner(opts: ActionRunnerOptions): ActionRunner {
     const envBefore = await containerEnvValues(compose, job.service).catch(() => []);
 
     let lock: HeldLock | undefined;
-    if (kind === 'app' && opts.lockApp !== undefined) {
-      const held = await opts.lockApp(name, job);
+    const takeLock = kind === 'app' ? opts.lockApp : opts.lockStack;
+    if (takeLock !== undefined) {
+      const held = await takeLock(name, job);
       if ('code' in held) return refused(job, held);
       lock = held;
     }

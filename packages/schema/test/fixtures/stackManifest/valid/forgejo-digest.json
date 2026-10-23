@@ -1,0 +1,33 @@
+{
+  "kind": "stack",
+  "name": "forgejo",
+  "compose": {
+    "files": [
+      "/DATA/forgejo/docker-compose.yml"
+    ],
+    "project": "forgejo"
+  },
+  "updates": "digest",
+  "services": {
+    "server": {
+      "image": "codeberg.org/forgejo/forgejo",
+      "track": {
+        "semver": "17.x"
+      }
+    }
+  },
+  "steps": {
+    "backup": {
+      "service": "server",
+      "argv": [
+        "forgejo",
+        "dump",
+        "--file",
+        "/backups/forgejo.zip"
+      ],
+      "artifactsDir": "/DATA/forgejo/backups"
+    }
+  },
+  "soakSeconds": 120,
+  "approval": "tokens"
+}

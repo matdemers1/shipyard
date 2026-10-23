@@ -892,6 +892,12 @@
     font-size: var(--text-14);
     line-height: var(--leading-20);
   }
+  /* A failed stack update's fix, verbatim, on its own line (SHP-T-16.6). */
+  .shp-needs__detail {
+    display: block;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
   .shp-needs__age {
     margin-left: var(--space-8);
     color: var(--color-fg-muted);
@@ -1959,6 +1965,250 @@
     }
     .shp-feed-row__who-inline {
       display: none;
+    }
+  }
+}
+
+/* Stack updates by digest on Host (SHP-T-16.6, SHP-ADR-010). */
+@layer shipyard {
+  /* The group header: History beside the badges, "Update…" after Restart stack, a failed check under. */
+  .shp-hg__history {
+    margin-left: auto;
+    font-size: var(--text-13);
+  }
+  .shp-hg__history + .shp-hg__link,
+  .shp-hg__history + .shp-hg__act,
+  .shp-hg__history ~ .shp-hg__act {
+    margin-left: 0;
+  }
+  .shp-hg__update {
+    flex: none;
+  }
+  .shp-hg__note {
+    flex-basis: 100%;
+    min-width: 0;
+    margin: 0;
+    padding: 0 var(--space-4) var(--space-8) var(--space-8);
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+    overflow-wrap: anywhere;
+  }
+
+  /* The in-progress banner, in the accent: it is not live yet. */
+  .shp-stack-banner {
+    border-color: var(--color-accent);
+    background: var(--color-accent-muted);
+  }
+
+  /* Running vs Update to. A table from 600 px; on a phone each service is a card. */
+  .shp-stack-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-card);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-stack-table th,
+  .shp-stack-table td {
+    padding: var(--space-8) var(--space-12);
+    text-align: left;
+    vertical-align: top;
+  }
+  .shp-stack-table thead th {
+    font-size: var(--text-13);
+    font-weight: var(--weight-semibold);
+    border-bottom: var(--border-width) solid var(--color-border);
+  }
+  .shp-stack-table__service {
+    font-weight: var(--weight-semibold);
+    overflow-wrap: anywhere;
+  }
+  .shp-stack-table__arrow {
+    display: none;
+  }
+  .shp-stack-version {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .shp-stack-version__digest {
+    color: var(--color-fg-muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+    overflow-wrap: anywhere;
+  }
+  @media (max-width: 599px) {
+    .shp-stack-table thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+    .shp-stack-table tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-areas:
+        'service service'
+        'from to';
+      padding: var(--space-4) 0;
+    }
+    .shp-stack-table tr + tr {
+      border-top: var(--border-width) solid var(--color-border);
+    }
+    .shp-stack-table__service {
+      grid-area: service;
+      padding-bottom: 0;
+    }
+    .shp-stack-table__from {
+      grid-area: from;
+    }
+    .shp-stack-table__to {
+      grid-area: to;
+      display: flex;
+      gap: var(--space-8);
+    }
+    .shp-stack-table__arrow {
+      display: inline;
+      color: var(--color-fg-muted);
+    }
+  }
+
+  /* What happens: the chain of steps, as chips joined by arrows. */
+  .shp-stack-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    min-width: 0;
+  }
+  .shp-stack-section__title {
+    margin: 0;
+    font-size: var(--text-16);
+    font-weight: var(--weight-semibold);
+  }
+  .shp-stack-chain {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-stack-chain__step {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-8);
+    font-size: var(--text-12);
+    font-weight: var(--weight-semibold);
+  }
+  .shp-stack-chain__step + .shp-stack-chain__step::before {
+    content: '→';
+    color: var(--color-fg-muted);
+    font-weight: normal;
+  }
+  .shp-stack-chain__chip {
+    padding: var(--space-2) var(--space-8);
+    border-radius: var(--radius-sm);
+    background: var(--color-fill-quiet);
+    color: var(--color-fg);
+  }
+  .shp-stack-note {
+    margin: 0;
+    padding: var(--space-12) var(--space-16);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-card);
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+  }
+  .shp-stack-images {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    overflow-wrap: anywhere;
+  }
+  .shp-stack-images code {
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+  }
+
+  /* The history: when · what moved · outcome · who; Roll back on an earlier success. */
+  .shp-stack-history {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    container-type: inline-size;
+  }
+  .shp-stack-history__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'change badge'
+      'who act'
+      'time act'
+      'why why';
+    align-items: center;
+    gap: var(--space-2) var(--space-12);
+    padding: var(--space-8) var(--space-12);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-stack-history__row + .shp-stack-history__row {
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-stack-history__time {
+    grid-area: time;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
+  .shp-stack-history__change {
+    grid-area: change;
+    font-weight: var(--weight-semibold);
+    overflow-wrap: anywhere;
+  }
+  .shp-stack-history__badge {
+    grid-area: badge;
+    justify-self: end;
+  }
+  .shp-stack-history__who {
+    grid-area: who;
+    min-width: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    overflow-wrap: anywhere;
+  }
+  .shp-stack-history__act {
+    grid-area: act;
+    justify-self: end;
+  }
+  /* A failed, rolled-back or refused row's message and fix, verbatim (SHP-REQ-200). */
+  .shp-stack-history__why {
+    grid-area: why;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    font-size: var(--text-13);
+    overflow-wrap: anywhere;
+  }
+  .shp-stack-history__fix {
+    color: var(--color-fg-muted);
+  }
+  @container (min-width: 640px) {
+    .shp-stack-history__row {
+      grid-template-columns: 8rem minmax(0, 10rem) auto minmax(0, 1fr) auto;
+      grid-template-areas:
+        'time change badge who act'
+        '. why why why why';
+    }
+    .shp-stack-history__badge {
+      justify-self: start;
     }
   }
 }

@@ -33,6 +33,12 @@ cd "$repo_root"
 #                                     WWW-Authenticate header, never hardcoded, listed here so a
 #                                     reviewer knows it is expected if it ever does appear literally)
 #   - localhost / 127.0.0.1          local dev only
+#   - registry-1.docker.io, auth.docker.io, index.docker.io
+#                                     Docker Hub, for adopted stacks that track a Docker Hub image
+#                                     (SHP-ADR-010): the registry API, its token realm, and the
+#                                     `auths` key a docker config uses for Docker Hub credentials
+#                                     (a lookup key, not fetched). Other registries come only from a
+#                                     host-local stack manifest's image references.
 # Anything else — FOREMAN_URL, D3AUTH_ISSUER, MAIL_RELAY_URL, the agent's own SHIPYARD_SERVER_URL —
 # is read from configuration (apps/*/src/config.ts) and never appears as a literal host in source.
 # The D3 Auth issuer may instead be one an admin typed into Settings (SHP-REQ-110, stored in the
@@ -51,7 +57,7 @@ cd "$repo_root"
 # copying (docs/claude/deploy-snippet.md, SHP-T-3.12). The page swaps in its own origin before
 # showing it, and nothing ever fetches that host.
 bundle_only_hosts_regex='^(react\.dev|reactrouter\.com|www\.w3\.org|shipyard\.d3cloud\.io)$'
-allowed_hosts_regex='^(api\.github\.com|github\.com|ghcr\.io|pkg-containers\.githubusercontent\.com|localhost|127\.0\.0\.1|d3cloud\.io|[A-Za-z0-9-]+\.example\.com)$'
+allowed_hosts_regex='^(api\.github\.com|github\.com|ghcr\.io|pkg-containers\.githubusercontent\.com|registry-1\.docker\.io|auth\.docker\.io|index\.docker\.io|localhost|127\.0\.0\.1|d3cloud\.io|[A-Za-z0-9-]+\.example\.com)$'
 
 # Runtime source only: excludes tests, node_modules, and the Prisma-generated client (which quotes
 # its own docs URLs in comments, not code that runs at request time).

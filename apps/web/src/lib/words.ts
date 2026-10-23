@@ -8,6 +8,8 @@ import type {
   DeployTargetState,
   Gate,
   LifecycleVerb,
+  StackUpdateState,
+  StackUpdateStep,
 } from '@shipyard/schema';
 import type { CommitEntry, CommitsInfo } from './home';
 
@@ -269,3 +271,296 @@ export const ACTION_STATE_WORDS: Record<ActionState, string> = {
   refused: 'Refused',
   cancelled: 'Cancelled',
 };
+
+// ── Stack updates (SHP-ADR-010, SHP-P-16) ────────────────────────────────
+//
+// Every word the stack-update screens say (SHP-T-16.6): the group header, the update sheet and its
+// chain, the progress banner and results, the history, Needs you and Activity. The components and
+// lib/stacks.ts only compose these; test/words.test.ts fails if they spell copy of their own.
+
+/**
+ * Where a stack update or rollback is, and how it ended (SHP-REQ-200): the deploy's words where the
+ * state is the same. A total record over the schema's enum, so a state it gains fails the typecheck.
+ */
+export const STACK_UPDATE_STATE_WORDS: Record<StackUpdateState, string> = {
+  queued: 'Queued',
+  awaiting_approval: 'Waiting for approval',
+  dispatched: 'Sent to the agent',
+  running: 'Running',
+  succeeded: 'Succeeded',
+  failed: 'Failed',
+  rolled_back: 'Rolled back',
+  refused: 'Refused',
+  denied: 'Denied',
+  cancelled: 'Cancelled',
+};
+
+/** The step a running update is on, as the in-progress banner says it. */
+export const STACK_UPDATE_STEP_WORDS: Record<StackUpdateStep, string> = {
+  verifying: 'Re-checking the track',
+  backing_up: 'Backing up',
+  pulling: 'Pulling by digest',
+  swapping: 'Swapping the image line',
+  checking: 'Checking health',
+  soaking: 'Soaking',
+  rolling_back: 'Rolling back',
+};
+
+/** The steps already behind a running update, for the banner's detail. */
+export const STACK_STEP_DONE_WORDS: Record<StackUpdateStep, string> = {
+  verifying: 're-checked',
+  backing_up: 'backed up',
+  pulling: 'pulled',
+  swapping: 'swapped',
+  checking: 'healthy',
+  soaking: 'soaked',
+  rolling_back: 'rolled back',
+};
+
+/**
+ * The soak, while it runs. The status carries no time the soak began, so the banner names its
+ * length rather than a countdown that would start over on every reload.
+ */
+export function soakingWords(seconds: number): string {
+  return `${STACK_UPDATE_STEP_WORDS.soaking} · ${String(seconds)} s soak`;
+}
+
+/** The group header's button: opens the update sheet. */
+export const UPDATE_STACK = 'Update…';
+
+/** The group header's link to the stack's history, and the sheet's section. */
+export const STACK_HISTORY = 'History';
+
+/** "History of forgejo": the link's full name. */
+export function historyOfWords(stack: string): string {
+  return `${STACK_HISTORY} of ${stack}`;
+}
+
+/** The update sheet's primary: names the tag it will update to. */
+export function updateToVerb(tag: string): string {
+  return `Update to ${tag}`;
+}
+
+/** The history sheet's way to the update sheet. */
+export function updateToLinkWords(tag: string): string {
+  return `${updateToVerb(tag)}…`;
+}
+
+/** The group header's badge: the candidate the agent found (SHP-REQ-194). */
+export function updateAvailableWords(from: string, to: string): string {
+  return `Update available · ${from} → ${to}`;
+}
+
+/** A failed registry check, said on the group header. */
+export function checkFailedWords(error: string): string {
+  return `Couldn't check for updates: ${error}`;
+}
+
+/** The approver's primary on a held stack update (SHP-REQ-199): approving is updating. */
+export const APPROVE_AND_UPDATE = 'Approve and update';
+
+/** …and on a held rollback: approving is rolling back. */
+export const APPROVE_AND_ROLL_BACK = 'Approve and roll back';
+
+/** A held request, said where it waits. */
+export const WAITING_FOR_DEPLOYER = 'Waiting for a deployer to approve';
+
+/** Under it: who asked, and where it is approved. */
+export function heldHintWords(requester: string): string {
+  return `Requested by ${requester}. It runs once a deployer approves it in Needs you.`;
+}
+
+/** The history's rollback confirmation, title and primary: names the stack and what comes back. */
+export function stackRollBackVerb(stack: string, to: string): string {
+  return `Roll back ${stack} to ${to}`;
+}
+
+/** What the rollback confirmation says it does: the agent's ledger, images only. */
+export const STACK_ROLL_BACK_CONSEQUENCE = "Shipyard puts back the images that update ran, by digest, from the agent's own ledger. Images only: data stays as it is.";
+
+/** The rollback target when the update recorded no image. */
+export const AN_EARLIER_UPDATE = 'an earlier update';
+
+/** Activity's chip for the source. */
+export const STACK_UPDATES = 'Stack updates';
+
+// The update sheet.
+
+export const UPDATE_SHEET_COLUMNS = { service: 'Service', running: 'Running', to: 'Update to' } as const;
+export const WHAT_HAPPENS = 'What happens';
+export const UPDATE_HISTORY = 'Update history';
+export const RUNNING_NOW = 'Running now';
+export const STACK_UPDATE_NONE = 'Every tracked service runs what its track resolves to now.';
+export const STACK_NOT_FOUND = 'Stack not found';
+export const LOADING_HISTORY = 'Loading the history';
+export const NO_UPDATES_YET = 'No updates yet';
+
+/** The update sheet's title. */
+export function updateStackTitle(stack: string): string {
+  return `Update ${stack}`;
+}
+
+export function stackNotFoundWords(stack: string): string {
+  return `No adopted stack is named ${stack}. It may have been retired since the link was made.`;
+}
+
+export function noUpdatesYetWords(stack: string): string {
+  return `An update or rollback of ${stack} shows up here with who asked and how it ended.`;
+}
+
+/** A stack adopted with `updates: none`, opened at its update sheet. */
+export function updatesNoneWords(stack: string): string {
+  return `${stack} is adopted with updates: none. Shipyard only starts, stops, restarts and recreates it.`;
+}
+
+/** What a service follows: the sheet's opening sentence. */
+export function tracksWords(image: string, track: { kind: 'pinned' } | { kind: 'semver'; range: string } | { kind: 'tag'; tag: string }): string {
+  switch (track.kind) {
+    case 'pinned':
+      return `${image} is pinned; Shipyard never moves it.`;
+    case 'semver':
+      return `Tracks ${image} at ${track.range} — the highest ${track.range} release the registry has.`;
+    case 'tag':
+      return `Tracks ${image} at the ${track.tag} tag — whatever it points at when the update runs.`;
+  }
+}
+
+/** The What happens chain's steps (SHP-ADR-010). */
+export const CHAIN_WORDS = {
+  recheckTrack: 'Re-check the track',
+  backUp: 'Back up',
+  pull: 'Pull by digest',
+  swap: 'Swap the image line',
+  health: 'Health',
+  pinned: 'pinned',
+} as const;
+
+export function recheckWords(tracks: readonly string[]): string {
+  return tracks.length === 0 ? CHAIN_WORDS.recheckTrack : `Re-check ${tracks.join(', ')}`;
+}
+
+/** "Back up (forgejo dump)": the backup step, named by its program and subcommand when known. */
+export function backUpWords(what: string): string {
+  return what === '' ? CHAIN_WORDS.backUp : `${CHAIN_WORDS.backUp} (${what})`;
+}
+
+/** "Soak 2 min", "Soak 45 s", "Soak 90 s". */
+export function soakWords(seconds: number): string {
+  return seconds >= 60 && seconds % 60 === 0 ? `Soak ${String(seconds / 60)} min` : `Soak ${String(seconds)} s`;
+}
+
+/** What happens if the update fails: image-only rollback, and the backup when there is one. */
+export function rollbackNoteWords(from: string, hasBackup: boolean): string {
+  const base = `If health or the soak fails, Shipyard puts ${from} back by its digest — images only. Data the new version changed stays changed`;
+  return hasBackup ? `${base}; the backup taken first is listed under Backups.` : `${base}.`;
+}
+
+/** The rollback note's "from" when nothing runs yet. */
+export const WHAT_RUNS_NOW = 'what runs now';
+
+// Progress and results.
+
+export const STACK_PROGRESS_WORDS = {
+  updating: 'Updating',
+  rollingBack: 'Rolling back',
+  asking: 'Asking Shipyard',
+} as const;
+
+export function requestedByWords(requester: string): string {
+  return `requested by ${requester}`;
+}
+
+/** Who asked, and who approved when someone did: "claude: forgejo (approved by Matthew)". */
+export function requesterLineWords(requester: string, approvedBy: string | null): string {
+  return approvedBy === null ? requester : `${requester} (approved by ${approvedBy})`;
+}
+
+/**
+ * The one line a finished update or rollback says: "Updated forgejo to 17.1.2", "Update of forgejo
+ * to 17.1.2 rolled back — 17.1.1 is running again". `target` is what it asked for, `now` what runs
+ * after it, either null when unknown. The refusal's message and fix follow it verbatim.
+ */
+export function stackResultWords(kind: 'update' | 'rollback', state: StackUpdateState, stack: string, target: string | null, now: string | null): string {
+  const to = target === null ? '' : ` to ${target}`;
+  const stateWord = STACK_UPDATE_STATE_WORDS[state].toLowerCase();
+  if (kind === 'rollback') {
+    if (state === 'succeeded') return `Rolled ${stack} back${now === null ? to : ` to ${now}`}`;
+    return `Rollback of ${stack}${to} ${stateWord}`;
+  }
+  if (state === 'succeeded') return `Updated ${stack}${now === null ? to : ` to ${now}`}`;
+  if (state === 'rolled_back') return `Update of ${stack}${to} rolled back${now === null ? '' : ` — ${now} is running again`}`;
+  return `Update of ${stack}${to} ${stateWord}`;
+}
+
+/** What a history or Activity row moved: "Update 17.1.1 → 17.1.2", "Rollback · 17.0.4". */
+export const STACK_KIND_WORDS = { update: 'Update', rollback: 'Rollback' } as const;
+
+export function stackChangeWords(kind: 'update' | 'rollback', change: string | null): string {
+  if (change === null) return STACK_KIND_WORDS[kind];
+  return kind === 'rollback' ? `${STACK_KIND_WORDS.rollback} · ${change}` : `${STACK_KIND_WORDS.update} ${change}`;
+}
+
+/** "to 17.1.2": an asked-for target with nothing recorded before it. */
+export function toWords(target: string): string {
+  return `to ${target}`;
+}
+
+// Needs you.
+
+/** "update 17.1.1 → 17.1.2 · asked by claude: homelab upkeep": a held stack request (SHP-REQ-199). */
+export function heldStackWords(kind: 'update' | 'rollback', from: string | null, to: string | null, requester: string): string {
+  const what =
+    kind === 'rollback'
+      ? 'rollback'
+      : to === null
+        ? 'update'
+        : from === null
+          ? `update to ${to}`
+          : `update ${from} → ${to}`;
+  return `${what} · asked by ${requester}`;
+}
+
+export const HELD_STACK_FALLBACK = 'update waiting for approval';
+export const FAILED_STACK_FALLBACK = 'update did not finish';
+
+/** "update rolled back — <message>": a failed or rolled-back stack update; its fix follows on its own line. */
+export function failedStackWords(kind: 'update' | 'rollback', state: StackUpdateState, message: string | null): string {
+  const what = `${kind} ${STACK_UPDATE_STATE_WORDS[state].toLowerCase()}`;
+  return message === null ? what : `${what} — ${message}`;
+}
+
+export const OPEN_STACK = 'Open stack';
+
+export function openStackOnHostWords(stack: string): string {
+  return `Open ${stack} on Host`;
+}
+
+/** The deny button's full name and the deny confirmation's title. */
+export function denyStackWords(stack: string, kind: 'update' | 'rollback'): string {
+  return `${VERBS.deny} the ${stack} ${kind}`;
+}
+
+export const DENY_STACK_CONSEQUENCE = 'It will not run. It can be requested again later.';
+
+/** A sheet's own controls, the way the container sheet names them. */
+export const SHEET_WORDS = { close: 'Close', cancel: 'Cancel', done: 'Done' } as const;
+
+/** The Roll back button's full name on a history row: "Roll back to 17.0.4". */
+export function rollBackToWords(to: string): string {
+  return `${VERBS.rollBack} to ${to}`;
+}
+
+/** The update button's full name on a group header: "Update… forgejo". */
+export function updateStackLabel(stack: string): string {
+  return `${UPDATE_STACK} ${stack}`;
+}
+
+/** The approver's primary on a held stack request: what approving does, by its kind (SHP-REQ-199). */
+export function approveStackVerb(kind: 'update' | 'rollback'): string {
+  return kind === 'rollback' ? APPROVE_AND_ROLL_BACK : APPROVE_AND_UPDATE;
+}
+
+/** Its full name: "Approve and update forgejo". */
+export function approveStackLabel(kind: 'update' | 'rollback', stack: string): string {
+  return `${approveStackVerb(kind)} ${stack}`;
+}

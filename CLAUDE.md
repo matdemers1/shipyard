@@ -113,7 +113,10 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   host: containers with their tier, volumes, images, disk; takes no input and works for any token) ·
   `shipyard_action` (start, restart or recreate an app or adopted stack; stop is console-only) ·
   `shipyard_logs` (a redacted tail; the token needs logs allowed and reads only containers of the apps
-  and stacks it is scoped to, never Observed ones).
+  and stacks it is scoped to, never Observed ones) ·
+  `shipyard_stack_update` (queue an update of an adopted `updates: digest` stack to its reported candidates;
+  a token's update is held for a deployer's approval in the console unless the stack's policy is `never`) ·
+  `shipyard_stack_update_status` (poll it; the token must be scoped to the stack).
 - **What you can deploy:** only a SHA on the default branch that is ahead of what is live and whose
   images are proven: the image workflow is green, or, for a `build: shipyard` app, Shipyard's own
   build of that SHA succeeded and its digests still match GHCR (`build_not_green` /

@@ -1,0 +1,5 @@
+{
+  "service": "server",
+  "port": 3000,
+  "path": "/api/healthz"
+}

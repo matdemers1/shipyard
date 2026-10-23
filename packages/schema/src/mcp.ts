@@ -96,6 +96,15 @@ export const ShipyardLogsInput = z
   .meta({ id: 'ShipyardLogsInput', description: 'Input for the shipyard_logs tool' });
 export type ShipyardLogsInput = z.infer<typeof ShipyardLogsInput>;
 
+/** `shipyard_stack_update` (SHP-P-16): to the reported candidates; held for approval by default. */
+export const ShipyardStackUpdateInput = z
+  .strictObject({
+    stack: AppName,
+    requester: Requester,
+  })
+  .meta({ id: 'ShipyardStackUpdateInput', description: 'Input for the shipyard_stack_update tool' });
+export type ShipyardStackUpdateInput = z.infer<typeof ShipyardStackUpdateInput>;
+
 export const MCP_TOOLS = {
   shipyard_status: ShipyardStatusInput,
   shipyard_dry_run: ShipyardDryRunInput,
@@ -107,4 +116,5 @@ export const MCP_TOOLS = {
   shipyard_host: ShipyardHostInput,
   shipyard_action: ShipyardActionInput,
   shipyard_logs: ShipyardLogsInput,
+  shipyard_stack_update: ShipyardStackUpdateInput,
 } as const;

@@ -8,6 +8,7 @@ import { BuildSettings } from './settings.js';
 import { HostInventory } from './host.js';
 import { AgentStack } from './stack.js';
 import { ActionJob, LogsJob } from './actions.js';
+import { StackUpdateJob } from './stack-updates.js';
 
 /**
  * The agent protocol (SHP-REQ-004): what the portless agent reports and what it
@@ -141,7 +142,7 @@ export const PollRequest = z
   .strictObject({
     waitSeconds: z.int().min(0).max(25),
     /** An agent that sends `['build']` can receive a build job; older agents omit it and never are sent one. */
-    capabilities: z.array(z.enum(['build', 'actions', 'logs'])).max(10).optional(),
+    capabilities: z.array(z.enum(['build', 'actions', 'logs', 'stack-updates'])).max(10).optional(),
   })
   .meta({ id: 'PollRequest', description: 'The agent long-poll request body' });
 export type PollRequest = z.infer<typeof PollRequest>;
@@ -187,8 +188,10 @@ export const PollResponse = z
     // never handed work it cannot parse.
     z.strictObject({ target: z.null(), action: ActionJob, ...buildSettingsField }),
     z.strictObject({ target: z.null(), logs: LogsJob, ...buildSettingsField }),
+    // SHP-P-16: only for an agent that advertised `stack-updates`.
+    z.strictObject({ target: z.null(), stackUpdate: StackUpdateJob, ...buildSettingsField }),
   ])
-  .meta({ id: 'PollResponse', description: 'No work, one target, one build, one lifecycle action or one log read' });
+  .meta({ id: 'PollResponse', description: 'No work, one target, one build, one lifecycle action, one log read or one stack update' });
 export type PollResponse = z.infer<typeof PollResponse>;
 
 export const StepJournal = z

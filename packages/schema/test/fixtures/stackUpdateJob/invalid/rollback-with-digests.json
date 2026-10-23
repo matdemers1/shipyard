@@ -1,0 +1,9 @@
+{
+  "updateId": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "kind": "rollback",
+  "stack": "forgejo",
+  "toUpdateId": "01a16650-7a32-7202-bfdb-41c03c80417a",
+  "digests": {
+    "server": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  }
+}

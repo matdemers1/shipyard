@@ -1,0 +1,10 @@
+{
+  "digests": {
+    "server": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "requester": {
+    "repo": "matdemers1/shipyard",
+    "branch": "main",
+    "label": "claude: test"
+  }
+}

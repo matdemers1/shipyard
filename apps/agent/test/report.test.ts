@@ -141,6 +141,38 @@ describe('buildReport', () => {
   });
 });
 
+describe('buildReport stack candidates (SHP-REQ-194)', () => {
+  it('adds services to a digest-updated stack from the candidate checker, and leaves lifecycle-only stacks alone', async () => {
+    const digestStack = ['kind: stack', 'name: media', 'compose:', '  files: [/srv/media/compose.yml]', '  project: media', 'updates: digest', 'services:', '  web: { image: lscr.io/linuxserver/sonarr, track: { tag: latest } }', ''].join('\n');
+    const plainStack = ['kind: stack', 'name: immich', 'compose:', '  files: [/x/docker-compose.yml]', '  project: immich', ''].join('\n');
+    const files = new Map([[`${ROOT}/apps/web.yml`, manifestYaml('web')], [`${ROOT}/stacks/media.yml`, digestStack], [`${ROOT}/stacks/immich.yml`, plainStack]]);
+    const fs: FsPort = { ...fakeFs(files), exists: (path) => Promise.resolve(path === `${ROOT}/apps` || [...files.keys()].some((p) => p.startsWith(`${path}/`))) };
+    const asked: string[] = [];
+    const services = { web: { running: DIGEST_WEB, candidate: { tag: 'latest', digest: DIGEST_OTHER }, checkedAt: '2026-10-22T12:00:00.000Z', error: null } };
+    const report = await buildReport(
+      {
+        fs,
+        docker: fakeDocker({}),
+        engineApiVersion: () => Promise.resolve('1.51'),
+        stackServices: (stack) => (asked.push(stack.name), Promise.resolve(services)),
+      },
+      ROOT,
+      { agentVersion: '0', patExpiresAt: null },
+    );
+    expect(AgentReport.parse(report)).toEqual(report);
+    expect(asked).toEqual(['media']);
+    expect(report.stacks?.find((s) => s.manifest.name === 'media')?.services).toEqual(services);
+    expect(report.stacks?.find((s) => s.manifest.name === 'immich')).not.toHaveProperty('services');
+
+    const failing = await buildReport(
+      { fs, docker: fakeDocker({}), engineApiVersion: () => Promise.resolve('1.51'), stackServices: () => Promise.reject(new Error('boom')), log: { info: vi.fn(), warn: vi.fn() } },
+      ROOT,
+      { agentVersion: '0', patExpiresAt: null },
+    );
+    expect(failing.stacks?.find((s) => s.manifest.name === 'media')).not.toHaveProperty('services');
+  });
+});
+
 describe('buildReport with a broken stack file (SHP-REQ-183)', () => {
   it('still reports the apps, leaves stacks out and warns; the hash notices the fix', async () => {
     const files = new Map([[`${ROOT}/apps/web.yml`, manifestYaml('web')], [`${ROOT}/stacks/immich.yml`, 'kind: stack\nname: immich\ncommand: nope\n']]);

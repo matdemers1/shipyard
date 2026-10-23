@@ -1,0 +1,9 @@
+{
+  "stack": "forgejo",
+  "requester": {
+    "repo": "matdemers1/shipyard",
+    "branch": "main",
+    "label": "claude: test"
+  },
+  "digests": {}
+}

@@ -1,6 +1,7 @@
 import type { SystemStatus } from '@shipyard/schema';
 import { createContext, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { request, RefusalError } from './api';
+import { stacks as stackApi, type StackNeeds, type StackView } from './stacks';
 import { system } from './system';
 
 /**
@@ -106,6 +107,13 @@ export interface AppsSnapshot {
   agents: AgentRow[] | null;
   /** `GET /api/system`, or null when it was not asked for, could not be read, or the role may not read it. */
   system: SystemStatus | null;
+  /**
+   * Held and failed stack updates (SHP-T-16.6, SHP-REQ-199): `GET /api/stack-updates/needs-you`, or
+   * null from a server without stack updates.
+   */
+  stackNeeds: StackNeeds | null;
+  /** The adopted stacks, read only while a stack update waits for approval: its tags come from here. */
+  stacks: StackView[] | null;
   error: RefusalError | null;
   /** When the last read that succeeded finished, in epoch milliseconds. */
   loadedAt: number | null;
@@ -130,6 +138,8 @@ const INITIAL: AppsSnapshot = {
   approvals: [],
   agents: null,
   system: null,
+  stackNeeds: null,
+  stacks: null,
   error: null,
   loadedAt: null,
 };
@@ -172,13 +182,16 @@ export function createAppsStore(): AppsStore {
     const readSystem = wantsSystem();
     inFlight = { readSystem };
     try {
-      const [appRows, approvalRows, agentRows, host] = await Promise.all([
+      const [appRows, approvalRows, agentRows, host, stackNeeds] = await Promise.all([
         request<{ apps: AppRow[] }>('/api/apps').then((r) => r.apps),
         request<PendingApproval[]>('/api/approvals'),
         // Only the empty states read the agents; a failed read must not hide the apps.
         request<AgentRow[]>('/api/agent').catch(() => null),
         readSystem ? system.status().catch(() => null) : Promise.resolve(null),
+        // A server without stack updates has no such route: nothing of a stack needs anyone then.
+        stackApi.needsYou().catch(() => null),
       ]);
+      const stackRows = stackNeeds !== null && stackNeeds.approvals.length > 0 ? await stackApi.list().catch(() => null) : null;
       if (gen !== generation) return;
 
       const pendingByApp = new Set(approvalRows.map((a) => a.app));
@@ -192,7 +205,7 @@ export function createAppsStore(): AppsStore {
       if (gen !== generation) return;
 
       lastReadSystem = readSystem;
-      emit({ status: 'ready', apps, approvals: approvalRows, agents: agentRows, system: host, error: null, loadedAt: Date.now() });
+      emit({ status: 'ready', apps, approvals: approvalRows, agents: agentRows, system: host, stackNeeds, stacks: stackRows, error: null, loadedAt: Date.now() });
     } catch (err) {
       if (gen !== generation) return;
       // The last answer stays, so the badge does not invent or drop a warning on one failed read.

@@ -38,7 +38,7 @@ function plural(n: number, one: string, many = `${one}s`): string {
  */
 export function Home() {
   const canDeploy = useCan();
-  const { status, apps, approvals, system, noAgent, noApps, error, refresh } = useHomeData(canDeploy);
+  const { status, apps, approvals, system, stackNeeds, stacks, noAgent, noApps, error, refresh } = useHomeData(canDeploy);
   const isAdmin = useIsAdmin();
   const navigate = useNavigate();
   const [action, setAction] = useState<SheetAction | null>(null);
@@ -58,7 +58,7 @@ export function Home() {
         .sort((a, b) => a.app.name.localeCompare(b.app.name)),
     [apps, approvals],
   );
-  const needsYou = useMemo(() => needsYouFrom({ apps, approvals, system }), [apps, approvals, system]);
+  const needsYou = useMemo(() => needsYouFrom({ apps, approvals, system, stackNeeds }), [apps, approvals, system, stackNeeds]);
   const rollAll = useMemo(() => rolloutCandidates(rows), [rows]);
   const count = (...kinds: AppStatus['kind'][]) => rows.filter((r) => kinds.includes(r.status.kind)).length;
   const readyCount = count('ready');
@@ -195,6 +195,8 @@ export function Home() {
             apps={apps}
             approvals={approvals}
             system={system}
+            stackNeeds={stackNeeds}
+            stacks={stacks}
             canAct={canDeploy}
             onReview={openSheet}
             onChanged={refresh}

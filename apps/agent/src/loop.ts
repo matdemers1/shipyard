@@ -4,6 +4,7 @@ import {
   type ActionJob,
   type BuildJob,
   type LogsJob,
+  type StackUpdateJob,
   type BuildSettings,
   type PollRequest,
   type Refusal,
@@ -54,7 +55,7 @@ export const POLL_TIMEOUT_MS = 35_000;
 export type PollTarget = NonNullable<PollResponse['target']>;
 
 /** Every top-level poll-answer field this agent understands. */
-const POLL_RESPONSE_KEYS: ReadonlySet<string> = new Set(['target', 'build', 'buildSettings', 'action', 'logs']);
+const POLL_RESPONSE_KEYS: ReadonlySet<string> = new Set(['target', 'build', 'buildSettings', 'action', 'logs', 'stackUpdate']);
 
 /**
  * Parses a poll answer, dropping top-level fields this agent does not know first. The server is
@@ -148,6 +149,8 @@ export interface PollCapabilities {
   builds?: LoopBuilds | undefined;
   actions?: boolean;
   logs?: boolean;
+  /** SHP-P-16: the agent runs stack updates by digest. */
+  stackUpdates?: boolean;
 }
 
 /**
@@ -156,11 +159,12 @@ export interface PollCapabilities {
  * so the console says why instead of waiting on a job no agent will take).
  */
 export function pollBody(caps: LoopBuilds | PollCapabilities | undefined): PollRequest {
-  const { builds, actions = false, logs = false } = caps === undefined || 'canTake' in caps ? { builds: caps } : caps;
+  const { builds, actions = false, logs = false, stackUpdates = false } = caps === undefined || 'canTake' in caps ? { builds: caps } : caps;
   const capabilities: NonNullable<PollRequest['capabilities']> = [];
   if (builds?.canTake() === true) capabilities.push('build');
   if (actions) capabilities.push('actions');
   if (logs) capabilities.push('logs');
+  if (stackUpdates) capabilities.push('stack-updates');
   return capabilities.length === 0 ? { waitSeconds: POLL_WAIT_SECONDS } : { waitSeconds: POLL_WAIT_SECONDS, capabilities };
 }
 
@@ -204,6 +208,8 @@ export interface LoopOptions {
   actions?: LoopJobs<ActionJob>;
   /** The log-read runner (SHP-REQ-189); with it the agent advertises `logs`. */
   logs?: LoopJobs<LogsJob>;
+  /** The stack update runner (SHP-REQ-197); with it the agent advertises `stack-updates`. */
+  stackUpdates?: LoopJobs<StackUpdateJob>;
   /**
    * Called with `buildSettings` whenever a poll response carries it (SHP-T-7.11): the loop's only
    * hook into the BuildKit cache manager. Never awaited by the loop itself — a slow or failing
@@ -251,11 +257,17 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
     let build: BuildJob | undefined;
     let action: ActionJob | undefined;
     let logs: LogsJob | undefined;
+    let stackUpdate: StackUpdateJob | undefined;
     const extended = now() >= extendedOffUntil;
     const askActions = extended && opts.actions !== undefined;
     const askLogs = extended && opts.logs !== undefined;
+    const askStackUpdates = extended && opts.stackUpdates !== undefined;
     try {
-      const body = await opts.client.request('POST', POLL_PATH, pollBody({ builds: opts.builds, actions: askActions, logs: askLogs }));
+      const body = await opts.client.request(
+        'POST',
+        POLL_PATH,
+        pollBody({ builds: opts.builds, actions: askActions, logs: askLogs, stackUpdates: askStackUpdates }),
+      );
       const parsed = parsePollResponse(body, (keys) => {
         const fresh = keys.filter((key) => !ignoredKeys.has(key));
         if (fresh.length === 0) return;
@@ -266,6 +278,7 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       build = 'build' in parsed ? parsed.build : undefined;
       action = 'action' in parsed ? parsed.action : undefined;
       logs = 'logs' in parsed ? parsed.logs : undefined;
+      stackUpdate = 'stackUpdate' in parsed ? parsed.stackUpdate : undefined;
       if (parsed.buildSettings !== undefined && opts.onBuildSettings !== undefined) {
         try {
           opts.onBuildSettings(parsed.buildSettings);
@@ -276,14 +289,14 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       delay = backoff.initialMs;
     } catch (err) {
       if (stopped()) break;
-      if ((askActions || askLogs) && refusedCapabilities(err)) {
+      if ((askActions || askLogs || askStackUpdates) && refusedCapabilities(err)) {
         // An older server: poll again at once without them, and offer them again later.
         extendedOffUntil = now() + EXTENDED_CAPABILITIES_RETRY_MS;
         if (!degradeWarned) {
           degradeWarned = true;
           opts.log.warn(
             { err: message(err), retryInMs: EXTENDED_CAPABILITIES_RETRY_MS },
-            'the server refused the actions/logs capabilities; polling without them — the server may need an upgrade',
+            'the server refused the actions/logs/stack-updates capabilities; polling without them — the server may need an upgrade',
           );
         }
         continue;
@@ -307,6 +320,10 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
     if (logs !== undefined) {
       if (opts.logs === undefined) opts.log.warn({ logsId: logs.logsId }, 'sent a log read without asking for one; ignoring it');
       else offerSafely(opts.logs, logs, opts.log, { logsId: logs.logsId });
+    }
+    if (stackUpdate !== undefined) {
+      if (opts.stackUpdates === undefined) opts.log.warn({ updateId: stackUpdate.updateId }, 'sent a stack update without asking for one; ignoring it');
+      else offerSafely(opts.stackUpdates, stackUpdate, opts.log, { updateId: stackUpdate.updateId });
     }
     if (target === null) continue;
     try {

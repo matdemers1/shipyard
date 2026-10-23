@@ -1,0 +1,27 @@
+# Forgejo (git.d3cloud.io), a hand-owned third-party stack adopted into Shipyard's Operated tier
+# with digest updates (SHP-ADR-010, SHP-P-16). Host-local: the copy that counts is
+# <data root>/stacks/forgejo.yml (docs/runbooks/adopt-stack.md).
+#
+# Shipyard follows the highest 17.x release the registry has, offers it as an update candidate,
+# and on request: re-checks 17.x, pulls by digest, rewrites forgejo's image line to
+# codeberg.org/forgejo/forgejo:<tag>@sha256:…, recreates only that service, waits for the image's
+# own healthcheck and soaks two minutes; on failure it puts the previous digest back (images only).
+kind: stack
+name: forgejo
+compose:
+  files:
+    - /DATA/forgejo/compose.yml
+    - /DATA/forgejo/compose.tunnel.yml
+  project: forgejo
+envFiles:
+  - /DATA/forgejo/forgejo.env
+  - /DATA/forgejo/postgres.env
+  - /DATA/forgejo/tunnel.env
+updates: digest
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo
+    track:
+      semver: 17.x
+soakSeconds: 120
+approval: tokens

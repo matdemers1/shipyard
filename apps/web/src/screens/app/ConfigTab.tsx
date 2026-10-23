@@ -1,5 +1,8 @@
-import { DescriptionItem, DescriptionList, EmptyState, Section, Stack, Textarea } from '@d3cloud/ui';
+import { DescriptionItem, DescriptionList, EmptyState, Link, Section, Stack, Textarea } from '@d3cloud/ui';
+import { useEffect, useState } from 'react';
+import { Link as RouterLink } from 'react-router-dom';
 import { age, builtByShipyard, shortDigest, when, type AppDetail } from '../../lib/appdetail';
+import { host } from '../../lib/host';
 
 /**
  * The Config tab (SHP-T-13.12, SHP-REQ-163): what shapes a deploy of this app, from its manifest on
@@ -12,8 +15,38 @@ export function runningContainers(detail: Pick<AppDetail, 'running'>): [string, 
   return Object.entries(detail.running ?? {}).sort(([a], [b]) => a.localeCompare(b));
 }
 
+/**
+ * Each of this app's services → its container's ID on the host, from the latest host snapshot, so a
+ * service links to its sheet on Host (SHP-T-15.7). Empty until it is read, or when it cannot be.
+ */
+function useContainerIds(app: string): Record<string, string> {
+  const [ids, setIds] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let live = true;
+    host
+      .snapshot()
+      .then((res) => {
+        if (!live) return;
+        const found: Record<string, string> = {};
+        for (const snapshot of res.hosts) {
+          for (const c of snapshot.inventory.containers) {
+            if (c.app === app && c.compose !== null) found[c.compose.service] ??= c.id;
+          }
+        }
+        setIds(found);
+      })
+      // Without the snapshot the list still says what runs; it just links nowhere.
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [app]);
+  return ids;
+}
+
 export function ConfigTab({ detail }: { detail: AppDetail }) {
   const running = runningContainers(detail);
+  const ids = useContainerIds(detail.name);
   return (
     <Stack gap="24">
       <Section title="How it deploys" description="The settings that shape a deploy of this app, from its manifest on the host.">
@@ -54,6 +87,17 @@ export function ConfigTab({ detail }: { detail: AppDetail }) {
             {running.map(([service, digest]) => (
               <DescriptionItem key={service} term={service}>
                 <code>{shortDigest(digest)}</code>
+                {ids[service] === undefined ? null : (
+                  <>
+                    {' · '}
+                    <Link asChild>
+                      <RouterLink to={`/host?container=${ids[service]}`}>
+                        Logs and actions <span className="shp-visually-hidden">for {service}</span>
+                        <span aria-hidden="true"> ›</span>
+                      </RouterLink>
+                    </Link>
+                  </>
+                )}
               </DescriptionItem>
             ))}
           </DescriptionList>

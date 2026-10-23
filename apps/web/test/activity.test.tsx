@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ScheduleEntry, ScheduleList } from '@shipyard/schema';
+import type { ActionStatus, ScheduleEntry, ScheduleList } from '@shipyard/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
 import type { BuildSummary } from '../src/lib/builds';
@@ -12,7 +12,17 @@ import {
   formatFeedTime,
   type TimelineOutcome,
 } from '../src/lib/timeline';
-import { buildHeadline, deployHeadline, filtersFromParams, groupRollouts, refusalLine, timelineFilters, type FeedEntry } from '../src/screens/activity/model';
+import {
+  actionMatches,
+  buildHeadline,
+  deployHeadline,
+  filtersFromParams,
+  groupRollouts,
+  refusalLine,
+  sourcesFor,
+  timelineFilters,
+  type FeedEntry,
+} from '../src/screens/activity/model';
 import { meReply, mockFetch, type Call, type Reply } from './fetch';
 
 /**
@@ -423,5 +433,91 @@ describe('Activity model', () => {
     expect(only.rolloutId).toBe('r1');
     expect(only.members.map((m) => m.position)).toEqual([1, 2]);
     expect(only.total).toBe(2);
+  });
+});
+
+// ── Lifecycle actions (SHP-T-15.7, SHP-ADR-010) ──────────────────────────
+
+function action(overrides: Partial<ActionStatus> = {}): ActionStatus {
+  return {
+    id: '0b9c1f6e-6a4e-4d43-9a49-8e1f2b3c4d5e',
+    target: { kind: 'app', name: 'web' },
+    verb: 'restart',
+    service: 'worker',
+    state: 'succeeded',
+    requesterLabel: 'Matt (console)',
+    createdAt: ago(2 * MIN),
+    startedAt: ago(2 * MIN),
+    endedAt: ago(2 * MIN - 8_000),
+    refusal: null,
+    output: null,
+    ...overrides,
+  };
+}
+
+function actionPage(items: ActionStatus[]): Reply {
+  return { status: 200, body: { items, nextCursor: null } };
+}
+
+describe('Activity lists lifecycle actions', () => {
+  it('puts an action in the feed: the target, a past-tense badge, the service and outcome, who and when', async () => {
+    setup({ timeline: page([deploy()]), extra: { 'GET /api/actions': actionPage([action()]) } });
+    renderAt('/activity');
+    const badge = await screen.findByText('Restarted');
+    const row = badge.closest('li') as HTMLElement;
+    expect(within(row).getByText('web')).toBeInTheDocument();
+    expect(within(row).getByText(/^worker · done in 8s/)).toBeInTheDocument();
+    expect(within(row).getAllByText(/console · Matt/).length).toBeGreaterThan(0);
+    expect(within(row).getByText('2m ago')).toBeInTheDocument();
+    expect(within(row).getByRole('link')).toHaveAttribute('href', '/apps/web');
+    // Newest first: the action (2 min ago) sits above the deploy (12 min ago).
+    const rows = within(screen.getByRole('list', { name: 'Today' })).getAllByRole('listitem');
+    expect(rows[0]).toBe(row);
+  });
+
+  it('has an Actions chip that shows actions only, and asks nothing else for rows', async () => {
+    const calls = setup({
+      timeline: page([deploy()]),
+      builds: [build()],
+      extra: {
+        'GET /api/actions': actionPage([
+          action(),
+          action({ id: '1b9c1f6e-6a4e-4d43-9a49-8e1f2b3c4d5e', target: { kind: 'stack', name: 'immich' }, verb: 'stop', service: null, state: 'refused', refusal: { code: 'not_adopted', gate: 'none', message: 'immich is not adopted.', fix: 'Adopt it.' } }),
+        ]),
+      },
+    });
+    const user = userEvent.setup();
+    renderAt('/activity');
+    await screen.findByText('Restarted');
+    await user.click(screen.getByRole('button', { name: 'Actions' }));
+    expect(new URLSearchParams(window.location.search).get('kind')).toBe('action');
+    expect(screen.getByRole('button', { name: 'Actions' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByText('Stop refused')).toBeInTheDocument();
+    expect(screen.getByText(/^the whole stack · immich is not adopted\./)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText('Deployed')).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText('Build passed')).not.toBeInTheDocument();
+    const stackRow = screen.getByText('Stop refused').closest('li') as HTMLElement;
+    expect(within(stackRow).getByRole('link')).toHaveAttribute('href', '/host?tier=operated');
+    expect(calls.filter((c) => c.path === '/api/actions').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('narrows actions by app, requester and outcome, and lists refused ones under Refusals', () => {
+    const refused = action({ state: 'refused' });
+    expect(actionMatches(action(), filtersFromParams(new URLSearchParams('app=web')))).toBe(true);
+    expect(actionMatches(action(), filtersFromParams(new URLSearchParams('app=blog')))).toBe(false);
+    expect(actionMatches(action(), filtersFromParams(new URLSearchParams('requester=matt')))).toBe(true);
+    expect(actionMatches(action(), filtersFromParams(new URLSearchParams('outcome=failed')))).toBe(false);
+    expect(actionMatches(action({ state: 'running' }), filtersFromParams(new URLSearchParams('outcome=active')))).toBe(true);
+    expect(actionMatches(refused, filtersFromParams(new URLSearchParams('kind=refusal')))).toBe(true);
+    expect(actionMatches(action(), filtersFromParams(new URLSearchParams('kind=refusal')))).toBe(false);
+    expect(sourcesFor(filtersFromParams(new URLSearchParams('kind=action')))).toEqual({ deploys: false, builds: false, scheduleRows: false, showUpcoming: false, actions: true });
+  });
+
+  it('still shows the rest of the feed when the server has no actions endpoint', async () => {
+    setup({ timeline: page([deploy()]), extra: { 'GET /api/actions': { status: 404, body: { error: { code: 'not_found', gate: 'none', message: 'Not found.', fix: 'Check the address.' } } } } });
+    renderAt('/activity');
+    expect(await screen.findByText('Deployed')).toBeInTheDocument();
   });
 });

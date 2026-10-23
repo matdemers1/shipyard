@@ -14,6 +14,7 @@ import {
   type DeployTargetState,
   type LogsJob,
   type PollResponse,
+  type StackUpdateJob,
 } from '@shipyard/schema';
 import type { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
@@ -38,6 +39,7 @@ import {
 import { verifyAgentRequest } from './verify.js';
 import { recordCapabilities } from './capabilities.js';
 import { claimAction, releaseAction, sweepStaleActions } from '../actions/service.js';
+import { claimStackUpdate, releaseStackUpdate, sweepStaleStackUpdates } from '../stack-updates/service.js';
 import { logsHubFor } from '../logs/hub.js';
 
 /**
@@ -60,6 +62,9 @@ import { logsHubFor } from '../logs/hub.js';
  *   advertises neither is never sent either: it could not parse them. What each poll advertised is
  *   recorded (`capabilities.ts`) so a request the agent cannot serve is refused at once. Every poll
  *   also fails any action dispatched with no result for two minutes (`sweepStaleActions`).
+ * - Stack updates (SHP-T-16.3, SHP-ADR-010): after actions, a poll that advertises `stack-updates`
+ *   is handed the oldest queued update or rollback of its stacks — never one that does not, which
+ *   could not parse it. Every poll also fails one silent for thirty minutes past its soak.
  *
  * The server only records what the agent reports: the agent re-verifies every target itself and
  * alone decides a health-failure rollback (SHP-D-002, SHP-D-081).
@@ -154,10 +159,16 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
     } catch (err) {
       logger.error({ err }, 'stale action sweep failed');
     }
+    try {
+      await sweepStaleStackUpdates(deps);
+    } catch (err) {
+      logger.error({ err }, 'stale stack update sweep failed');
+    }
     recordCapabilities(bus, agentId, body.capabilities);
     const wantsBuild = body.capabilities?.includes('build') === true;
     const wantsLogs = body.capabilities?.includes('logs') === true;
     const wantsActions = body.capabilities?.includes('actions') === true;
+    const wantsStackUpdates = body.capabilities?.includes('stack-updates') === true;
     const logsHub = logsHubFor(bus);
     // Settings → Builds (SHP-T-7.11): on every poll answer, whatever else it carries, so the agent
     // learns a saved limit or cache cap change the moment it next polls.
@@ -243,6 +254,38 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
           bus.publish(`action:${action.actionId}`);
           logger.info({ actionId: action.actionId, target: action.target, verb: action.verb }, 'lifecycle action dispatched to agent');
           const response: PollResponse = { target: null, action, buildSettings };
+          res.json(response);
+          return;
+        }
+        let stackUpdate: StackUpdateJob | null = null;
+        if (wantsStackUpdates) {
+          try {
+            stackUpdate = await claimStackUpdate(deps, agentId);
+          } catch (err) {
+            stop.abort();
+            throw err;
+          }
+        }
+        if (stackUpdate !== null) {
+          stop.abort();
+          if (gone.signal.aborted) {
+            await releaseStackUpdate(db, stackUpdate.updateId);
+            bus.publish('work');
+            return;
+          }
+          await req.audit({
+            action: 'stack_update.dispatched',
+            entityType: 'stack_update',
+            entityId: stackUpdate.updateId,
+            after: {
+              stack: stackUpdate.stack,
+              kind: stackUpdate.kind,
+              ...(stackUpdate.kind === 'update' ? { digests: stackUpdate.digests } : { toUpdateId: stackUpdate.toUpdateId }),
+            },
+          });
+          bus.publish(`stack-update:${stackUpdate.updateId}`);
+          logger.info({ stackUpdateId: stackUpdate.updateId, stack: stackUpdate.stack, kind: stackUpdate.kind }, 'stack update dispatched to agent');
+          const response: PollResponse = { target: null, stackUpdate, buildSettings };
           res.json(response);
           return;
         }

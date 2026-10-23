@@ -92,6 +92,44 @@ describe('buildOpenApiDocument', () => {
   });
 });
 
+describe('stack update paths (SHP-T-16.3)', () => {
+  it('documents every stack update endpoint with its request and response schemas', () => {
+    const doc = buildOpenApiDocument() as ValidatableDoc;
+    const paths = doc.paths ?? {};
+    const schemas = doc.components?.schemas ?? {};
+    type Op = { operationId?: string; requestBody?: unknown; responses?: Record<string, unknown> };
+    const ops = (path: string): Record<string, Op> => (paths[path] ?? {}) as Record<string, Op>;
+    for (const id of ['StackView', 'StackList', 'StackNeedsYou', 'StackUpdateStatus', 'StackUpdatePage', 'StackUpdateRequest', 'StackRollbackRequest']) {
+      expect(schemas).toHaveProperty(id);
+    }
+    expect(JSON.stringify(ops('/stacks')['get']?.responses?.['200'])).toContain('#/components/schemas/StackList');
+    expect(Object.keys(ops('/stacks/{name}/updates')).sort()).toEqual(['get', 'post']);
+    expect(JSON.stringify(ops('/stacks/{name}/updates')['post']?.requestBody)).toContain('#/components/schemas/StackUpdateRequest');
+    expect(JSON.stringify(ops('/stacks/{name}/updates')['post']?.responses?.['202'])).toContain('#/components/schemas/StackUpdateStatus');
+    expect(JSON.stringify(ops('/stacks/{name}/updates')['get']?.responses?.['200'])).toContain('#/components/schemas/StackUpdatePage');
+    expect(JSON.stringify(ops('/stacks/{name}/rollback')['post']?.requestBody)).toContain('#/components/schemas/StackRollbackRequest');
+    expect(JSON.stringify(ops('/stack-updates')['get']?.responses?.['200'])).toContain('#/components/schemas/StackUpdatePage');
+    expect(JSON.stringify(ops('/stack-updates/needs-you')['get']?.responses?.['200'])).toContain('#/components/schemas/StackNeedsYou');
+    expect(Object.keys(ops('/stack-updates/{id}'))).toEqual(['get']);
+    expect(ops('/stack-updates/{id}/approve')['post']?.operationId).toBe('approveStackUpdate');
+    expect(ops('/stack-updates/{id}/deny')['post']?.operationId).toBe('denyStackUpdate');
+    expect(JSON.stringify(ops('/agent/stack-updates/{id}/progress')['post']?.requestBody)).toContain('#/components/schemas/StackUpdateProgress');
+    expect(JSON.stringify(ops('/agent/stack-updates/{id}/result')['post']?.requestBody)).toContain('#/components/schemas/StackUpdateResult');
+  });
+
+  it('resolves every $ref it uses', () => {
+    const doc = buildOpenApiDocument() as ValidatableDoc;
+    const refs = new Set<string>();
+    collectRefs(doc.paths, refs);
+    collectRefs(doc.components, refs);
+    const schemas = doc.components?.schemas ?? {};
+    for (const ref of refs) {
+      if (!ref.startsWith('#/components/schemas/')) continue;
+      expect(schemas, ref).toHaveProperty(ref.slice('#/components/schemas/'.length));
+    }
+  });
+});
+
 describe('GET /api/openapi.json', () => {
   it('serves a valid OpenAPI document', async () => {
     const app = express();

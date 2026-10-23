@@ -28,3 +28,33 @@ export async function notifyAwaitingApproval(deps: ServiceDeps, held: { deployId
     held.deployId,
   );
 }
+
+/**
+ * SHP-T-16.3 (SHP-REQ-199): a stack update or rollback held by the stack's approval policy reaches
+ * the same phones, in the same category, as a held deploy. Best effort, never awaited by the request.
+ */
+export async function notifyStackAwaitingApproval(
+  deps: ServiceDeps,
+  held: { updateId: string; stack: string; kind: 'update' | 'rollback' },
+): Promise<PushResult[]> {
+  const secret = deps.config.SESSION_SECRET;
+  const publicUrl = deps.config.PUBLIC_URL;
+  if (secret === undefined || publicUrl === undefined) return [];
+  const approvers = await deps.db.user.findMany({
+    where: { disabledAt: null, role: { in: [...STATE_CHANGING_ROLES] } },
+    select: { id: true },
+  });
+  return pushToUsers(
+    { db: deps.db, logger: deps.logger, sessionSecret: secret },
+    approvers.map((u) => u.id),
+    {
+      v: 1,
+      category: 'shipyard.approval',
+      title: `${held.stack} is waiting for you`,
+      body: held.kind === 'rollback' ? `Approve the rollback of ${held.stack}.` : `Approve the image update of ${held.stack}.`,
+      link: `d3constellation://${new URL(publicUrl).host}/shipyard`,
+      sentAt: new Date().toISOString(),
+    },
+    held.updateId,
+  );
+}

@@ -7,9 +7,17 @@ import { EventEmitter } from 'node:events';
  * re-reads it, and a waiter that times out re-reads it too. `build:<id>` wakes a build's live
  * stream (SHP-T-7.4); a queued build also publishes `work`, so the agent's poll can claim it.
  * `action:<id>` wakes a lifecycle action's status wait (SHP-T-15.4); a queued action or an opened
- * log session publishes `work` too.
+ * log session publishes `work` too. `stack-update:<id>` wakes a stack update's status wait (SHP-T-16.3);
+ * a queued (or approved) one publishes `work`.
  */
-export type Topic = 'work' | `deploy:${string}` | `app:${string}` | `build:${string}` | `rollout:${string}` | `action:${string}`;
+export type Topic =
+  | 'work'
+  | `deploy:${string}`
+  | `app:${string}`
+  | `build:${string}`
+  | `rollout:${string}`
+  | `action:${string}`
+  | `stack-update:${string}`;
 
 export class Bus {
   private readonly emitter = new EventEmitter();

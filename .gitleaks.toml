@@ -40,4 +40,9 @@ regexes = [
   # tags (`sha-<commit>`), which the generic-api-key rule reads as a key. It names no commit and
   # no image anyone pushed. Pinned to the exact literal, which stays in history at 0cb9818.
   '''sha-0123456789abcdef0123456789abcdef01234567''',
+
+  # The made-up PEM-shaped values the log-redaction tests build (SHP-T-15.3, SHP-REQ-190): a PEM
+  # header followed by a JS string-array separator — `-----BEGIN PRIVATE KEY-----', ` — which only an
+  # array of lines in test source produces, never a real key file. Their bodies are not keys.
+  '''-----BEGIN PRIVATE KEY-----', ''',
 ]

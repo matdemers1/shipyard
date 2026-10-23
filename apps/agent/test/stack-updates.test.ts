@@ -133,4 +133,15 @@ describe('reportInterruptedStackUpdates', () => {
     expect(bodies[0]).toMatchObject({ updateId: UPDATE_ID, state: 'failed', refusal: { code: 'interrupted', message: expect.stringContaining('previous compose file was put back') as unknown } });
     expect(bodies[1]).toMatchObject({ updateId: OTHER_ID, state: 'succeeded', images: [{ digest: DIGEST }] });
   });
+
+  it('says so when recovering failed (a compose up that exited non-zero)', async () => {
+    const client = fakeClient();
+    await reportInterruptedStackUpdates({
+      client,
+      recovered: [{ updateId: UPDATE_ID, stack: 'media', lastStep: 'stack-update:swap', restored: ['/srv/media/compose.yml'], succeeded: false, error: 'compose up exited 1 after the previous compose file was put back' }],
+      log: quiet,
+    });
+    const body = StackUpdateResult.parse(client.calls[0]?.body);
+    expect(body).toMatchObject({ state: 'failed', refusal: { code: 'interrupted', message: expect.stringContaining('Recovering it failed: compose up exited 1') as unknown } });
+  });
 });

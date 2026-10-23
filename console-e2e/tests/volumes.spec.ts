@@ -59,7 +59,10 @@ function volumeRow(page: Page, name: string): Locator {
 
 async function openHost(page: Page, path = '/host'): Promise<void> {
   await page.goto(path);
-  await h1(page, 'Host');
+  // A deep link can open a sheet at once, and the modal makes the page behind it inert — out of
+  // the accessibility tree — so only wait for the heading to be there, as host-actions.spec does.
+  if (path === '/host') await h1(page, 'Host');
+  else await expect(page.locator('h1', { hasText: 'Host' })).toBeAttached();
 }
 
 test.use({ storageState: storageStateFor('admin') });

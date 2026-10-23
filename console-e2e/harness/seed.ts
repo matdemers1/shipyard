@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hashPassword, type Db } from './db.js';
 import { FIXTURE_FILE, INVITE_TOKEN, STATE_DIR, USERS } from './env.js';
+import { seedHostSnapshot } from './host.js';
 
 /**
  * The baseline world every console-e2e test starts from: one of each thing a screen can show.
@@ -31,6 +32,9 @@ const ALL_TABLES = [
   'api_token',
   'app',
   'agent_nonce',
+  // The Host destination's snapshot and samples (SHP-T-14.7); they cascade from the agent anyway.
+  'host_sample',
+  'host_snapshot',
   'agent',
   'audit_event',
   'invite',
@@ -468,6 +472,8 @@ export async function seedWorld(db: Db, users: SeededUsers, now: number = Date.n
       patExpiresAt: ahead(20 * DAY, now),
     },
   });
+  // What the confirmed agent last reported of everything Docker runs, for Host (SHP-T-14.7).
+  await seedHostSnapshot(db, agent.id, now);
   await db.agent.create({
     data: {
       publicKey: 'MCowBQYDK2VwAyEAconsoleE2ePendingAgentPublicKey000000000000=',

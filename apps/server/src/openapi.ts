@@ -40,7 +40,7 @@ function buildComponentSchemas(): Record<string, unknown> {
   for (const [id, schema] of Object.entries(schemas)) {
     components[id] = stripSchemaKeys(schema);
   }
-  return { ...components, ...BUILD_COMPONENT_SCHEMAS, ...STACK_COMPONENT_SCHEMAS };
+  return { ...components, ...BUILD_COMPONENT_SCHEMAS, ...STACK_COMPONENT_SCHEMAS, ...MAINTENANCE_COMPONENT_SCHEMAS };
 }
 
 const ERROR_RESPONSE = {
@@ -250,6 +250,35 @@ const STACK_COMPONENT_SCHEMAS: Record<string, unknown> = {
       failed: { type: 'array', items: { $ref: '#/components/schemas/StackUpdateStatus' } },
     },
     required: ['approvals', 'failed'],
+  },
+};
+
+/**
+ * Server views over volume maintenance (SHP-T-17.3, SHP-ADR-012): a volume's archive list and the
+ * Needs you read. Their parts reference the registry's `VolumeArchive` and `MaintenanceStatus`.
+ */
+const MAINTENANCE_COMPONENT_SCHEMAS: Record<string, unknown> = {
+  VolumeArchiveList: {
+    type: 'object',
+    description: "A volume's unretired archives in the agent ledger, newest first (a token: only its owners')",
+    properties: { archives: { type: 'array', items: { $ref: '#/components/schemas/VolumeArchive' } } },
+    required: ['archives'],
+  },
+  MaintenanceNeedsYou: {
+    type: 'object',
+    description: "Each volume's latest finished backup when it failed or was refused, and every filesystem at least 90% full",
+    properties: {
+      failedBackups: { type: 'array', items: { $ref: '#/components/schemas/MaintenanceStatus' } },
+      lowDisk: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { mount: { type: 'string' }, usedPercent: { type: 'number' }, freeBytes: { type: 'integer', minimum: 0 } },
+          required: ['mount', 'usedPercent', 'freeBytes'],
+        },
+      },
+    },
+    required: ['failedBackups', 'lowDisk'],
   },
 };
 
@@ -614,8 +643,130 @@ export function buildPathsForStackUpdates(): Record<string, unknown> {
   };
 }
 
+/**
+ * Volume backups, restores and deletes, and prune (SHP-T-17.3; SHP-ADR-012, SHP-REQ-201..205): the
+ * console/token routes, and the agent's signed routes that feed them.
+ */
+export function buildPathsForMaintenance(): Record<string, unknown> {
+  const auth = { security: [{ session: [] }, { bearer: [] }] };
+  const sessionOnly = { security: [{ session: [] }] };
+  const volumeParam = { name: 'volume', in: 'path', required: true, description: 'A Docker named volume', schema: { $ref: '#/components/schemas/VolumeName' } };
+  const uuidParam = (description: string) => ({ name: 'id', in: 'path', required: true, description, schema: { type: 'string', format: 'uuid' } });
+  const body = (ref: string) => ({ required: true, content: { 'application/json': { schema: { $ref: `#/components/schemas/${ref}` } } } });
+  const signedHeaders = ['x-shipyard-key', 'x-shipyard-timestamp', 'x-shipyard-nonce', 'x-shipyard-signature'].map((name) => ({
+    name,
+    in: 'header',
+    required: true,
+    schema: { type: 'string' },
+  }));
+  const queued = { '202': jsonResponse('Queued for the agent.', 'MaintenanceStatus'), '4XX': ERROR_RESPONSE, '5XX': ERROR_RESPONSE };
+  const deleteOp = (operationId: string) => ({
+    summary:
+      'Delete an orphan volume (admin, console only — never an API token; a step-up from the last ten minutes for console and native sessions alike; the name typed back). The agent re-checks nothing mounts it',
+    operationId,
+    ...sessionOnly,
+    parameters: [volumeParam],
+    requestBody: body('VolumeDeleteRequest'),
+    responses: queued,
+  });
+  return {
+    '/volumes/{volume}/backup': {
+      post: {
+        summary: 'Back up a volume an app or adopted stack owns (deployer and up; a token only within the owner\'s scope); quiesced when its manifest says so',
+        operationId: 'postVolumeBackup',
+        ...auth,
+        parameters: [volumeParam],
+        requestBody: body('VolumeBackupRequest'),
+        responses: queued,
+      },
+    },
+    '/volumes/{volume}/restore': {
+      post: {
+        summary:
+          "Restore a volume from an archive in the agent's own ledger (admin, console only — never an API token; a step-up from the last ten minutes; the name typed back; refused while the owner is deploying, updating or acting)",
+        operationId: 'postVolumeRestore',
+        ...sessionOnly,
+        parameters: [volumeParam],
+        requestBody: body('VolumeRestoreRequest'),
+        responses: queued,
+      },
+    },
+    '/volumes/{volume}/delete': { post: deleteOp('postVolumeDelete') },
+    '/volumes/{volume}': { delete: deleteOp('deleteVolume') },
+    '/volumes/{volume}/archives': {
+      get: {
+        summary: "A volume's unretired archives, newest first",
+        operationId: 'listVolumeArchives',
+        ...auth,
+        parameters: [volumeParam],
+        responses: { '200': jsonResponse('The archives.', 'VolumeArchiveList'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/prune': {
+      post: {
+        summary:
+          'Dry-run a prune of dangling and old unused images and old build cache, or prune what a succeeded dry run of the same host from the last hour listed (deployer and up, any token)',
+        operationId: 'postPrune',
+        ...auth,
+        requestBody: body('PruneRequest'),
+        responses: queued,
+      },
+    },
+    '/maintenance': {
+      get: {
+        summary: 'Every volume backup, restore and delete and every prune, newest first (a token sees its owners\' jobs and prunes)',
+        operationId: 'listMaintenance',
+        ...auth,
+        parameters: [
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100 } },
+          { name: 'cursor', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        responses: { '200': jsonResponse('One page of maintenance jobs.', 'MaintenancePage'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/maintenance/needs-you': {
+      get: {
+        summary: "What needs a person: each volume's failed latest backup, and filesystems at least 90% full (console users)",
+        operationId: 'getMaintenanceNeedsYou',
+        ...auth,
+        responses: { '200': jsonResponse('Failed backups and low disk.', 'MaintenanceNeedsYou'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/maintenance/{id}': {
+      get: {
+        summary: 'One maintenance job and its outcome; `wait` holds the answer up to 90 s until it ends',
+        operationId: 'getMaintenance',
+        ...auth,
+        parameters: [uuidParam('The maintenance job ID'), { name: 'wait', in: 'query', required: false, schema: { type: 'integer', minimum: 0, maximum: 90 } }],
+        responses: { '200': jsonResponse('The maintenance job.', 'MaintenanceStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/agent/maintenance/{id}/progress': {
+      post: {
+        summary: 'Agent: a dispatched maintenance job moved to a new step',
+        operationId: 'postAgentMaintenanceProgress',
+        security: [],
+        parameters: [...signedHeaders, uuidParam('The maintenance job ID')],
+        requestBody: body('MaintenanceProgress'),
+        responses: { '200': jsonResponse('The job, now running.', 'MaintenanceStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/agent/maintenance/{id}/result': {
+      post: {
+        summary: "Agent: a maintenance job's terminal result, once, for a job dispatched to this agent",
+        operationId: 'postAgentMaintenanceResult',
+        security: [],
+        parameters: [...signedHeaders, uuidParam('The maintenance job ID')],
+        requestBody: body('MaintenanceResult'),
+        responses: { '200': jsonResponse('The job, ended.', 'MaintenanceStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+  };
+}
+
 function buildPaths(): Record<string, unknown> {
   return {
+    ...buildPathsForMaintenance(),
     ...buildPathsForStackUpdates(),
     ...buildPathsForBuilds(),
     ...buildPathsForRollouts(),

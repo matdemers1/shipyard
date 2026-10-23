@@ -17,7 +17,8 @@ export type Topic =
   | `build:${string}`
   | `rollout:${string}`
   | `action:${string}`
-  | `stack-update:${string}`;
+  | `stack-update:${string}`
+  | `maintenance:${string}`;
 
 export class Bus {
   private readonly emitter = new EventEmitter();

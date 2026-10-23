@@ -16,6 +16,7 @@ import type { ServiceDeps } from '../deps.js';
 import { notifyAwaitingApproval } from '../push/notify.js';
 import { assertDeployable } from '../apps/drift.js';
 import { assertNotFrozen } from '../freeze/service.js';
+import { restoreLockRefusal } from '../maintenance/lock.js';
 import { createGroupDeploy, readGroupMeta } from '../groups/service.js';
 
 /**
@@ -106,7 +107,8 @@ export async function lockRefusal(db: Db, appName: string, appId: string): Promi
     where: { appId, state: { in: [...ACTIVE_STATES] } },
     select: { state: true, currentStep: true, deployId: true, deploy: { select: { requesterLabel: true, requestedSha: true } } },
   });
-  if (holder === null) return null;
+  // SHP-T-17.3: a volume restore of the app holds it too (SHP-REQ-202).
+  if (holder === null) return restoreLockRefusal(db, { kind: 'app', name: appName });
   const sha7 = holder.deploy.requestedSha.slice(0, 7);
   return refusal(
     'locked',

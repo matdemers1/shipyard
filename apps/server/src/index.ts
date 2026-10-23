@@ -5,6 +5,7 @@ import { createDb } from './db.js';
 import { Bus } from './events.js';
 import { createLogger } from './logger.js';
 import { startApprovalExpiry } from './approvals/index.js';
+import { startNightlyBackups } from './maintenance/index.js';
 import { startOutbox } from './outbox/index.js';
 import { startScheduler } from './schedules/runner.js';
 import { startBackups } from './jobs/backup.js';
@@ -29,6 +30,8 @@ const app = createApp({ db, logger, config, oidcSettings, bus });
 const outbox = startOutbox({ db, logger, config, bus });
 // Unanswered approvals expire after an hour (SHP-REQ-061).
 const approvalExpiry = startApprovalExpiry({ db, logger, config, bus });
+// Manifests' nightly volume backups, queued at NIGHTLY_BACKUP_HOUR server time (SHP-ADR-012).
+const nightlyBackups = startNightlyBackups({ db, logger, config, bus }, { hour: config.NIGHTLY_BACKUP_HOUR });
 // Due schedules fire with every gate re-run (SHP-REQ-080).
 const scheduler = startScheduler({ db, logger, config, bus });
 // Alert email from server.env, else from Settings → Alert email, looked up on every send: a save
@@ -55,7 +58,7 @@ const server = app.listen(config.PORT, () => {
 function shutdown(signal: string): void {
   logger.info({ signal }, 'shutting down');
   server.close(() => {
-    Promise.all([outbox.stop(), approvalExpiry.stop(), scheduler.stop(), backups.stop(), heartbeat.stop(), buildLogPrune.stop(), buildReconcile.stop(), deletionPurge.stop()])
+    Promise.all([outbox.stop(), approvalExpiry.stop(), nightlyBackups.stop(), scheduler.stop(), backups.stop(), heartbeat.stop(), buildLogPrune.stop(), buildReconcile.stop(), deletionPurge.stop()])
       .then(() => db.$disconnect())
       .catch((err: unknown) => {
         logger.error({ err }, 'error disconnecting db');

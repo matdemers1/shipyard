@@ -107,6 +107,7 @@ model User {
   actionsRequested Action[]     @relation("ActionRequesterUser")
   stackUpdatesRequested StackUpdate[] @relation("StackUpdateRequesterUser")
   stackUpdatesDecided   StackUpdate[] @relation("StackUpdateDecidedBy")
+  maintenanceRequested  MaintenanceJob[] @relation("MaintenanceRequesterUser")
 
   @@map("user")
 }
@@ -193,6 +194,7 @@ model ApiToken {
   buildsRequested  Build[]      @relation("BuildRequesterToken")
   actionsRequested Action[]     @relation("ActionRequesterToken")
   stackUpdatesRequested StackUpdate[] @relation("StackUpdateRequesterToken")
+  maintenanceRequested  MaintenanceJob[] @relation("MaintenanceRequesterToken")
 
   @@map("api_token")
 }
@@ -246,6 +248,8 @@ model Agent {
   stacks          Stack[]
   actions         Action[]
   stackUpdates    StackUpdate[]
+  maintenanceJobs MaintenanceJob[]
+  volumeArchives  VolumeArchive[]
 
   @@map("agent")
 }
@@ -486,6 +490,91 @@ model Action {
   @@index([agentId, state, createdAt])
   @@index([createdAt, id])
   @@map("action")
+}
+
+// ─── Volume maintenance (SHP-T-17.3, SHP-ADR-012) ─────────────────────────────
+
+/// Where a maintenance job is. The states listed in `maintenance_job_one_in_flight_per_agent`'s
+/// WHERE clause are the in-flight half; keep the two in sync by hand.
+enum MaintenanceState {
+  queued
+  dispatched
+  running
+  succeeded
+  failed
+  refused
+  cancelled
+}
+
+/// A volume backup, restore or delete, or a prune (SHP-ADR-012; SHP-REQ-201..205). Queued by the
+/// console, a token or the nightly scheduler, handed to the owning agent's poll when it advertises
+/// `maintenance` — one at a time per agent — and finished by the agent's result. Kept forever.
+model MaintenanceJob {
+  id               String           @id @default(uuid()) @db.Uuid
+  agentId          String           @map("agent_id") @db.Uuid
+  /// `volume-backup`, `volume-restore`, `volume-delete` or `prune` (MaintenanceJob.kind).
+  kind             String
+  state            MaintenanceState @default(queued)
+  /// The `MaintenanceStep` the agent last reported.
+  step             String?
+  volume           String?
+  ownerKind        String?          @map("owner_kind")
+  ownerName        String?          @map("owner_name")
+  /// The `MaintenanceJob` exactly as the agent is handed it.
+  job              Json
+  /// A real prune's dry run (SHP-REQ-205).
+  dryRunOf         String?          @map("dry_run_of") @db.Uuid
+  /// `user`, `token` or `system` (the nightly scheduler).
+  requesterKind    String           @map("requester_kind")
+  requesterUserId  String?          @map("requester_user_id") @db.Uuid
+  requesterTokenId String?          @map("requester_token_id") @db.Uuid
+  requesterLabel   String           @map("requester_label")
+  requesterRepo    String?          @map("requester_repo")
+  requesterBranch  String?          @map("requester_branch")
+  /// The agent's `MaintenanceResult`: archive, removed archives, prune outcome, output.
+  result           Json?
+  refusal          Json?
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  dispatchedAt     DateTime?        @map("dispatched_at") @db.Timestamptz(3)
+  startedAt        DateTime?        @map("started_at") @db.Timestamptz(3)
+  finishedAt       DateTime?        @map("finished_at") @db.Timestamptz(3)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  agent          Agent            @relation(fields: [agentId], references: [id])
+  dryRun         MaintenanceJob?  @relation("MaintenancePruneOf", fields: [dryRunOf], references: [id])
+  prunes         MaintenanceJob[] @relation("MaintenancePruneOf")
+  requesterUser  User?            @relation("MaintenanceRequesterUser", fields: [requesterUserId], references: [id])
+  requesterToken ApiToken?        @relation("MaintenanceRequesterToken", fields: [requesterTokenId], references: [id])
+
+  @@index([agentId, state, createdAt])
+  @@index([createdAt, id])
+  @@index([volume, kind, createdAt])
+  @@index([state])
+  @@map("maintenance_job")
+}
+
+/// A volume archive in an agent's own ledger, mirrored from its reports (SHP-REQ-201). Never a
+/// path: a restore names the archive ID and the agent resolves it (SHP-D-080). An archive a later
+/// report no longer lists is retired, not deleted.
+model VolumeArchive {
+  archiveId String    @id @map("archive_id") @db.Uuid
+  agentId   String    @map("agent_id") @db.Uuid
+  volume    String
+  ownerKind String?   @map("owner_kind")
+  ownerName String?   @map("owner_name")
+  createdAt DateTime  @map("created_at") @db.Timestamptz(3)
+  sizeBytes BigInt    @map("size_bytes")
+  sha256    String
+  quiesced  Boolean
+  /// When a report (or a backup's result) last named it.
+  seenAt    DateTime  @map("seen_at") @db.Timestamptz(3)
+  retiredAt DateTime? @map("retired_at") @db.Timestamptz(3)
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@index([volume, createdAt])
+  @@index([agentId, retiredAt])
+  @@map("volume_archive")
 }
 
 // ─── Deploys, targets, images, steps ───────────────────────────────────────

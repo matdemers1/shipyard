@@ -17,6 +17,7 @@ import { directAudit } from '../builds/service.js';
 import { Prisma, type Db } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { lockRefusal, type DeployCaller } from '../deploys/service.js';
+import { restoreLockRefusal } from '../maintenance/lock.js';
 import { decodeCursor, encodeCursor } from '../deploys/timeline.js';
 import { snapshotContainers } from '../host/index.js';
 
@@ -177,7 +178,8 @@ export async function stackUpdateLockRefusal(db: Db, stackName: string): Promise
     where: { stackName, state: { in: [...STACK_UPDATE_HOLDING] } },
     select: { id: true, kind: true, state: true, step: true, requesterLabel: true },
   });
-  if (holder === null) return null;
+  // SHP-T-17.3: a volume restore of the stack holds it too (SHP-REQ-202).
+  if (holder === null) return restoreLockRefusal(db, { kind: 'stack', name: stackName });
   const what = holder.kind === 'rollback' ? 'rolled back' : 'updated';
   return refusal(
     'locked',
@@ -334,6 +336,12 @@ export async function claimAction(db: Db, agentId: string): Promise<ActionJob | 
               select 1 from "stack_update" u
               where u."stack_name" = a."target_name"
                 and u."state"::text in (${Prisma.join([...STACK_UPDATE_HOLDING])})))
+        and not exists (
+              select 1 from "maintenance_job" m
+              where m."kind" = 'volume-restore'
+                and m."owner_kind" = a."target_kind"::text
+                and m."owner_name" = a."target_name"
+                and m."state" in ('dispatched', 'running'))
       order by a."created_at", a."id"
       for update of a skip locked
       limit 1

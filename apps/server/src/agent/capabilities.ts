@@ -55,6 +55,7 @@ export function capabilityRefusal(bus: Bus, agentId: string, capability: Capabil
       actions: 'run lifecycle actions',
       build: 'run builds',
       'stack-updates': 'update adopted stacks',
+      maintenance: 'back up, restore or delete volumes, or prune',
     };
     return refusal('agent_too_old', `The agent on this host cannot ${what[capability]} yet.`);
   }

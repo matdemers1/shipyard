@@ -271,6 +271,22 @@ describe('the action runner (SHP-REQ-184)', () => {
     expect(released).toEqual(['web']);
   });
 
+  it("refuses a stack action while that stack's update runs, and holds the stack's lock otherwise (SHP-P-16)", async () => {
+    const stackJob = job({ target: { kind: 'stack', name: 'immich' }, service: undefined });
+    const busy = setup({ stackBusy: (stack) => stack === 'immich' });
+    expect(await busy.runner.run(stackJob)).toMatchObject({ state: 'refused', refusal: { code: 'locked' } });
+    expect(busy.docker.composeCalls.filter((c) => c.args[0] !== 'config')).toEqual([]);
+
+    const held = setup({ lockStack: () => Promise.resolve(refusal('locked', 'immich is locked by a stack update.')) });
+    expect(await held.runner.run(stackJob)).toMatchObject({ state: 'refused', refusal: { code: 'locked', message: 'immich is locked by a stack update.' } });
+
+    const locked: string[] = [];
+    const released: string[] = [];
+    const free = setup({ lockStack: (stack) => (locked.push(stack), Promise.resolve({ release: () => (released.push(stack), Promise.resolve()) })) });
+    expect(await free.runner.run(stackJob)).toMatchObject({ state: 'succeeded' });
+    expect([locked, released]).toEqual([['immich'], ['immich']]);
+  });
+
   it('refuses a manifest that fails to load, naming it', async () => {
     const { runner } = setup({ apps: () => Promise.reject(new ManifestLoadError([{ file: '/data/apps/web.yml', path: 'name', message: 'bad' }])) });
     expect(await runner.run(job())).toMatchObject({ state: 'refused', refusal: { code: 'manifest_invalid' } });

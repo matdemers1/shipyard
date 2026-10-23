@@ -4,6 +4,7 @@ import {
   REPORTED_RELEASES_PER_APP,
   type AgentBuildCache,
   type AgentReport,
+  type AgentStackService,
   type HostInventory,
   type Manifest,
   type StackManifest,
@@ -48,6 +49,12 @@ export interface ReportPorts {
   inventory?: (manifests: readonly Manifest[], stacks: readonly StackManifest[]) => Promise<HostInventory | undefined>;
   /** How long a report waits for the inventory; default `INVENTORY_DEADLINE_MS`. Tests shorten it. */
   inventoryDeadlineMs?: number;
+  /**
+   * Each tracked service of a digest-updated stack: its running digest and update candidate
+   * (SHP-REQ-194), from the candidate checker, which bounds its own wait. Absent, or resolving
+   * undefined: the stack is reported without `services`.
+   */
+  stackServices?: (stack: StackManifest) => Promise<Record<string, AgentStackService> | undefined>;
   log?: ReportLog;
 }
 
@@ -163,11 +170,33 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
     patExpiresAt: versions.patExpiresAt,
     apps,
     // Absent rather than empty when nothing is adopted, as an older agent's report is.
-    ...(stacks.length === 0 || stacksFailed ? {} : { stacks: stacks.map((s) => ({ manifest: s.manifest, manifestSha256: s.sha256 })) }),
+    ...(stacks.length === 0 || stacksFailed ? {} : { stacks: await reportedStacks(ports, stacks) }),
     ...(releases === undefined ? {} : { releases }),
     ...(buildCache === undefined ? {} : { buildCache }),
     ...(host === undefined ? {} : { host }),
   };
+}
+
+/**
+ * The adopted stacks as reported: a digest-updated stack carries its tracked services' running
+ * digests and candidates (SHP-REQ-194). A checker that fails for one stack costs that stack its
+ * `services`, never the report.
+ */
+async function reportedStacks(ports: ReportPorts, stacks: LoadedStack[]): Promise<NonNullable<AgentReport['stacks']>> {
+  // In parallel: each stack's checks share one deadline rather than queueing behind another's.
+  return Promise.all(
+    stacks.map(async (s) => {
+      let services: Record<string, AgentStackService> | undefined;
+      if (s.manifest.updates === 'digest' && ports.stackServices !== undefined) {
+        try {
+          services = await ports.stackServices(s.manifest);
+        } catch (err) {
+          ports.log?.warn({ stack: s.manifest.name, err: err instanceof Error ? err.message : String(err) }, 'stack candidates failed; reporting the stack without them');
+        }
+      }
+      return { manifest: s.manifest, manifestSha256: s.sha256, ...(services === undefined ? {} : { services }) };
+    }),
+  );
 }
 
 /**

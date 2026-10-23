@@ -403,6 +403,46 @@ describe('runLoop: lifecycle actions and logs (SHP-T-15.3)', () => {
   });
 });
 
+describe('runLoop: stack updates (SHP-P-16)', () => {
+  const STACK_UPDATE = { updateId: '77777777-7777-4777-8777-777777777777', kind: 'update', stack: 'media', digests: { web: DIGEST } } as const;
+
+  it("advertises 'stack-updates' with a runner and hands the job to it in the background", async () => {
+    expect(pollBody({ actions: true, logs: true, stackUpdates: true })).toEqual({ waitSeconds: 25, capabilities: ['actions', 'logs', 'stack-updates'] });
+    expect(pollBody({ stackUpdates: false })).toEqual({ waitSeconds: 25 });
+    const stop = new AbortController();
+    const offered: unknown[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, stackUpdate: STACK_UPDATE };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      stackUpdates: { offer: (job) => void offered.push(job) },
+      log: quiet,
+      signal: stop.signal,
+      sleep: noSleep,
+    });
+    expect(offered).toEqual([STACK_UPDATE]);
+    expect(client.calls[0]?.body).toEqual({ waitSeconds: 25, capabilities: ['stack-updates'] });
+  });
+
+  it('keeps the stackUpdate field when parsing a poll answer, and ignores a job sent to an agent without the runner', async () => {
+    expect(parsePollResponse({ target: null, stackUpdate: STACK_UPDATE })).toEqual({ target: null, stackUpdate: STACK_UPDATE });
+    const stop = new AbortController();
+    const warnings: object[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, stackUpdate: STACK_UPDATE };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({ client, runTarget: () => Promise.resolve(), log: { ...quiet, warn: (obj: object) => void warnings.push(obj) }, signal: stop.signal, sleep: noSleep });
+    expect(warnings).toEqual([{ updateId: STACK_UPDATE.updateId }]);
+    expect(client.calls[0]?.body).toEqual({ waitSeconds: 25 });
+  });
+});
+
 describe('runLoop', () => {
   it('polls again at once after an empty poll', async () => {
     const stop = new AbortController();

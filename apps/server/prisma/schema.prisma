@@ -105,6 +105,8 @@ model User {
   invitesSent      Invite[]     @relation("InviteBy")
   buildsRequested  Build[]      @relation("BuildRequesterUser")
   actionsRequested Action[]     @relation("ActionRequesterUser")
+  stackUpdatesRequested StackUpdate[] @relation("StackUpdateRequesterUser")
+  stackUpdatesDecided   StackUpdate[] @relation("StackUpdateDecidedBy")
 
   @@map("user")
 }
@@ -190,6 +192,7 @@ model ApiToken {
   auditEvents      AuditEvent[] @relation("AuditActorToken")
   buildsRequested  Build[]      @relation("BuildRequesterToken")
   actionsRequested Action[]     @relation("ActionRequesterToken")
+  stackUpdatesRequested StackUpdate[] @relation("StackUpdateRequesterToken")
 
   @@map("api_token")
 }
@@ -242,6 +245,7 @@ model Agent {
   hostSamples     HostSample[]
   stacks          Stack[]
   actions         Action[]
+  stackUpdates    StackUpdate[]
 
   @@map("agent")
 }
@@ -332,14 +336,98 @@ model Stack {
   manifestJson   String    @map("manifest_json")
   manifestSha256 String    @map("manifest_sha256")
   composeProject String    @map("compose_project")
+  /// Per tracked service of an `updates: digest` stack, its running digest and update candidate as
+  /// the agent last reported them (`AgentStack.services`, SHP-REQ-194); null from older agents and
+  /// for lifecycle-only stacks.
+  services       Json?
   reportedAt     DateTime  @map("reported_at") @db.Timestamptz(3)
   retiredAt      DateTime? @map("retired_at") @db.Timestamptz(3)
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  agent  Agent           @relation(fields: [agentId], references: [id])
-  tokens ApiTokenStack[]
+  agent   Agent           @relation(fields: [agentId], references: [id])
+  tokens  ApiTokenStack[]
+  updates StackUpdate[]
 
   @@map("stack")
+}
+
+// ─── Stack updates (SHP-ADR-010, SHP-P-16) ─────────────────────────────────
+
+enum StackUpdateKind {
+  update
+  rollback
+}
+
+/// Mirrors `@shipyard/schema`'s StackUpdateState value for value.
+enum StackUpdateState {
+  queued
+  awaiting_approval
+  dispatched
+  running
+  succeeded
+  failed
+  rolled_back
+  refused
+  denied
+  cancelled
+}
+
+/// An update of an adopted `updates: digest` stack to per-service digests, or a rollback to an
+/// earlier update (SHP-REQ-195, SHP-REQ-199, SHP-REQ-200). Queued by POST /api/stacks/:name/updates
+/// or /rollback — or held in `awaiting_approval` by the stack's approval policy — handed to the
+/// owning agent's poll when it advertises `stack-updates`, and finished by the agent's result. Kept
+/// forever: who asked, the digests before and after, and the outcome.
+model StackUpdate {
+  id               String           @id @default(uuid()) @db.Uuid
+  stackId          String           @map("stack_id") @db.Uuid
+  /// The stack's name when requested, so history reads without a join.
+  stackName        String           @map("stack_name")
+  /// The agent that owned the stack when it was requested: only its poll is handed it.
+  agentId          String           @map("agent_id") @db.Uuid
+  kind             StackUpdateKind  @default(update)
+  state            StackUpdateState @default(queued)
+  /// The `StackUpdateStep` the agent last reported.
+  step             String?
+  /// service → digest requested (an update); for a rollback, what it restored once it succeeded.
+  digests          Json?
+  /// A rollback's target: an earlier succeeded update of the same stack.
+  toUpdateId       String?          @map("to_update_id") @db.Uuid
+  /// What runs after (StackImage[]), from the agent's result.
+  images           Json?
+  /// What ran before (StackImage[]), from the agent's result.
+  previous         Json?
+  /// The stack's soakSeconds when requested: the stale sweep allows for it.
+  soakSeconds      Int              @default(0) @map("soak_seconds")
+  requesterUserId  String?          @map("requester_user_id") @db.Uuid
+  requesterTokenId String?          @map("requester_token_id") @db.Uuid
+  requesterLabel   String           @map("requester_label")
+  requesterRepo    String?          @map("requester_repo")
+  requesterBranch  String?          @map("requester_branch")
+  /// Set when the approval policy held it (SHP-REQ-199).
+  heldAt           DateTime?        @map("held_at") @db.Timestamptz(3)
+  decidedAt        DateTime?        @map("decided_at") @db.Timestamptz(3)
+  decidedByUserId  String?          @map("decided_by_user_id") @db.Uuid
+  decidedByLabel   String?          @map("decided_by_label")
+  refusal          Json?
+  /// The backup the update took, as the agent reported it ({ path, size, createdAt }).
+  backupArtifact   Json?            @map("backup_artifact")
+  dispatchedAt     DateTime?        @map("dispatched_at") @db.Timestamptz(3)
+  startedAt        DateTime?        @map("started_at") @db.Timestamptz(3)
+  endedAt          DateTime?        @map("ended_at") @db.Timestamptz(3)
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  stack          Stack     @relation(fields: [stackId], references: [id])
+  agent          Agent     @relation(fields: [agentId], references: [id])
+  requesterUser  User?     @relation("StackUpdateRequesterUser", fields: [requesterUserId], references: [id])
+  requesterToken ApiToken? @relation("StackUpdateRequesterToken", fields: [requesterTokenId], references: [id])
+  decidedBy      User?     @relation("StackUpdateDecidedBy", fields: [decidedByUserId], references: [id])
+
+  @@index([agentId, state, createdAt])
+  @@index([stackId, createdAt, id])
+  @@index([createdAt, id])
+  @@index([state])
+  @@map("stack_update")
 }
 
 // ─── Lifecycle actions (SHP-ADR-010) ───────────────────────────────────────

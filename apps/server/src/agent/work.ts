@@ -1,7 +1,8 @@
 import type { Request, Response, Router } from 'express';
 import type { z } from 'zod';
-import { ActionProgress, ActionResult, LogsChunk, refusal, type LogsChunkAck } from '@shipyard/schema';
+import { ActionProgress, ActionResult, LogsChunk, StackUpdateProgress, StackUpdateResult, refusal, type LogsChunkAck } from '@shipyard/schema';
 import { ownAction, recordActionProgress, recordActionResult } from '../actions/service.js';
+import { ownStackUpdate, recordStackUpdateProgress, recordStackUpdateResult } from '../stack-updates/service.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { logsHubFor } from '../logs/hub.js';
@@ -18,9 +19,13 @@ import { verifyAgentRequest } from './verify.js';
  *   dropped (SHP-REQ-191): the answer `{ continue: false }` tells the agent to stop because the
  *   viewer left, the session ended, or the 2 MB relay cap was reached. Its body may be up to 2 MB
  *   (app.ts); nothing of it is logged — only the session ID, the sequence number and a line count.
+ * - `POST /stack-updates/:id/progress` and `/result` (SHP-T-16.3, SHP-ADR-010) — a stack update's
+ *   step, then its terminal result exactly once with the images before and after (SHP-REQ-200);
+ *   only for an update dispatched to this agent.
  */
 
 const NO_SUCH_ACTION = refusal('not_found', 'No such action dispatched to this agent.', 'Poll for work and report only actions you were given.');
+const NO_SUCH_STACK_UPDATE = refusal('not_found', 'No such stack update dispatched to this agent.', 'Poll for work and report only stack updates you were given.');
 const NO_SUCH_LOGS = refusal('not_found', 'No such log read dispatched to this agent.', 'Poll for work and stream only log reads you were given.');
 
 function parse<T extends z.ZodType>(schema: T, req: Request, res: Response): z.infer<T> | null {
@@ -102,6 +107,64 @@ export function mountWork(router: Router, deps: ServiceDeps): void {
       },
     });
     logger.info({ actionId: row.id, state: body.state }, 'lifecycle action result recorded');
+    res.json(outcome.status);
+  });
+
+  router.post('/stack-updates/:id/progress', verified, async (req, res) => {
+    const body = parse(StackUpdateProgress, req, res);
+    const agentId = req.agent?.id;
+    if (body === null || agentId === undefined || agentId === null) return;
+    const row = body.updateId === paramId(req) ? await ownStackUpdate(db, agentId, body.updateId) : null;
+    if (row === null) {
+      sendRefusal(res, NO_SUCH_STACK_UPDATE);
+      return;
+    }
+    const outcome = await recordStackUpdateProgress(deps, row, body);
+    if (!outcome.accepted) {
+      sendRefusal(res, refusal('conflict', 'This stack update has already ended.', 'Report progress only for a running stack update.'));
+      return;
+    }
+    await req.audit({
+      action: 'stack_update.progress',
+      entityType: 'stack_update',
+      entityId: row.id,
+      before: { state: row.state, step: row.step },
+      after: { state: outcome.status.state, step: body.step, stack: row.stackName, kind: row.kind },
+    });
+    res.json(outcome.status);
+  });
+
+  router.post('/stack-updates/:id/result', verified, async (req, res) => {
+    const body = parse(StackUpdateResult, req, res);
+    const agentId = req.agent?.id;
+    if (body === null || agentId === undefined || agentId === null) return;
+    const row = body.updateId === paramId(req) ? await ownStackUpdate(db, agentId, body.updateId) : null;
+    if (row === null) {
+      sendRefusal(res, NO_SUCH_STACK_UPDATE);
+      return;
+    }
+    const outcome = await recordStackUpdateResult(deps, row, body);
+    if (!outcome.accepted) {
+      sendRefusal(res, refusal('conflict', 'This stack update already has a result.', 'Send a result once per stack update.'));
+      return;
+    }
+    // SHP-REQ-200: the digests before and after, and the outcome, on the audit trail too.
+    await req.audit({
+      action: 'stack_update.result',
+      entityType: 'stack_update',
+      entityId: row.id,
+      before: { state: row.state },
+      after: {
+        state: body.state,
+        stack: row.stackName,
+        kind: row.kind,
+        images: body.images,
+        previous: body.previous,
+        ...(outcome.status.refusal === null ? {} : { refusal: outcome.status.refusal.code }),
+        ...(body.backupArtifact === undefined ? {} : { backupArtifact: body.backupArtifact.path }),
+      },
+    });
+    logger.info({ stackUpdateId: row.id, stack: row.stackName, state: body.state }, 'stack update result recorded');
     res.json(outcome.status);
   });
 

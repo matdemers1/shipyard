@@ -40,7 +40,7 @@ function buildComponentSchemas(): Record<string, unknown> {
   for (const [id, schema] of Object.entries(schemas)) {
     components[id] = stripSchemaKeys(schema);
   }
-  return { ...components, ...BUILD_COMPONENT_SCHEMAS };
+  return { ...components, ...BUILD_COMPONENT_SCHEMAS, ...STACK_COMPONENT_SCHEMAS };
 }
 
 const ERROR_RESPONSE = {
@@ -194,6 +194,64 @@ const BUILD_ID_PARAM = { name: 'id', in: 'path', required: true, schema: { type:
 function jsonResponse(description: string, ref: string): Record<string, unknown> {
   return { description, content: { 'application/json': { schema: { $ref: `#/components/schemas/${ref}` } } } };
 }
+
+/**
+ * Server views over the stack mirror and stack updates (SHP-T-16.3): `GET /api/stacks` and the
+ * Needs you read. Their parts reference the registry's `StackTrack`, `Digest` and `StackUpdateStatus`.
+ */
+const STACK_COMPONENT_SCHEMAS: Record<string, unknown> = {
+  StackView: {
+    type: 'object',
+    description: 'An adopted stack with its tracked services, their running digests and update candidates',
+    properties: {
+      name: { $ref: '#/components/schemas/AppName' },
+      composeProject: { type: 'string' },
+      updates: { type: 'string', enum: ['none', 'digest'] },
+      approval: { type: ['string', 'null'], enum: ['tokens', 'always', 'never', null] },
+      soakSeconds: { type: ['integer', 'null'] },
+      services: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            service: { type: 'string' },
+            image: { type: 'string' },
+            track: { $ref: '#/components/schemas/StackTrack' },
+            running: { anyOf: [{ $ref: '#/components/schemas/Digest' }, { type: 'null' }] },
+            candidate: {
+              anyOf: [
+                { type: 'object', properties: { tag: { type: 'string' }, digest: { $ref: '#/components/schemas/Digest' } }, required: ['tag', 'digest'] },
+                { type: 'null' },
+              ],
+            },
+            checkedAt: NULLABLE_DATE,
+            error: { type: ['string', 'null'] },
+          },
+          required: ['service', 'image', 'track', 'running', 'candidate', 'checkedAt', 'error'],
+        },
+      },
+      reportedAt: { type: 'string', format: 'date-time' },
+      activeUpdate: { anyOf: [{ $ref: '#/components/schemas/StackUpdateStatus' }, { type: 'null' }] },
+      lastUpdate: { anyOf: [{ $ref: '#/components/schemas/StackUpdateStatus' }, { type: 'null' }] },
+    },
+    required: ['name', 'composeProject', 'updates', 'approval', 'soakSeconds', 'services', 'reportedAt', 'activeUpdate', 'lastUpdate'],
+  },
+  StackList: {
+    type: 'object',
+    description: 'Every adopted stack (a token: only those its scope names)',
+    properties: { stacks: { type: 'array', items: { $ref: '#/components/schemas/StackView' } } },
+    required: ['stacks'],
+  },
+  StackNeedsYou: {
+    type: 'object',
+    description: "Stack updates held for approval (oldest first), and each stack's newest failed or rolled-back update until a later one succeeds",
+    properties: {
+      approvals: { type: 'array', items: { $ref: '#/components/schemas/StackUpdateStatus' } },
+      failed: { type: 'array', items: { $ref: '#/components/schemas/StackUpdateStatus' } },
+    },
+    required: ['approvals', 'failed'],
+  },
+};
 
 function buildPathsForBuilds(): Record<string, unknown> {
   const actionBody = {
@@ -432,8 +490,133 @@ export function buildPathsForActionsAndLogs(): Record<string, unknown> {
   };
 }
 
+/**
+ * Stack updates by digest (SHP-T-16.3; SHP-ADR-010, SHP-REQ-195, SHP-REQ-199, SHP-REQ-200): the
+ * console/token routes, and the agent's signed routes that feed them.
+ */
+export function buildPathsForStackUpdates(): Record<string, unknown> {
+  const auth = { security: [{ session: [] }, { bearer: [] }] };
+  const nameParam = { name: 'name', in: 'path', required: true, description: 'The adopted stack', schema: { $ref: '#/components/schemas/AppName' } };
+  const uuidParam = (description: string) => ({ name: 'id', in: 'path', required: true, description, schema: { type: 'string', format: 'uuid' } });
+  const pageParams = [
+    { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100 } },
+    { name: 'cursor', in: 'query', required: false, schema: { type: 'string' } },
+  ];
+  const body = (ref: string) => ({ required: true, content: { 'application/json': { schema: { $ref: `#/components/schemas/${ref}` } } } });
+  const signedHeaders = ['x-shipyard-key', 'x-shipyard-timestamp', 'x-shipyard-nonce', 'x-shipyard-signature'].map((name) => ({
+    name,
+    in: 'header',
+    required: true,
+    schema: { type: 'string' },
+  }));
+  return {
+    '/stacks': {
+      get: {
+        summary: 'Every adopted stack with its tracked services, running digests and update candidates (any signed-in role; a token sees only its stacks)',
+        operationId: 'listStacks',
+        ...auth,
+        responses: { '200': jsonResponse('The stacks.', 'StackList'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/stacks/{name}/updates': {
+      get: {
+        summary: "One stack's updates and rollbacks, newest first: who asked, the digests before and after, and the outcome",
+        operationId: 'listStackHistory',
+        ...auth,
+        parameters: [nameParam, ...pageParams],
+        responses: { '200': jsonResponse('One page of the history.', 'StackUpdatePage'), '4XX': ERROR_RESPONSE },
+      },
+      post: {
+        summary:
+          "Update an updates: digest stack to the candidates the agent reported, or to the digests named for tracked services (deployer and up; a token only within its scope). Held for a deployer's approval by the stack's policy (tokens by default); refused for updates: none, a stack another update or an action holds, or an agent that cannot",
+        operationId: 'postStackUpdate',
+        ...auth,
+        parameters: [nameParam],
+        requestBody: body('StackUpdateRequest'),
+        responses: { '202': jsonResponse('Queued, or awaiting approval.', 'StackUpdateStatus'), '4XX': ERROR_RESPONSE, '5XX': ERROR_RESPONSE },
+      },
+    },
+    '/stacks/{name}/rollback': {
+      post: {
+        summary:
+          "Roll a stack back to an earlier succeeded update; the agent takes its digests from its own ledger. The same roles, scope, lock and approval policy as an update; a native session needs step-up",
+        operationId: 'postStackRollback',
+        ...auth,
+        parameters: [nameParam],
+        requestBody: body('StackRollbackRequest'),
+        responses: { '202': jsonResponse('Queued, or awaiting approval.', 'StackUpdateStatus'), '4XX': ERROR_RESPONSE, '5XX': ERROR_RESPONSE },
+      },
+    },
+    '/stack-updates': {
+      get: {
+        summary: 'Every stack update and rollback, newest first (a token sees only its stacks) — an Activity source',
+        operationId: 'listStackUpdates',
+        ...auth,
+        parameters: pageParams,
+        responses: { '200': jsonResponse('One page of stack updates.', 'StackUpdatePage'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/stack-updates/needs-you': {
+      get: {
+        summary: "What needs a person: held stack updates, and each stack's failed or rolled-back update until a later one succeeds (console users)",
+        operationId: 'getStackNeedsYou',
+        security: [{ session: [] }],
+        responses: { '200': jsonResponse('Held and failed stack updates.', 'StackNeedsYou'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/stack-updates/{id}': {
+      get: {
+        summary: 'One stack update or rollback and its outcome',
+        operationId: 'getStackUpdate',
+        ...auth,
+        parameters: [uuidParam('The stack update ID')],
+        responses: { '200': jsonResponse('The stack update.', 'StackUpdateStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/stack-updates/{id}/approve': {
+      post: {
+        summary: 'Approve a held stack update (deployer and up, console only; a native session needs step-up); it is queued for the agent',
+        operationId: 'approveStackUpdate',
+        security: [{ session: [] }],
+        parameters: [uuidParam('The stack update ID')],
+        responses: { '200': jsonResponse('Approved and queued.', 'StackUpdateStatus'), '4XX': ERROR_RESPONSE, '5XX': ERROR_RESPONSE },
+      },
+    },
+    '/stack-updates/{id}/deny': {
+      post: {
+        summary: 'Deny a held stack update (deployer and up, console only; a native session needs step-up)',
+        operationId: 'denyStackUpdate',
+        security: [{ session: [] }],
+        parameters: [uuidParam('The stack update ID')],
+        responses: { '200': jsonResponse('Denied.', 'StackUpdateStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/agent/stack-updates/{id}/progress': {
+      post: {
+        summary: 'Agent: a dispatched stack update moved to a new step',
+        operationId: 'postAgentStackUpdateProgress',
+        security: [],
+        parameters: [...signedHeaders, uuidParam('The stack update ID')],
+        requestBody: body('StackUpdateProgress'),
+        responses: { '200': jsonResponse('The stack update, now running.', 'StackUpdateStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/agent/stack-updates/{id}/result': {
+      post: {
+        summary: "Agent: a stack update's terminal result with the images before and after, once, for an update dispatched to this agent",
+        operationId: 'postAgentStackUpdateResult',
+        security: [],
+        parameters: [...signedHeaders, uuidParam('The stack update ID')],
+        requestBody: body('StackUpdateResult'),
+        responses: { '200': jsonResponse('The stack update, ended.', 'StackUpdateStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+  };
+}
+
 function buildPaths(): Record<string, unknown> {
   return {
+    ...buildPathsForStackUpdates(),
     ...buildPathsForBuilds(),
     ...buildPathsForRollouts(),
     ...buildPathsForActionsAndLogs(),

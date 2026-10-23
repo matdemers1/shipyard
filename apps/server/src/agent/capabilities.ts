@@ -2,9 +2,10 @@ import { refusal, type PollRequest, type Refusal } from '@shipyard/schema';
 import type { Bus } from '../events.js';
 
 /**
- * What each agent said it can do on its last poll (SHP-ADR-010, SHP-ADR-011). `POST /api/actions`
- * and `POST /api/logs` read this to refuse at once (`agent_too_old`) rather than queue work no poll
- * will ever take: the poll only hands an action or a log read to an agent that advertised it.
+ * What each agent said it can do on its last poll (SHP-ADR-010, SHP-ADR-011). `POST /api/actions`,
+ * `POST /api/logs` and `POST /api/stacks/:name/updates` read this to refuse at once
+ * (`agent_too_old`) rather than queue work no poll will ever take: the poll only hands an action,
+ * a log read or a stack update to an agent that advertised it.
  *
  * In memory, per server process — a capability is a live fact about a connected agent, like a
  * heartbeat. After a restart the first poll (at most `waitSeconds`, 25 s, later) records it again;
@@ -49,8 +50,13 @@ export function capabilityRefusal(bus: Bus, agentId: string, capability: Capabil
     return refusal('agent_offline', 'The agent that runs this has not polled the server recently.', 'Check the agent is running and can reach the server, then retry.');
   }
   if (!seen.capabilities.has(capability)) {
-    const what = capability === 'logs' ? 'read container logs' : capability === 'actions' ? 'run lifecycle actions' : 'run builds';
-    return refusal('agent_too_old', `The agent on this host cannot ${what} yet.`);
+    const what: Record<Capability, string> = {
+      logs: 'read container logs',
+      actions: 'run lifecycle actions',
+      build: 'run builds',
+      'stack-updates': 'update adopted stacks',
+    };
+    return refusal('agent_too_old', `The agent on this host cannot ${what[capability]} yet.`);
   }
   return null;
 }

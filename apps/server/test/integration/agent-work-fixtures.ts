@@ -46,7 +46,7 @@ export async function agentPost(app: Express, key: Key, path: string, body: unkn
 }
 
 /** One poll, advertising `capabilities` (none when undefined). */
-export async function poll(app: Express, key: Key, capabilities?: ('build' | 'actions' | 'logs')[], waitSeconds = 0): Promise<PollResponse> {
+export async function poll(app: Express, key: Key, capabilities?: ('build' | 'actions' | 'logs' | 'stack-updates')[], waitSeconds = 0): Promise<PollResponse> {
   const res = await agentPost(app, key, '/api/agent/poll', { waitSeconds, ...(capabilities === undefined ? {} : { capabilities }) });
   expect(res.status).toBe(200);
   return res.body as PollResponse;

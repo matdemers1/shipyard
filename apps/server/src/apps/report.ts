@@ -1,7 +1,7 @@
 import type { Router } from 'express';
 import { AgentRelease, AgentReport, REPORTED_RELEASES_PER_APP, refusal, type AgentBuildCache, type AgentStack } from '@shipyard/schema';
 import { verifyAgentRequest } from '../agent/verify.js';
-import type { Prisma } from '../db.js';
+import { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { storeHostInventory } from '../host/index.js';
@@ -34,7 +34,10 @@ export function lastReportedBuildCache(agentId: string): AgentBuildCache | null 
  * stack is refused the same way an app is. A stack may not share an app's name — one in this report
  * or any app row, retired ones included — so a token scope or action target name is never
  * ambiguous: such a stack is not mirrored (and a mirrored one that now collides is retired), with a
- * warning naming it; it stays unadopted until it is renamed.
+ * warning naming it; it stays unadopted until it is renamed. Each stack's tracked services — their
+ * running digests and update candidates (`AgentStack.services`, SHP-REQ-194) — are mirrored into
+ * `stack.services` on every report, null when the agent sends none; a changed candidate is a live
+ * reading, not an event worth an audit row, so it is not counted as a change (SHP-T-16.3).
  *
  * Retirement (SHP-REQ-174, SHP-T-3.14): an app the reporting agent owns but no longer names is
  * marked `retiredAt` — its manifest has left the host, so the agent could not deploy it anyway. The
@@ -187,6 +190,8 @@ async function mirrorStacks(
       manifestJson: canonicalJson(m),
       manifestSha256: entry.manifestSha256,
       composeProject: m.compose.project,
+      // SHP-T-16.3: what POST /api/stacks/:name/updates defaults to, and what the console shows.
+      services: entry.services === undefined ? Prisma.DbNull : (entry.services as Prisma.InputJsonValue),
       reportedAt: now,
       retiredAt: null,
     };

@@ -316,7 +316,13 @@ describe('runLoop: lifecycle actions and logs (SHP-T-15.3)', () => {
       if (i === 5) stop.abort();
       const caps = (call.body as { capabilities?: string[] }).capabilities ?? [];
       if (caps.some((c) => c !== 'build')) {
-        throw new AgentRequestError(400, refusal('invalid_request', 'The agent request failed validation.'), 'POST', POLL_PATH);
+        // What that server's body validation answers: the Zod issue path names the field.
+        throw new AgentRequestError(
+          400,
+          refusal('invalid_request', 'The agent request failed validation.', 'capabilities.1: Invalid option: expected "build"'),
+          'POST',
+          POLL_PATH,
+        );
       }
       // Each good poll takes four minutes of the clock.
       clockMs += 4 * 60_000;
@@ -345,6 +351,33 @@ describe('runLoop: lifecycle actions and logs (SHP-T-15.3)', () => {
     expect(delays).toEqual([]);
     expect(warnings).toHaveLength(1);
     expect(EXTENDED_CAPABILITIES_RETRY_MS).toBe(10 * 60_000);
+  });
+
+  it('keeps actions/logs on and backs off normally on a 400 that does not name capabilities', async () => {
+    const stop = new AbortController();
+    const delays: number[] = [];
+    const warnings: object[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 2) stop.abort();
+      throw new AgentRequestError(400, refusal('invalid_request', 'The agent request failed validation.', 'waitSeconds: Too big'), 'POST', POLL_PATH);
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      actions: { offer: () => undefined },
+      logs: { offer: () => undefined },
+      log: { ...quiet, warn: (obj: object) => void warnings.push(obj) },
+      signal: stop.signal,
+      sleep: (ms) => (delays.push(ms), Promise.resolve()),
+      now: () => 0,
+    });
+    expect(client.calls.map((c) => (c.body as { capabilities?: string[] }).capabilities)).toEqual([
+      ['actions', 'logs'],
+      ['actions', 'logs'],
+      ['actions', 'logs'],
+    ]);
+    expect(delays).toEqual([1_000, 2_000]);
+    expect(warnings.every((w) => 'retryInMs' in w && (w as { retryInMs: number }).retryInMs !== 10 * 60_000)).toBe(true);
   });
 
   it('still backs off on a 400 that is not about the capabilities', async () => {

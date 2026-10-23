@@ -219,9 +219,14 @@ export interface LoopOptions {
   now?: () => number;
 }
 
-/** A refusal of the poll body itself: what a server that does not know a capability answers. */
-function refusedPollBody(err: unknown): boolean {
-  return err instanceof AgentRequestError && err.status === 400 && err.refusal?.code === 'invalid_request';
+/**
+ * A server from before SHP-T-15.2 refusing the new capabilities: a 400 `invalid_request` whose
+ * message or fix names `capabilities` (its Zod issue path is `capabilities.<n>`). Any other 400
+ * is an ordinary failed poll, backed off as before, and leaves the capabilities on.
+ */
+function refusedCapabilities(err: unknown): boolean {
+  if (!(err instanceof AgentRequestError) || err.status !== 400 || err.refusal?.code !== 'invalid_request') return false;
+  return `${err.refusal.message} ${err.refusal.fix}`.includes('capabilities');
 }
 
 /**
@@ -271,7 +276,7 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       delay = backoff.initialMs;
     } catch (err) {
       if (stopped()) break;
-      if ((askActions || askLogs) && refusedPollBody(err)) {
+      if ((askActions || askLogs) && refusedCapabilities(err)) {
         // An older server: poll again at once without them, and offer them again later.
         extendedOffUntil = now() + EXTENDED_CAPABILITIES_RETRY_MS;
         if (!degradeWarned) {

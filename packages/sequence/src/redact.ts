@@ -98,28 +98,134 @@ export const MIN_REDACTED_ENV_LENGTH = 9;
 export const MIN_SECRET_LINE_LENGTH = 8;
 
 /**
- * The values to redact from an action's output or a container's logs (SHP-REQ-190): every
- * env-file value of the matching manifest or stack, and every inspected container Env value longer
- * than eight characters. Only values: a variable's name is never a secret and stays readable.
+ * The values to redact from an action's output or a container's logs (SHP-REQ-190, as amended):
+ * every env-file value of four or more characters that is not a boolean or a number of fewer than
+ * six digits, every line of eight or more characters of a multi-line such value, and every
+ * container Env value longer than eight characters. Only values: a variable's name is never a
+ * secret and stays readable.
  *
- * Deliberately, env-file values `redact` already treats as trivial — under four characters,
+ * Deliberately, env-file values `redact` treats as trivial — under four characters,
  * `true`/`false`, digit runs under six — are left out, the same rule step output has followed
  * since SHP-REQ-030: redacting them would blank every `true` and `3000` in a log, and none of
  * them is a secret worth the noise.
  *
  * A multi-line value is kept whole and each of its lines of eight characters or more is added as
- * well, since the log reader matches one line at a time.
+ * well, since the log reader matches one line at a time. Lines shorter than that (a PEM key's
+ * last `Zg==`, say) are accepted residue under the amended SHP-REQ-190: matching every short
+ * fragment would blank ordinary words all over a log.
+ *
+ * `envFileValues` is what `loadRedactionValues` read (or a name → value map, as `loadSecrets`
+ * gives).
  */
-export function redactionValues(envFileSecrets: ReadonlyMap<string, string>, inspectedEnvValues: readonly string[]): string[] {
+export function redactionValues(envFileValues: ReadonlyMap<string, string> | readonly string[], inspectedEnvValues: readonly string[]): string[] {
   const values = new Set<string>();
   const add = (value: string): void => {
     values.add(value);
     if (!/[\r\n]/.test(value)) return;
     for (const line of value.split(/\r?\n|\r/)) if (line.length >= MIN_SECRET_LINE_LENGTH) values.add(line);
   };
-  for (const value of envFileSecrets.values()) if (!isTrivial(value)) add(value);
+  const fromFiles: Iterable<string> = isMap(envFileValues) ? envFileValues.values() : envFileValues;
+  for (const value of fromFiles) if (!isTrivial(value)) add(value);
   for (const value of inspectedEnvValues) if (value.length >= MIN_REDACTED_ENV_LENGTH) add(value);
   return [...values];
+}
+
+function isMap(value: ReadonlyMap<string, string> | readonly string[]): value is ReadonlyMap<string, string> {
+  return value instanceof Map;
+}
+
+const ASSIGNMENT = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=(.*)$/;
+
+/** Without surrounding quotes — also a lone opening or closing one, as on the first and last line of a value spanning lines. */
+function stripQuotes(value: string): string {
+  let v = value.trim();
+  if (v.startsWith('"') || v.startsWith("'")) v = v.slice(1);
+  if (v.endsWith('"') || v.endsWith("'")) v = v.slice(0, -1);
+  return v;
+}
+
+/** godotenv's double-quote escapes, which compose applies: `\n` is a newline, `\"` a quote. */
+function unescapeDoubleQuoted(value: string): string {
+  return value.replace(/\\([nrt"\\$])/g, (_m, c: string) => (c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c));
+}
+
+/** The index of the closing `quote` in `text` from `from`, skipping backslash escapes in double quotes; -1 when none. */
+function closingQuote(text: string, from: number, quote: string): number {
+  for (let i = from; i < text.length; i++) {
+    if (quote === '"' && text[i] === '\\') {
+      i++;
+      continue;
+    }
+    if (text[i] === quote) return i;
+  }
+  return -1;
+}
+
+/**
+ * Every value in an env file that redaction must catch, read the way compose reads the file
+ * (SHP-REQ-190): a single- or double-quoted value may span lines and loses its quotes (a double-
+ * quoted one is taken both as written and with its escapes expanded), an unterminated quote runs
+ * to the end of the file, and an unquoted value is the rest of its line. Belt and braces, every
+ * line of the file that is not a `KEY=` assignment, and every assignment's value as written, are
+ * added too when eight or more characters long once surrounding quotes are stripped — so a value
+ * this reader misjudges still has its lines redacted.
+ *
+ * For redaction only: G9's env names, build secrets and deploy step output keep `parseEnvFile`.
+ */
+export function envFileRedactionValues(text: string): string[] {
+  const out = new Set<string>();
+  const addLong = (value: string): void => {
+    const v = stripQuotes(value);
+    if (v.length >= MIN_SECRET_LINE_LENGTH) out.add(v);
+  };
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i] ?? '';
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith('#')) continue;
+    const m = ASSIGNMENT.exec(line);
+    if (m === null) {
+      addLong(line);
+      continue;
+    }
+    const rest = (m[2] ?? '').trimStart();
+    addLong(rest);
+    const quote = rest[0];
+    if (quote !== '"' && quote !== "'") {
+      out.add(rest.trim());
+      // An unquoted value ends at an inline comment, as compose reads it.
+      const hash = rest.search(/\s#/);
+      if (hash !== -1) out.add(rest.slice(0, hash).trim());
+      continue;
+    }
+    // A quoted value: find its end, on this line or a later one.
+    let body = rest.slice(1);
+    let end = closingQuote(body, 0, quote);
+    let j = i;
+    while (end === -1 && j + 1 < lines.length) {
+      j++;
+      const from = body.length + 1;
+      body = `${body}\n${lines[j] ?? ''}`;
+      end = closingQuote(body, from, quote);
+    }
+    const value = end === -1 ? body : body.slice(0, end);
+    out.add(value);
+    if (quote === '"') out.add(unescapeDoubleQuoted(value));
+    // Every line the value spanned is also a line of the file.
+    for (let k = i + 1; k <= j; k++) addLong(lines[k] ?? '');
+    i = j;
+  }
+  return [...out].filter((v) => v.length > 0);
+}
+
+/** The redaction values of every env file (see `envFileRedactionValues`); a missing file is an error naming it. */
+export async function loadRedactionValues(fs: FsPort, envFiles: string[] | undefined): Promise<string[]> {
+  const values: string[] = [];
+  for (const file of envFiles ?? []) {
+    if (!(await fs.exists(file))) throw new Error(`env file does not exist: ${file}`);
+    values.push(...envFileRedactionValues(await fs.readFile(file)));
+  }
+  return values;
 }
 
 /**

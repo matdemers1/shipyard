@@ -3,7 +3,7 @@ import {
   ACTION_STEP,
   ManifestLoadError,
   createRedactor,
-  loadSecrets,
+  loadRedactionValues,
   redactionValues,
   type Clock,
   type ComposeTarget,
@@ -226,9 +226,9 @@ export function createActionRunner(opts: ActionRunnerOptions): ActionRunner {
       return refused(job, refusal('locked', `A deploy of ${name} is running on this host; the ${job.verb} was not run.`));
     }
 
-    let secrets: Map<string, string>;
+    let secrets: string[];
     try {
-      secrets = await loadSecrets(fs, resolved.envFiles);
+      secrets = await loadRedactionValues(fs, resolved.envFiles);
     } catch (err) {
       // Without the env file its values cannot be redacted, so nothing is run (SHP-REQ-190).
       return refused(job, refusal('manifest_invalid', `The ${kind} ${name}: ${message(err)}`));

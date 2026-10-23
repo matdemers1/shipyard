@@ -2,7 +2,7 @@ import { LOGS_MAX_FOLLOW_SECONDS, LogsChunkAck, refusal, type LogLine, type Logs
 import {
   ManifestLoadError,
   createRedactor,
-  loadSecrets,
+  loadRedactionValues,
   redactionValues,
   safeCut,
   type DockerPort,
@@ -133,9 +133,9 @@ export function createLogsRunner(opts: LogsRunnerOptions): LogsRunner {
         return err instanceof ManifestLoadError ? err.toRefusal() : refusal('manifest_invalid', `The host's manifests could not be read: ${message(err)}`);
       }
     }
-    let secrets: Map<string, string>;
+    let secrets: string[];
     try {
-      secrets = await loadSecrets(fs, envFiles);
+      secrets = await loadRedactionValues(fs, envFiles);
     } catch (err) {
       return refusal('manifest_invalid', `The container's env file could not be read, so its logs cannot be redacted: ${message(err)}`);
     }
@@ -170,6 +170,8 @@ export function createLogsRunner(opts: LogsRunnerOptions): LogsRunner {
     // every secret is redacted whole however a line was cut (SHP-REQ-190).
     const keep = Math.max(0, ...values.map((v) => v.length - 1));
     const carry = { stdout: '', stderr: '' };
+    // The timestamp of a piece carried over whole, for the piece that finally sends its text.
+    const carriedAt: { stdout: string | null; stderr: string | null } = { stdout: null, stderr: null };
     const readLogs = docker.containerLogs?.bind(docker);
     if (readLogs === undefined) return;
 
@@ -216,11 +218,16 @@ export function createLogsRunner(opts: LogsRunnerOptions): LogsRunner {
         if (abort.signal.aborted) break;
         let raw = carry[line.stream] + line.text;
         carry[line.stream] = '';
+        const at = carriedAt[line.stream] ?? line.at;
+        carriedAt[line.stream] = null;
         if (line.continues === true) {
           const cut = safeCut(raw, values, raw.length - keep);
           carry[line.stream] = raw.slice(cut);
           raw = raw.slice(0, cut);
-          if (raw.length === 0) continue;
+          if (raw.length === 0) {
+            carriedAt[line.stream] = at;
+            continue;
+          }
         }
         // Redacted whole, then cut to the protocol's 16 KiB: a cut can never leave part of a secret behind.
         const text = redact(raw).slice(0, MAX_LINE_CHARS);
@@ -231,7 +238,7 @@ export function createLogsRunner(opts: LogsRunnerOptions): LogsRunner {
         }
         bytes += size;
         lines += 1;
-        buffer.push({ at: line.at, stream: line.stream, text });
+        buffer.push({ at, stream: line.stream, text });
         if (buffer.length >= chunkLines) await flush();
       }
     } catch (err) {

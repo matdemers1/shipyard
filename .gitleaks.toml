@@ -45,4 +45,9 @@ regexes = [
   # header followed by a JS string-array separator — `-----BEGIN PRIVATE KEY-----', ` — which only an
   # array of lines in test source produces, never a real key file. Their bodies are not keys.
   '''-----BEGIN PRIVATE KEY-----', ''',
+
+  # The registry adapter tests' docker-config `auth` value (SHP-T-16.2): base64 of `hub:secret`, a
+  # made-up user and password for a fake Docker Hub. Pinned to the exact literal, which stays in
+  # history at 14106f5.
+  '''aHViOnNlY3JldA==''',
 ]

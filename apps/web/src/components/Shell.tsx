@@ -23,8 +23,9 @@ import { NAV_ITEMS, isNavCurrent } from '../nav';
 
 /**
  * The signed-in frame: the design system's AppShell. At `lg` and up a sidebar; below it (every
- * phone, 375 px included) a top bar and a bottom tab bar — no horizontal scroll. The three
- * destinations are the same in both (SHP-REQ-159).
+ * phone, 375 px included) a top bar and a bottom tab bar — no horizontal scroll. The four
+ * destinations (NAV_ITEMS: Apps, Activity, Host, Settings) are the same in both (SHP-REQ-159,
+ * SHP-ADR-009).
  */
 
 /** Light ↔ dark in one tap. The account menu also offers "system". */

@@ -19,11 +19,11 @@ function renderAt(path: string) {
 const wrapper = ({ children }: { children: ReactNode }) => <AuthProvider>{children}</AuthProvider>;
 
 describe('role-aware navigation', () => {
-  it('shows a viewer the same three destinations, and useCan() is false', async () => {
+  it('shows a viewer the same four destinations, and useCan() is false', async () => {
     mockFetch({ 'GET /api/auth/me': meReply('viewer') });
     renderAt('/');
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Settings']);
+    expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Host', 'Settings']);
 
     const { result } = renderHook(() => useCan(), { wrapper });
     await waitFor(() => {
@@ -31,11 +31,11 @@ describe('role-aware navigation', () => {
     });
   });
 
-  it.each(['deployer', 'operator', 'admin'] as const)('shows %s the three destinations, and useCan() is true', async (role) => {
+  it.each(['deployer', 'operator', 'admin'] as const)('shows %s the four destinations, and useCan() is true', async (role) => {
     mockFetch({ 'GET /api/auth/me': meReply(role) });
     renderAt('/');
     const nav = await screen.findByRole('navigation', { name: 'Main' });
-    expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Settings']);
+    expect(within(nav).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Host', 'Settings']);
 
     const { result } = renderHook(() => useCan(), { wrapper });
     await waitFor(() => {
@@ -120,7 +120,7 @@ describe('phone layout', () => {
     expect(screen.getByRole('link', { name: /skip to content/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /switch to (light|dark) theme/i })).toBeInTheDocument();
     const bar = screen.getByRole('navigation', { name: 'Primary' });
-    expect(within(bar).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Settings']);
+    expect(within(bar).getAllByRole('link').map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Host', 'Settings']);
 
     // The menu button now opens the account, not a second copy of the navigation.
     const menus = screen.getAllByRole('button', { name: /menu|navigation/i });

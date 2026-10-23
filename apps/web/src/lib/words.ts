@@ -1,5 +1,5 @@
 // Types only: a runtime import of the schema package would put zod and every schema in the bundle.
-import type { BuildState, DeployTargetState, Gate } from '@shipyard/schema';
+import type { BuildState, ContainerHealth, ContainerState, ContainerTier, DeployTargetState, Gate } from '@shipyard/schema';
 import type { CommitEntry, CommitsInfo } from './home';
 
 /**
@@ -188,3 +188,35 @@ export function checkName(gate: string, options: { branch?: string | null } = {}
   const branch = options.branch ?? null;
   return gate === 'G6' && branch !== null && branch !== '' ? `On ${branch}` : CHECK_NAMES[gate as Gate];
 }
+
+// ── Host ─────────────────────────────────────────────────────────────────
+
+/**
+ * A container's tier as the console says it (SHP-ADR-008 amendment, SHP-REQ-165): the API value
+ * for a D3 app Shipyard deploys keeps its name, but a person reads **Deployed** — the retired verb
+ * never comes back as a label. A total record, so a tier the schema gains fails the typecheck here.
+ */
+export const TIER_WORDS: Record<ContainerTier, string> = {
+  shipped: 'Deployed',
+  operated: 'Operated',
+  observed: 'Observed',
+};
+
+/** Docker's container states, as the Host destination says them (SHP-REQ-178). */
+export const CONTAINER_STATE_WORDS: Record<ContainerState, string> = {
+  created: 'Created',
+  running: 'Running',
+  paused: 'Paused',
+  restarting: 'Restarting',
+  removing: 'Removing',
+  exited: 'Exited',
+  dead: 'Dead',
+};
+
+/** A running container's own healthcheck, after "Running · "; nothing when it declares none. */
+export const HEALTH_WORDS: Record<ContainerHealth, string> = {
+  healthy: 'healthy',
+  unhealthy: 'unhealthy',
+  starting: 'starting',
+  none: '',
+};

@@ -1348,3 +1348,315 @@
     line-height: var(--leading-13);
   }
 }
+
+/* Host (SHP-T-14.7, SHP-REQ-178): everything Docker runs, read-only. Phone first — a container is a
+   name with its state, then one line of use; from 900 px of list width each fact has a column. */
+@layer shipyard {
+  .shp-host-muted,
+  .shp-host-foot {
+    margin: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+    overflow-wrap: anywhere;
+  }
+  .shp-host-stale {
+    margin: 0;
+  }
+  .shp-host-heading,
+  .shp-host-tile__foot {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-8);
+  }
+  .shp-host-agent-heading {
+    margin: 0;
+    font-size: var(--text-16);
+    overflow-wrap: anywhere;
+  }
+  .shp-host-tiles {
+    min-width: 0;
+  }
+  .shp-host-tiles * {
+    overflow-wrap: anywhere;
+  }
+  /* The build cache and the agent's line are the desktop's extra detail. */
+  @media (max-width: 1023.98px) {
+    .shp-host-wide,
+    .shp-host-agent {
+      display: none;
+    }
+  }
+
+  /* The chips scroll sideways inside their own row rather than widening the page. */
+  .shp-host-chips {
+    display: flex;
+    gap: var(--space-8);
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: var(--space-2);
+  }
+  .shp-host-chips > * {
+    flex: none;
+  }
+  .shp-host-chips__count {
+    margin-left: var(--space-4);
+    color: var(--color-fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Containers, grouped. */
+  .shp-hostgroups {
+    container-type: inline-size;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .shp-hg + .shp-hg {
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-hg__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4) var(--space-12);
+    padding: 0 var(--space-12) 0 var(--space-4);
+    background: var(--color-surface-card);
+  }
+  .shp-hg__toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-8);
+    min-width: 0;
+    min-height: calc(var(--space-40) + var(--space-4));
+    padding: 0 var(--space-8);
+    border: 0;
+    background: none;
+    color: var(--color-fg);
+    font: inherit;
+    font-weight: var(--weight-semibold);
+    text-align: left;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+  .shp-hg__toggle:focus-visible {
+    outline: var(--focus-width) solid var(--color-focus);
+    outline-offset: calc(-1 * var(--focus-width));
+  }
+  .shp-hg__chevron {
+    flex: none;
+    color: var(--color-fg-muted);
+  }
+  .shp-hg__chevron[data-open] {
+    transform: rotate(90deg);
+  }
+  .shp-hg__count {
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
+  .shp-hg__link {
+    margin-left: auto;
+    font-size: var(--text-13);
+  }
+  .shp-hg__rows {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .shp-hc {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'name status'
+      'line line';
+    align-items: center;
+    gap: var(--space-2) var(--space-12);
+    padding: var(--space-12) var(--space-16) var(--space-12) var(--space-40);
+    border-top: var(--border-width) solid var(--color-border);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-hc__name {
+    grid-area: name;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .shp-hc__title {
+    font-weight: var(--weight-medium);
+  }
+  .shp-hc__service {
+    display: none;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
+  .shp-hc__status {
+    grid-area: status;
+    white-space: nowrap;
+  }
+  .shp-hc__words,
+  .shp-hc__image,
+  .shp-hc__restarts,
+  .shp-hc__cpu,
+  .shp-hc__mem,
+  .shp-hc__spark {
+    display: none;
+  }
+  .shp-hc__line {
+    grid-area: line;
+    min-width: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    overflow-wrap: anywhere;
+  }
+  .shp-spark {
+    display: block;
+    color: var(--color-accent);
+  }
+
+  @container (min-width: 900px) {
+    .shp-hc {
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.6fr) minmax(0, 1fr) 6.5rem 4rem minmax(0, 0.8fr) 4.5rem;
+      grid-template-areas: 'name image status restarts cpu mem spark';
+      column-gap: var(--space-16);
+    }
+    .shp-hc__service,
+    .shp-hc__words {
+      display: inline;
+    }
+    .shp-hc__short,
+    .shp-hc__line {
+      display: none;
+    }
+    .shp-hc__image,
+    .shp-hc__restarts,
+    .shp-hc__cpu,
+    .shp-hc__mem,
+    .shp-hc__spark {
+      display: block;
+      min-width: 0;
+    }
+    .shp-hc__image {
+      grid-area: image;
+      overflow: hidden;
+      font-family: var(--font-mono);
+      font-size: var(--text-13);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .shp-hc__restarts {
+      grid-area: restarts;
+      color: var(--color-fg-muted);
+      font-size: var(--text-13);
+    }
+    .shp-hc__restarts[data-some] {
+      color: var(--color-fg);
+      font-weight: var(--weight-medium);
+    }
+    .shp-hc__cpu {
+      grid-area: cpu;
+      font-variant-numeric: tabular-nums;
+    }
+    .shp-hc__mem {
+      grid-area: mem;
+      font-variant-numeric: tabular-nums;
+    }
+    .shp-hc__spark {
+      grid-area: spark;
+    }
+  }
+
+  /* Volumes and images. */
+  .shp-hostcard {
+    container-type: inline-size;
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .shp-hostcard__foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-8);
+    padding: var(--space-8) var(--space-16);
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-hv-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .shp-hv {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'name size'
+      'mounts badge';
+    align-items: center;
+    gap: var(--space-2) var(--space-12);
+    padding: var(--space-12) var(--space-16);
+    font-size: var(--text-14);
+    line-height: var(--leading-20);
+  }
+  .shp-hv + .shp-hv {
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .shp-hv__name {
+    grid-area: name;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-13);
+    overflow-wrap: anywhere;
+  }
+  .shp-hv__size {
+    grid-area: size;
+    text-align: right;
+    white-space: nowrap;
+  }
+  .shp-hv__mounts {
+    grid-area: mounts;
+    min-width: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    overflow-wrap: anywhere;
+  }
+  .shp-hv__project {
+    display: none;
+  }
+  .shp-hv__badge {
+    grid-area: badge;
+    justify-self: end;
+  }
+  @container (min-width: 760px) {
+    .shp-hv {
+      grid-template-columns: minmax(0, 1.4fr) 6rem minmax(0, 2fr) minmax(0, 1fr) 6.5rem;
+      grid-template-areas: 'name size mounts project badge';
+      column-gap: var(--space-16);
+    }
+    .shp-hv__size {
+      text-align: left;
+    }
+    .shp-hv__project {
+      display: block;
+      grid-area: project;
+      min-width: 0;
+      color: var(--color-fg-muted);
+      font-size: var(--text-13);
+      overflow-wrap: anywhere;
+    }
+    .shp-hv__badge {
+      justify-self: start;
+    }
+  }
+  .shp-host-images {
+    margin: 0 0 var(--space-4);
+    overflow-wrap: anywhere;
+  }
+}

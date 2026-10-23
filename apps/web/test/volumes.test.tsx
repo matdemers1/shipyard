@@ -1,8 +1,10 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MaintenanceState, MaintenanceStep, type HostContainer, type HostSnapshot, type HostVolume, type MaintenanceStatus, type PruneItem, type VolumeArchive } from '@shipyard/schema';
+import { StrictMode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { App } from '../src/App';
+import { PruneSheet } from '../src/screens/host/PruneSheet';
 import type { Role } from '../src/lib/api';
 import {
   archiveTime,
@@ -13,6 +15,7 @@ import {
   rowActions,
   safetyArchiveLine,
   sortVolumeRows,
+  volumeOwners,
   volumeRows,
 } from '../src/lib/maintenance';
 import { needsYouItems } from '../src/lib/needsyou';
@@ -136,19 +139,32 @@ function refusal(code: string, message: string, fix: string, status: number): Re
 
 const STEP_UP_REQUIRED = refusal('step_up_required', 'Confirm it’s you before restoring or deleting a volume.', 'Enter a code from your authenticator, then retry within ten minutes.', 403);
 
+/** An app row as `GET /api/apps` sends it, with the compose project its manifest names. */
+function appRow(name: string, composeProject: string | null = name) {
+  return { name, repo: null, defaultBranch: 'main', liveSha: null, reportedAt: null, drift: null, approvalPolicy: 'none', frozen: false, active: null, composeProject };
+}
+
+/** An adopted stack as `GET /api/stacks` sends it, adopted for lifecycle only. */
+function stackRow(name: string) {
+  return { name, composeProject: name, updates: 'none', approval: null, soakSeconds: null, services: [], reportedAt: new Date().toISOString(), activeUpdate: null, lastUpdate: null };
+}
+
+/** The unretired app bindery and the adopted stack forgejo: what owns a volume here. */
+const OWNERS = volumeOwners([{ name: 'bindery', composeProject: 'bindery' }], [{ name: 'forgejo', composeProject: 'forgejo' }]);
+
 type Route = Reply | Reply[] | ((init: RequestInit | undefined) => Reply);
 
 function hostRoutes(role: Role, extra: Record<string, Route> = {}, volumes: HostVolume[] = VOLUMES): Call[] {
   return mockFetch({
     'GET /api/auth/me': meReply(role),
-    'GET /api/apps': { status: 200, body: { apps: [] } },
+    'GET /api/apps': { status: 200, body: { apps: [appRow('bindery')] } },
     'GET /api/approvals': { status: 200, body: [] },
     'GET /api/agent': { status: 200, body: [] },
     'GET /api/system': { status: 403, body: { error: { code: 'forbidden', gate: 'none', message: 'no', fix: 'no' } } },
     'GET /api/stack-updates/needs-you': { status: 200, body: { approvals: [], failed: [] } },
     'GET /api/maintenance/needs-you': { status: 200, body: { failedBackups: [], lowDisk: [] } },
     'GET /api/host': { status: 200, body: { hosts: [snapshot(volumes)] } },
-    'GET /api/stacks': { status: 200, body: { stacks: [] } },
+    'GET /api/stacks': { status: 200, body: { stacks: [stackRow('forgejo')] } },
     'GET /api/volumes/forgejo_data/archives': { status: 200, body: { archives: ARCHIVES } },
     'GET /api/volumes/bindery_pgdata/archives': { status: 200, body: { archives: [] } },
     'GET /api/volumes/bindery_cache/archives': { status: 200, body: { archives: [] } },
@@ -182,7 +198,7 @@ function buttonsOf(row: HTMLElement): string[] {
 // ── The model ────────────────────────────────────────────────────────────
 
 describe('whose volume it is (SHP-ADR-012)', () => {
-  const rows = volumeRows(snapshot().inventory);
+  const rows = volumeRows(snapshot().inventory, OWNERS);
   const kindOf = (name: string) => rows.find((r) => r.volume.name === name)?.kind;
 
   it('owns a volume a Deployed app or Operated stack mounts, and leaves the rest to their kind', () => {
@@ -196,8 +212,24 @@ describe('whose volume it is (SHP-ADR-012)', () => {
   });
 
   it('counts an orphan labelled with an adopted stack’s project as claimed', () => {
-    const adopted = volumeRows({ containers: [], volumes: [volume('immich_old', { orphan: true, composeProject: 'immich' })] }, [{ name: 'immich', composeProject: 'immich' }]);
+    const adopted = volumeRows({ containers: [], volumes: [volume('immich_old', { orphan: true, composeProject: 'immich' })] }, volumeOwners([], [{ name: 'immich', composeProject: 'immich' }]));
     expect(adopted[0]?.kind).toBe('claimed');
+  });
+
+  it('keeps Delete off an app’s volume once its last container is gone (a compose down)', () => {
+    // kardashev is an unretired app with no container left on the host: its volume is claimed.
+    const owners = volumeOwners([{ name: 'kardashev', composeProject: 'kardashev' }], []);
+    const rows = volumeRows({ containers: [], volumes: [volume('kardashev_pgdata', { orphan: true, composeProject: 'kardashev' })] }, owners);
+    expect(rows[0]?.kind).toBe('claimed');
+    expect(rows[0]?.owner).toEqual({ kind: 'app', name: 'kardashev', project: 'kardashev' });
+    expect(rowActions(rows[0] ?? { kind: 'orphan' }, 'admin', null).remove).toBe(false);
+  });
+
+  it('owns nothing by a container’s own word: a retired app’s volume is Observed, its orphan deletable', () => {
+    // The agent still tiers bindery's container Deployed, but bindery is no longer in GET /api/apps.
+    const rows = volumeRows(snapshot().inventory, volumeOwners([], [{ name: 'forgejo', composeProject: 'forgejo' }]));
+    expect(rows.find((r) => r.volume.name === 'bindery_pgdata')?.kind).toBe('observed');
+    expect(rows.find((r) => r.volume.name === 'bindery_cache')?.kind).toBe('orphan');
   });
 
   it('sorts orphans first, then owned, then Observed, the largest first in each', () => {
@@ -391,7 +423,7 @@ describe('the restore sheet (SHP-REQ-202)', () => {
     const chips = [...sheet.querySelectorAll('.shp-stack-chain__chip')].map((c) => c.textContent);
     expect(chips[0]).toBe('Stop forgejo (2 containers)');
     expect(chips[1]).toBe('Empty forgejo_data');
-    expect(chips[2]).toMatch(/^Unpack the Today \d\d:\d\d archive$/);
+    expect(chips[2]).toMatch(/^Unpack the (Today|Yesterday) \d\d:\d\d archive$/);
     expect(chips.slice(3)).toEqual(['Start forgejo', 'Health']);
     expect(within(sheet).getByText('Admin · console only. Restore is never offered over MCP.')).toBeInTheDocument();
 
@@ -406,10 +438,16 @@ describe('the restore sheet (SHP-REQ-202)', () => {
     expect(go).toBeDisabled();
     await user.type(name, '{Backspace}');
     expect(within(sheet).getByText('Matches the volume name')).toBeInTheDocument();
+    // The name alone is not enough: the step-up code comes first (SHP-ADR-012 amendment).
+    expect(go).toBeDisabled();
+    const code = within(sheet).getByLabelText('Authenticator code');
+    await user.type(code, '48291');
+    expect(go).toBeDisabled();
+    await user.type(code, '3');
     expect(go).toBeEnabled();
   });
 
-  it('asks for a code on step_up_required, steps up, and asks again once', async () => {
+  it('steps up before it asks; when the server still wants one, the code field says so and the next code goes first again', async () => {
     const user = userEvent.setup();
     const calls = hostRoutes('admin', {
       'POST /api/volumes/forgejo_data/restore': [
@@ -427,27 +465,61 @@ describe('the restore sheet (SHP-REQ-202)', () => {
     await within(sheet).findAllByRole('radio');
     await user.type(within(sheet).getByLabelText('Type forgejo_data to confirm'), 'forgejo_data');
     const go = within(sheet).getByRole('button', { name: 'Restore forgejo_data' });
-    await user.click(go);
-
-    // The server wants a fresh step-up: the code field says so, verbatim, and the button waits for it.
-    expect(await within(sheet).findByText(/Confirm it’s you before restoring or deleting a volume\./)).toBeInTheDocument();
     expect(go).toBeDisabled();
     await user.type(within(sheet).getByLabelText('Authenticator code'), '482 913');
     expect(go).toBeEnabled();
     await user.click(go);
 
+    // The server still wants a fresh step-up: the code field says so, verbatim, and asks for a new code.
+    expect(await within(sheet).findByText(/Confirm it’s you before restoring or deleting a volume\./)).toBeInTheDocument();
+    expect(within(sheet).getByLabelText('Authenticator code')).toHaveValue('');
+    expect(go).toBeDisabled();
+    await user.type(within(sheet).getByLabelText('Authenticator code'), '105 228');
+    await user.click(go);
+
     expect(await within(sheet).findByText('Restored forgejo_data')).toBeInTheDocument();
     expect(within(sheet).getByText(`Safety archive of what forgejo_data held before the restore: ${OLDER}.`)).toBeInTheDocument();
-    expect(posts(calls, '/api/auth/step-up').map((c) => c.body)).toEqual([{ code: '482913' }]);
-    const restores = posts(calls, '/api/volumes/forgejo_data/restore');
-    expect(restores.map((c) => c.body)).toEqual([
+    expect(posts(calls, '/api/auth/step-up').map((c) => c.body)).toEqual([{ code: '482913' }, { code: '105228' }]);
+    expect(posts(calls, '/api/volumes/forgejo_data/restore').map((c) => c.body)).toEqual([
       { archiveId: OLDER, confirmVolume: 'forgejo_data' },
       { archiveId: OLDER, confirmVolume: 'forgejo_data' },
     ]);
-    // The step-up came between the two asks.
+    // Each ask follows its own step-up.
     const order = calls.filter((c) => c.method === 'POST').map((c) => c.path);
-    expect(order).toEqual(['/api/volumes/forgejo_data/restore', '/api/auth/step-up', '/api/volumes/forgejo_data/restore']);
+    expect(order).toEqual(['/api/auth/step-up', '/api/volumes/forgejo_data/restore', '/api/auth/step-up', '/api/volumes/forgejo_data/restore']);
     expect(within(sheet).getByRole('button', { name: 'Done' })).toBeInTheDocument();
+  });
+
+  it('says so when a link names an archive that is not in the ledger, and picks nothing', async () => {
+    const user = userEvent.setup();
+    hostRoutes('admin');
+    renderAt('/host?volume=forgejo_data&restore=00000000-0000-4000-8000-000000000000');
+    const sheet = await screen.findByRole('dialog', { name: 'Restore forgejo_data' });
+    expect(await within(sheet).findByText('That archive is not in the ledger')).toBeInTheDocument();
+    const radios = within(sheet).getAllByRole('radio');
+    for (const r of radios) expect(r).not.toBeChecked();
+    await user.type(within(sheet).getByLabelText('Type forgejo_data to confirm'), 'forgejo_data');
+    await user.type(within(sheet).getByLabelText('Authenticator code'), '123456');
+    const go = within(sheet).getByRole('button', { name: 'Restore forgejo_data' });
+    expect(go).toBeDisabled();
+    await user.click(radios[0] as HTMLElement);
+    expect(go).toBeEnabled();
+    expect(within(sheet).queryByText('That archive is not in the ledger')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['restore', 'portainer_data', 'Restore portainer_data', 'Only Observed containers mount portainer_data. Shipyard shows it and never touches it.'],
+    ['restore', 'kardashev_pgdata', 'Restore kardashev_pgdata', 'No app or stack owns kardashev_pgdata, so there is nothing to restore it for. An admin can delete it from its row.'],
+    ['delete', 'bindery_pgdata', 'Delete bindery_pgdata', 'bindery_pgdata belongs to bindery. Shipyard deletes only orphans no app or stack claims.'],
+    ['delete', 'bindery_cache', 'Delete bindery_cache', 'Nothing mounts bindery_cache, but its compose label names bindery, so Shipyard never deletes it.'],
+  ] as const)('a %s link on %s explains itself instead of a dead sheet', async (what, volumeName, title, words) => {
+    const calls = hostRoutes('admin');
+    renderAt(what === 'restore' ? `/host?volume=${volumeName}&restore=${NEWER}` : `/host?volume=${volumeName}&delete=1`);
+    const sheet = await screen.findByRole('dialog', { name: title });
+    expect(within(sheet).getByText(words)).toBeInTheDocument();
+    expect(within(sheet).queryByRole('button', { name: title })).not.toBeInTheDocument();
+    expect(within(sheet).queryByLabelText('Authenticator code')).not.toBeInTheDocument();
+    expect(calls.filter((c) => c.method === 'POST')).toEqual([]);
   });
 
   it('shows a wrong code by its field, and does not sign the person out', async () => {
@@ -624,6 +696,29 @@ describe('prune from a dry run (SHP-REQ-205)', () => {
       expect(screen.queryByRole('dialog', { name: 'Prune images and build cache' })).not.toBeInTheDocument();
     });
     expect(screen.getByText('Freed 1.2 GB')).toBeInTheDocument();
+  });
+
+  it('completes the dry run under StrictMode: one request, followed to its list', async () => {
+    let reads = 0;
+    const calls = mockFetch({
+      'POST /api/prune': { status: 202, body: prune(DRY, {}) },
+      [`GET /api/maintenance/${DRY}`]: () => {
+        reads += 1;
+        return reads === 1
+          ? { status: 200, body: prune(DRY, { state: 'running', step: 'listing' }) }
+          : { status: 200, body: prune(DRY, { state: 'succeeded', finishedAt: new Date().toISOString(), prune: { items, reclaimableBytes: total, reclaimedBytes: null } }) };
+      },
+    });
+    render(
+      <StrictMode>
+        <PruneSheet role="deployer" onClose={() => undefined} onPruned={() => undefined} />
+      </StrictMode>,
+    );
+    const sheet = await screen.findByRole('dialog', { name: 'Prune images and build cache' });
+    expect(await within(sheet).findByText('1.2 GB back')).toBeInTheDocument();
+    expect(reads).toBe(2);
+    expect(posts(calls, '/api/prune')).toHaveLength(1);
+    expect(within(sheet).getByRole('button', { name: 'Prune these' })).toBeEnabled();
   });
 
   it('shows a refused dry run verbatim and offers nothing to prune', async () => {

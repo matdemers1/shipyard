@@ -11,6 +11,7 @@ import {
   VOLUME_NOT_FOUND,
   deleteInUseWords,
   deleteIntroWords,
+  deleteNotOfferedWords,
   deleteTitle,
   deleteVerb,
   deleteWarningWords,
@@ -60,13 +61,22 @@ export function DeleteSheet({ volume, row, role, onClose, onChanged }: DeleteShe
     );
   }
 
+  if (row.kind !== 'orphan') {
+    return (
+      <Modal open onOpenChange={onOpenChange} title={deleteTitle(volume)} closeLabel={SHEET_WORDS.close} size="md">
+        <p>{deleteNotOfferedWords(volume, row.kind, row.owner?.name ?? null)}</p>
+      </Modal>
+    );
+  }
+
   const v = row.volume;
   const admin = canRestoreOrDelete(role);
   const busy = isMaintenanceBusy(phase);
   const finished = phase.kind === 'done';
   const locked = busy || finished;
-  const canSubmit = admin && row.kind === 'orphan' && confirmMatches(typed, volume) && stepUp.ready && !locked;
+  const canSubmit = admin && confirmMatches(typed, volume) && stepUp.ready && !locked;
   const stepUpShown = phase.kind === 'refused' && phase.error === stepUp.error;
+  // The frame's Labels and Mountpoint rows are left out: the host inventory API carries neither.
   const facts: [string, string][] = [
     [DELETE_FACTS.size, bytes(v.sizeBytes)],
     [DELETE_FACTS.created, createdWords(v.createdAt)],

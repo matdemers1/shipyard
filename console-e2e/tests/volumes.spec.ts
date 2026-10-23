@@ -5,6 +5,7 @@ import { withDb } from '../harness/db.js';
 import { USERS, storageStateFor } from '../harness/env.js';
 import { setHostReportedAt } from '../harness/host.js';
 import { fixture, reseedWorld } from '../harness/seed.js';
+import { nextStep, totpFor } from '../harness/sign-in.js';
 import { VOLUME_FIXTURE, seedMaintenanceJobs, seedVolumeArchives } from '../harness/volumes.js';
 
 /**
@@ -18,14 +19,15 @@ import { VOLUME_FIXTURE, seedMaintenanceJobs, seedVolumeArchives } from '../harn
  *
  * This harness runs no agent, so the server does what it really does then: a backup or a prune's
  * dry run is refused `agent_offline` at once (capabilityRefusal), and the console shows that
- * refusal's message and fix verbatim. The admin's session has not stepped up, so a restore or a
- * delete is refused `step_up_required` before anything else, and the code field says so. The prune
- * sheet's listed state needs a dry run an agent would have run: that one is faked with page.route.
+ * refusal's message and fix verbatim. Restore and delete enable only on the exact name and a
+ * six-digit code; one restore steps up with the admin's real code (a fresh TOTP step) and is then
+ * refused `agent_offline`. No wrong code is ever sent: failed codes count towards the admin's
+ * sign-in throttle. The prune sheet's listed state needs a dry run an agent would have run: that one
+ * is faked with page.route.
  */
 
 const OFFLINE_MESSAGE = 'The agent that runs this has not polled the server recently.';
 const OFFLINE_FIX = 'Check the agent is running and can reach the server, then retry.';
-const STEP_UP_MESSAGE = 'Confirm it’s you before restoring or deleting a volume.';
 const OWNED = VOLUME_FIXTURE.owned;
 const ORPHAN = VOLUME_FIXTURE.orphan;
 
@@ -130,7 +132,7 @@ for (const width of ['desktop', 'phone'] as const satisfies readonly Width[]) {
         await expectClean(page, `Backup refused (${theme}, ${width})`, width);
       });
 
-      test('the restore sheet: what is replaced, the chain, the archives, the typed name; without a step-up the code is asked for — axe clean', async ({ page }) => {
+      test('the restore sheet: what is replaced, the chain, the archives, the typed name and the code — axe clean', async ({ page }) => {
         await forceTheme(page, theme);
         await openHost(page, `/host?volume=${OWNED}&restore=${VOLUME_FIXTURE.olderArchive}`);
         const sheet = page.getByRole('dialog', { name: `Restore ${OWNED}` });
@@ -149,13 +151,11 @@ for (const width of ['desktop', 'phone'] as const satisfies readonly Width[]) {
 
         await sheet.getByLabel(`Type ${OWNED} to confirm`).fill(OWNED);
         await expect(sheet.getByText('Matches the volume name')).toBeVisible();
-        await expect(go).toBeEnabled();
-        await go.click();
-        // No step-up on this session: the server asks for one, and the code field says so verbatim.
-        await expect(sheet.getByText(STEP_UP_MESSAGE)).toBeVisible();
+        // The name alone is not enough: the step-up code comes first (SHP-ADR-012 amendment).
         await expect(go).toBeDisabled();
-        await expect(sheet.getByLabel('Authenticator code')).toBeVisible();
-        await expectClean(page, `Restore asks for a step-up (${theme}, ${width})`, width);
+        await sheet.getByLabel('Authenticator code').fill('123456');
+        await expect(go).toBeEnabled();
+        await expectClean(page, `Restore ready (${theme}, ${width})`, width);
       });
 
       test('the delete sheet: the facts, that it cannot be undone, the typed name and step-up — axe clean', async ({ page }) => {
@@ -169,10 +169,12 @@ for (const width of ['desktop', 'phone'] as const satisfies readonly Width[]) {
         await expectClean(page, `Delete sheet (${theme}, ${width})`, width);
         await expectSheetPlacement(page, width);
 
+        const go = sheet.getByRole('button', { name: `Delete ${ORPHAN}` });
         await sheet.getByLabel(`Type ${ORPHAN} to confirm`).fill(ORPHAN);
-        await sheet.getByRole('button', { name: `Delete ${ORPHAN}` }).click();
-        await expect(sheet.getByText(STEP_UP_MESSAGE)).toBeVisible();
-        await expectClean(page, `Delete asks for a step-up (${theme}, ${width})`, width);
+        await expect(go).toBeDisabled();
+        await sheet.getByLabel('Authenticator code').fill('123456');
+        await expect(go).toBeEnabled();
+        await expectClean(page, `Delete ready (${theme}, ${width})`, width);
       });
 
       test('the prune sheet: the dry run is refused agent_offline verbatim — axe clean', async ({ page }) => {
@@ -246,6 +248,20 @@ test.describe('at 1440 px', () => {
     await page.goBack();
     await expect(page.getByRole('dialog', { name: `Restore ${OWNED}` })).toHaveCount(0);
     await expect(page).toHaveURL(/\/host$/);
+  });
+
+  test('a restore steps up with a real code first, then the server refuses it agent_offline, verbatim', async ({ page }) => {
+    await openHost(page, `/host?volume=${OWNED}&restore=${VOLUME_FIXTURE.newestArchive}`);
+    const sheet = page.getByRole('dialog', { name: `Restore ${OWNED}` });
+    await expect(sheet.getByRole('radio').first()).toBeChecked();
+    await sheet.getByLabel(`Type ${OWNED} to confirm`).fill(OWNED);
+    // A code is spent once per step: wait for one nobody has used.
+    await nextStep(Date.now());
+    await sheet.getByLabel('Authenticator code').fill(totpFor(USERS.admin.totpSecret));
+    await sheet.getByRole('button', { name: `Restore ${OWNED}` }).click();
+    // Past the step-up and every check before the agent: with no agent polling, agent_offline.
+    await expect(sheet.getByText(OFFLINE_MESSAGE)).toBeVisible();
+    await expect(sheet.getByText(OFFLINE_FIX)).toBeVisible();
   });
 
   test('Activity lists maintenance under its own chip — axe clean', async ({ page }) => {

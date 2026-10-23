@@ -62,6 +62,8 @@ export interface AppRow {
   approvalPolicy: string | null;
   /** A freeze holds now; absent from a server older than SHP-T-12.2. */
   frozen?: boolean;
+  /** The compose project its manifest names (SHP-T-17.6): what owns a volume; absent from an older server. */
+  composeProject?: string | null;
   active: { targetId: string; deployId: string; state: string; holder: string; currentStep: string | null } | null;
 }
 

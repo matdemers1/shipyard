@@ -14,6 +14,7 @@ import {
   useMaintenanceJob,
   volumeRows,
   type VolumeArchive,
+  type VolumeOwnerRef,
   type VolumeRow,
 } from '../../lib/maintenance';
 import {
@@ -50,8 +51,11 @@ import { MaintenanceProgress, RefusalAlert, VolumeBadge } from './VolumeParts';
 
 export interface VolumesProps {
   inventory: Pick<HostInventory, 'containers' | 'volumes'>;
-  /** Adopted stacks, so an orphan labelled with one's compose project is never offered Delete. */
-  stacks?: readonly { name: string; composeProject: string }[];
+  /**
+   * The unretired apps and adopted stacks with their compose projects (SHP-ADR-012): what owns a
+   * volume. Null while they are not yet known, when no row offers anything.
+   */
+  owners: readonly VolumeOwnerRef[] | null;
   role: Role | undefined;
   /** The volume whose archives are open (`?volume=`). */
   openVolume?: string | null;
@@ -280,8 +284,10 @@ function VolumeItem({
   );
 }
 
-export function Volumes({ inventory, stacks = [], role, openVolume = null, onToggleArchives, onRestore, onDelete, reloads = 0, now }: VolumesProps) {
-  const rows = useMemo(() => sortVolumeRows(volumeRows(inventory, stacks)), [inventory, stacks]);
+export function Volumes({ inventory, owners, role, openVolume = null, onToggleArchives, onRestore, onDelete, reloads = 0, now }: VolumesProps) {
+  const rows = useMemo(() => sortVolumeRows(volumeRows(inventory, owners ?? [])), [inventory, owners]);
+  // Until the owners are known, a row's kind is a guess: offer nothing on it.
+  const reader = owners === null ? undefined : role;
   const [all, setAll] = useState(false);
   // A linked volume past the first six opens the whole list, so the row it names is on screen.
   const linkedPast = openVolume !== null && rows.findIndex((r) => r.volume.name === openVolume) >= VOLUMES_SHOWN;
@@ -296,7 +302,7 @@ export function Volumes({ inventory, stacks = [], role, openVolume = null, onTog
           <VolumeItem
             key={row.volume.name}
             row={row}
-            role={role}
+            role={reader}
             open={openVolume === row.volume.name}
             onToggle={() => {
               onToggleArchives?.(openVolume === row.volume.name ? null : row.volume.name);

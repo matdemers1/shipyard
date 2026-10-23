@@ -13,7 +13,7 @@ import {
   type HostChip,
 } from '../../lib/host';
 import type { Role } from '../../lib/api';
-import { canBackUpOrPrune, type MaintenanceStatus } from '../../lib/maintenance';
+import { canBackUpOrPrune, type MaintenanceStatus, type VolumeOwnerRef } from '../../lib/maintenance';
 import type { StackView } from '../../lib/stacks';
 import { VOLUME_WORDS } from '../../lib/words';
 import { ContainerGroups, type ContainerHref, type StackHref } from './ContainerGroups';
@@ -54,6 +54,8 @@ export interface HostViewProps {
   pruneResult?: MaintenanceStatus | null;
   /** Bumped after a restore or delete: the volume rows read their archives again. */
   volumeReloads?: number;
+  /** The unretired apps and adopted stacks that own volumes; null while not yet known. */
+  volumeOwners?: readonly VolumeOwnerRef[] | null;
 }
 
 function plural(n: number, one: string, other: string): string {
@@ -88,8 +90,8 @@ export function HostView({
   onPrune,
   pruneResult = null,
   volumeReloads = 0,
+  volumeOwners = null,
 }: HostViewProps) {
-  const adopted = useMemo(() => [...(stacks?.values() ?? [])].map((st) => ({ name: st.name, composeProject: st.composeProject })), [stacks]);
   const inventory = snapshot.inventory;
   const totals = useMemo(() => hostTotals(inventory), [inventory]);
   const counts = useMemo(() => chipCounts(inventory.containers), [inventory]);
@@ -206,7 +208,7 @@ export function HostView({
         <p className="shp-host-muted shp-host-volhint">{VOLUME_WORDS.hint}</p>
         <Volumes
           inventory={inventory}
-          stacks={adopted}
+          owners={volumeOwners}
           role={role}
           openVolume={openVolume}
           reloads={volumeReloads}

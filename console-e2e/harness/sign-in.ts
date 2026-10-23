@@ -20,7 +20,7 @@ export function totpFor(secret: string, timestamp: number = Date.now()): string 
 }
 
 /** Resolves once the clock has moved into a TOTP step after `after` (ms). */
-async function nextStep(after: number): Promise<void> {
+export async function nextStep(after: number): Promise<void> {
   const step = Math.floor(after / 1000 / PERIOD_S);
   const wait = (step + 1) * PERIOD_S * 1000 - Date.now() + 250;
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));

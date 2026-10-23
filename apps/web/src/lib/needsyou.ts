@@ -2,6 +2,7 @@ import type { PatWarning, SystemStatus } from '@shipyard/schema';
 import { useMemo } from 'react';
 import { appStatus } from './appstatus';
 import { useAppsSnapshot, type AppRow, type AppsStore, type CommitsInfo, type PendingApproval } from './home';
+import type { MaintenanceNeeds } from './maintenance';
 import type { StackNeeds } from './stacks';
 
 /**
@@ -17,14 +18,19 @@ import type { StackNeeds } from './stacks';
  *
  * Since SHP-T-16.6 two from adopted stacks too (SHP-ADR-010): a stack update held for a deployer's
  * approval (SHP-REQ-199), and a stack whose newest update failed or was rolled back.
+ *
+ * Since SHP-T-17.6 two from volumes and disk (SHP-ADR-012): a volume whose latest backup failed or
+ * was refused (until a later one succeeds), and a filesystem at least 90% full.
  */
 
-export type NeedsYouKind = 'approval' | 'stack-approval' | 'drift' | 'ci-failed' | 'stack-failed' | 'agent-stale' | 'agent-token';
+export type NeedsYouKind = 'approval' | 'stack-approval' | 'drift' | 'ci-failed' | 'stack-failed' | 'backup-failed' | 'low-disk' | 'agent-stale' | 'agent-token';
 
 export type NeedsYouItem =
   | { kind: 'approval'; app: string; deployId: string; sha: string }
   | { kind: 'stack-approval'; stack: string; updateId: string }
   | { kind: 'stack-failed'; stack: string; updateId: string }
+  | { kind: 'backup-failed'; volume: string; jobId: string }
+  | { kind: 'low-disk'; mount: string }
   | { kind: 'drift'; app: string; driftId: string }
   | { kind: 'ci-failed'; app: string }
   | { kind: 'agent-stale' }
@@ -40,6 +46,8 @@ export interface NeedsYouInput {
   system: SystemStatus | null;
   /** Held and failed stack updates; null or absent from a server without them. */
   stackNeeds?: StackNeeds | null;
+  /** Failed backups and low disk; null or absent from a server without them. */
+  maintenanceNeeds?: MaintenanceNeeds | null;
 }
 
 /** The list, in the order a person should look: approvals, drift, failed builds and stack updates, then the host. */
@@ -74,6 +82,13 @@ export function needsYouItems(input: NeedsYouInput): NeedsYouItem[] {
 
   for (const failed of input.stackNeeds?.failed ?? []) {
     items.push({ kind: 'stack-failed', stack: failed.stack, updateId: failed.id });
+  }
+
+  for (const failed of input.maintenanceNeeds?.failedBackups ?? []) {
+    if (failed.volume !== null) items.push({ kind: 'backup-failed', volume: failed.volume, jobId: failed.id });
+  }
+  for (const low of input.maintenanceNeeds?.lowDisk ?? []) {
+    items.push({ kind: 'low-disk', mount: low.mount });
   }
 
   const agent = input.system?.agent ?? null;
@@ -113,7 +128,13 @@ export interface NeedsYou {
 
 /** The list, its count and the host lines, from one snapshot: Apps and the badge both call this. */
 export function needsYouFrom(snapshot: NeedsYouInput): NeedsYou {
-  const items = needsYouItems({ apps: snapshot.apps, approvals: snapshot.approvals, system: snapshot.system, stackNeeds: snapshot.stackNeeds ?? null });
+  const items = needsYouItems({
+    apps: snapshot.apps,
+    approvals: snapshot.approvals,
+    system: snapshot.system,
+    stackNeeds: snapshot.stackNeeds ?? null,
+    maintenanceNeeds: snapshot.maintenanceNeeds ?? null,
+  });
   return { items, count: items.length, hostWarnings: hostWarnings(snapshot.system) };
 }
 

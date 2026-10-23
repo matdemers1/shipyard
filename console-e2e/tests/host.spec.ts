@@ -114,7 +114,7 @@ test.describe('at 1440 px', () => {
     await expect(volumes.getByRole('listitem')).toHaveCount(HOST_FIXTURE.volumes);
 
     await expect(page.getByText(/^10 images · .* · 2 not used by any container .* · 1 untagged$/)).toBeVisible();
-    await expect(page.getByText(/^Read-only\. Deployed is a D3 app Shipyard deploys/)).toBeVisible();
+    await expect(page.getByText(/^Deployed is a D3 app Shipyard deploys/)).toBeVisible();
 
     // A Deployed group links to its app page.
     await page.getByRole('link', { name: `Open app ${HOST_FIXTURE.deployedApp}` }).click();

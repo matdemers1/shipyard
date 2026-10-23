@@ -16,7 +16,7 @@ import {
   type ContainerGroup,
 } from '../../lib/host';
 import { candidates, checkError, runningTag, stackUpdateStateWords, stackUpdateStepWords, versionWords, type StackView } from '../../lib/stacks';
-import { RESTART_STACK, STACK_HISTORY, TIER_WORDS, UPDATE_STACK, checkFailedWords, updateAvailableWords } from '../../lib/words';
+import { RESTART_STACK, STACK_HISTORY, TIER_WORDS, UPDATE_STACK, checkFailedWords, historyOfWords, updateAvailableWords, updateStackLabel } from '../../lib/words';
 import { ActionProgress } from './ActionProgress';
 import { Sparkline } from './Sparkline';
 
@@ -119,10 +119,11 @@ function updateBadge(stack: StackView, group: ContainerGroup): string | null {
 }
 
 /** The Operated stack's own controls: the candidate badge, a failed check, History and "Update…". */
-function stackControls(stack: StackView, group: ContainerGroup, mayAct: boolean, stackHref: StackHref, navigate: NavigateFunction) {
+function stackControls(stack: StackView, group: ContainerGroup, mayAct: boolean, stackHref: StackHref, navigate: NavigateFunction, busy: boolean) {
   const badge = updateBadge(stack, group);
   const error = checkError(stack);
-  const offer = mayAct && stack.activeUpdate === null && candidates(stack).length > 0;
+  // Never a second request while one is under way: the server's, or the open sheet's own.
+  const offer = mayAct && !busy && stack.activeUpdate === null && candidates(stack).length > 0;
   return {
     badge:
       badge === null ? null : (
@@ -133,8 +134,8 @@ function stackControls(stack: StackView, group: ContainerGroup, mayAct: boolean,
     links: (
       <span className="shp-hg__history">
         <Link asChild>
-          <RouterLink to={stackHref(stack.name, false)} state={{ sheet: true }}>
-            {STACK_HISTORY} <span className="shp-visually-hidden">of {stack.name}</span>
+          <RouterLink to={stackHref(stack.name, false)} state={{ sheet: true }} aria-label={historyOfWords(stack.name)}>
+            {STACK_HISTORY}
           </RouterLink>
         </Link>
       </span>
@@ -145,11 +146,12 @@ function stackControls(stack: StackView, group: ContainerGroup, mayAct: boolean,
           type="button"
           size="sm"
           variant="primary"
+          aria-label={updateStackLabel(stack.name)}
           onClick={() => {
             void navigate(stackHref(stack.name, true), { state: { sheet: true } });
           }}
         >
-          {UPDATE_STACK} <span className="shp-visually-hidden">{stack.name}</span>
+          {UPDATE_STACK}
         </Button>
       </span>
     ) : null,
@@ -166,6 +168,7 @@ function Group({
   mayAct,
   stack,
   stackHref,
+  busyStacks,
 }: {
   group: ContainerGroup;
   open: boolean;
@@ -175,12 +178,13 @@ function Group({
   mayAct: boolean;
   stack: StackView | undefined;
   stackHref: StackHref | undefined;
+  busyStacks: ReadonlySet<string> | undefined;
 }) {
   const listId = useId();
   const name = group.project ?? NO_COMPOSE_NAME;
   const linkToApp = isDeployedTier(group.tier) && group.app !== null;
   const navigate = useNavigate();
-  const updates = stack !== undefined && stack.updates === 'digest' && stackHref !== undefined ? stackControls(stack, group, mayAct, stackHref, navigate) : null;
+  const updates = stack !== undefined && stack.updates === 'digest' && stackHref !== undefined ? stackControls(stack, group, mayAct, stackHref, navigate, busyStacks?.has(stack.name) === true) : null;
   return (
     <li className="shp-hg">
       <div className="shp-hg__head">
@@ -232,6 +236,7 @@ export function ContainerGroups({
   hrefFor,
   stacks,
   stackHref,
+  busyStacks,
 }: {
   groups: readonly ContainerGroup[];
   samples: HostSnapshot['samples'];
@@ -239,6 +244,8 @@ export function ContainerGroups({
   /** Adopted stacks by name (SHP-T-16.6); absent or empty on a server without stack updates. */
   stacks?: ReadonlyMap<string, StackView>;
   stackHref?: StackHref;
+  /** Stacks whose open sheet is asking for an update right now. */
+  busyStacks?: ReadonlySet<string>;
 }) {
   const mayAct = canAct(useMe()?.role);
   // The defaults follow the data; a person's own toggle wins for as long as the page is open.
@@ -258,6 +265,7 @@ export function ContainerGroups({
             mayAct={mayAct}
             stack={stackForGroup(group, stacks)}
             stackHref={stackHref}
+            busyStacks={busyStacks}
             onToggle={() => {
               setToggled((prev) => ({ ...prev, [group.key]: !open }));
             }}

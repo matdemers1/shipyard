@@ -892,6 +892,12 @@
     font-size: var(--text-14);
     line-height: var(--leading-20);
   }
+  /* A failed stack update's fix, verbatim, on its own line (SHP-T-16.6). */
+  .shp-needs__detail {
+    display: block;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
   .shp-needs__age {
     margin-left: var(--space-8);
     color: var(--color-fg-muted);
@@ -2146,7 +2152,8 @@
     grid-template-areas:
       'change badge'
       'who act'
-      'time act';
+      'time act'
+      'why why';
     align-items: center;
     gap: var(--space-2) var(--space-12);
     padding: var(--space-8) var(--space-12);
@@ -2181,10 +2188,24 @@
     grid-area: act;
     justify-self: end;
   }
+  /* A failed, rolled-back or refused row's message and fix, verbatim (SHP-REQ-200). */
+  .shp-stack-history__why {
+    grid-area: why;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    font-size: var(--text-13);
+    overflow-wrap: anywhere;
+  }
+  .shp-stack-history__fix {
+    color: var(--color-fg-muted);
+  }
   @container (min-width: 640px) {
     .shp-stack-history__row {
       grid-template-columns: 8rem minmax(0, 10rem) auto minmax(0, 1fr) auto;
-      grid-template-areas: 'time change badge who act';
+      grid-template-areas:
+        'time change badge who act'
+        '. why why why why';
     }
     .shp-stack-history__badge {
       justify-self: start;

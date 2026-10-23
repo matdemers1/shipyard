@@ -74,6 +74,8 @@ describe('volume backup, restore, delete and prune on a real Docker host', () =>
   const logLines: string[] = [];
   const containersMade: string[] = [];
   let runner: ReturnType<typeof createMaintenanceRunner> | undefined;
+  /** The compose project the "agent" runs in; the toy stack's own in the self-guard case. */
+  let ownProject: string | null = null;
   const client = recordingClient();
 
   const harness = (): Harness => {
@@ -88,6 +90,8 @@ describe('volume backup, restore, delete and prune on a real Docker host', () =>
   const runJob = async (job: MaintenanceJob): Promise<MaintenanceResult> => {
     if (runner === undefined) throw new Error('runner did not start');
     const result = await runner.run(job);
+    // A failing case says why: the refusal and the agent's own account.
+    if (result.state !== 'succeeded') console.error(`${job.kind} ${result.state}: ${JSON.stringify(result.refusal)}\n${result.output ?? ''}`);
     // What the server would have received, and it parses.
     const posted = client.posted.filter((p) => p.path === maintenanceResultPath(job.jobId)).at(-1);
     expect(MaintenanceResult.parse(posted?.body)).toEqual(result);
@@ -113,6 +117,8 @@ describe('volume backup, restore, delete and prune on a real Docker host', () =>
     root = await mkdtemp(join(h.sharedDir, 'maint-'));
     dataRoot = join(root, 'data');
     backupRoot = join(root, 'backups');
+    // A data root as the agent's host has it: app manifests under apps/ (none here), stacks/.
+    await mkdir(join(dataRoot, 'apps'), { recursive: true });
     await mkdir(join(dataRoot, 'stacks'), { recursive: true });
     await mkdir(join(dataRoot, 'agent'), { recursive: true });
     await mkdir(join(root, 'stack'), { recursive: true });
@@ -150,6 +156,7 @@ describe('volume backup, restore, delete and prune on a real Docker host', () =>
           journal,
           ledger,
           helperImage: () => Promise.resolve(imageId),
+          ownProject: () => Promise.resolve(ownProject),
           onStep,
         };
         return runMaintenance(ports, ctx, job);
@@ -192,6 +199,26 @@ describe('volume backup, restore, delete and prune on a real Docker host', () =>
     const safety = after.volumeArchives(volume).at(-1);
     expect(safety?.archiveId).not.toBe(archiveId);
     expect(restore.output).toContain(safety?.archiveId ?? 'missing');
+  });
+
+  it("never stops the agent's own stack: a restore or a quiesced backup of it is refused, a plain backup is not", async () => {
+    const ledger = await Ledger.open(nodeFs(), join(dataRoot, 'agent', 'ledger.jsonl'));
+    const archiveId = ledger.volumeArchives(volume).at(-1)?.archiveId ?? '';
+    expect(archiveId).not.toBe('');
+    ownProject = project;
+    try {
+      const restore = await runJob({ jobId: randomUUID(), kind: 'volume-restore', volume, owner: { kind: 'stack', name: 'toy' }, archiveId });
+      expect(restore).toMatchObject({ state: 'refused', refusal: { code: 'locked' } });
+      const quiesced = await runJob({ jobId: randomUUID(), kind: 'volume-backup', volume, owner: { kind: 'stack', name: 'toy' }, quiesce: true });
+      expect(quiesced).toMatchObject({ state: 'refused', refusal: { code: 'locked' } });
+      // Nothing was stopped.
+      const states = (await compose(['ps', '--all', '--format', '{{.State}}'])).stdout.trim().split('\n');
+      expect(states).toEqual(['running']);
+      const plain = await runJob({ jobId: randomUUID(), kind: 'volume-backup', volume, owner: { kind: 'stack', name: 'toy' }, quiesce: false });
+      expect(plain).toMatchObject({ state: 'succeeded', archive: { quiesced: false } });
+    } finally {
+      ownProject = null;
+    }
   });
 
   it('refuses to delete a volume a stopped container mounts, and deletes it once nothing does (SHP-REQ-203)', async () => {

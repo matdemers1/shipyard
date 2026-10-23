@@ -111,8 +111,16 @@ export interface UnfinishedMaintenance {
   tmpFiles: string[];
   /** Helper container names a step ran and never saw finish. */
   helpers: string[];
-  /** Archive IDs an `archive` step finished writing (a restore's safety archive). */
-  archives: string[];
+  /**
+   * Archives an `archive` step finished writing (a restore's safety archive): its ID, where the
+   * agent was to commit it, and when. One committed but never recorded is adopted by recovery.
+   */
+  archives: { archiveId: string; file: string | null; at: string }[];
+  /**
+   * True when a restore began emptying or extracting into the volume (or putting its safety
+   * archive back) and did not finish an extract since: the volume may be half-restored.
+   */
+  dataDirty: boolean;
 }
 
 export class Journal {
@@ -270,7 +278,7 @@ export class Journal {
       if (!isMaintenanceLine(entry.step)) continue;
       if (entry.step === MAINTENANCE_STEP) {
         if (entry.phase === 'start') {
-          open.set(entry.deployId, { jobId: entry.deployId, name: entry.app, detail: entry.detail, lastStep: undefined, stopped: false, tmpFiles: [], helpers: [], archives: [], openSteps: [] });
+          open.set(entry.deployId, { jobId: entry.deployId, name: entry.app, detail: entry.detail, lastStep: undefined, stopped: false, tmpFiles: [], helpers: [], archives: [], dataDirty: false, openSteps: [] });
         } else {
           open.delete(entry.deployId);
         }
@@ -284,14 +292,19 @@ export class Journal {
       if (entry.phase === 'start') {
         state.openSteps.push(entry.step);
         if (leaf === 'stop') state.stopped = true;
+        if (leaf === 'empty' || leaf === 'extract' || leaf === 'safety-empty' || leaf === 'safety-extract') state.dataDirty = true;
         if (tmp !== undefined && !state.tmpFiles.includes(tmp)) state.tmpFiles.push(tmp);
         if (helper !== undefined && !state.helpers.includes(helper)) state.helpers.push(helper);
       } else {
         const i = state.openSteps.lastIndexOf(entry.step);
         if (i !== -1) state.openSteps.splice(i, 1);
         if (leaf === 'start' && entry.exitCode === 0) state.stopped = false;
+        if ((leaf === 'extract' || leaf === 'safety-extract') && entry.exitCode === 0) state.dataDirty = false;
         const archiveId = entry.detail?.['archiveId'];
-        if (leaf === 'archive' && entry.exitCode === 0 && typeof archiveId === 'string') state.archives.push(archiveId);
+        const final = entry.detail?.['final'];
+        if (leaf === 'archive' && entry.exitCode === 0 && typeof archiveId === 'string') {
+          state.archives.push({ archiveId, file: typeof final === 'string' ? final : null, at: entry.at });
+        }
         if (tmp !== undefined) state.tmpFiles = state.tmpFiles.filter((f) => f !== tmp);
         if (helper !== undefined) state.helpers = state.helpers.filter((h) => h !== helper);
       }

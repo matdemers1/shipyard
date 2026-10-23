@@ -437,7 +437,7 @@ export function createDockerAdapter(
     Pick<DockerPort, 'loadImage' | 'inspectNetwork' | 'hostContainers' | 'hostVolumes' | 'systemDf' | 'hostImages' | 'hostNetworks' | 'containerStats' | 'dockerRootSpace'>
   > &
   Required<Pick<DockerPort, 'containerLogs' | 'inspectEnv' | 'pullImage'>> &
-  Required<Pick<DockerPort, 'dockerCli' | 'containerImageId' | 'buildCacheRecords'>> {
+  Required<Pick<DockerPort, 'dockerCli' | 'containerIdentity' | 'buildCacheRecords' | 'pruneBuildCacheRecord'>> {
   const docker = options.docker ?? dockerodeFor(options.dockerHost);
   const composeBin = options.composeBin ?? 'docker';
   const probeImage = options.probeImage ?? 'busybox:1.37';
@@ -681,10 +681,12 @@ export function createDockerAdapter(
       return execFile(composeBin, args, runOpts);
     },
 
-    async containerImageId(id) {
+    async containerIdentity(id) {
       try {
         const info = await docker.getContainer(id).inspect();
-        return typeof info.Image === 'string' && info.Image !== '' ? info.Image : null;
+        if (typeof info.Image !== 'string' || info.Image === '') return null;
+        const labels = (info.Config.Labels as Record<string, string> | null | undefined) ?? {};
+        return { imageId: info.Image, composeProject: nonEmpty(labels[COMPOSE_PROJECT_LABEL]) };
       } catch (err) {
         if (statusCodeOf(err) === 404) return null;
         throw err;
@@ -708,6 +710,28 @@ export function createDockerAdapter(
               },
             ],
       );
+    },
+
+    async pruneBuildCacheRecord(id) {
+      if (!/^[a-z0-9]{1,64}$/.test(id)) throw new Error('not a build cache record ID');
+      // The Engine turns an `id` filter into BuildKit's `id~=` (a regular expression): anchored, it
+      // matches this record only, never every record whose ID starts with it.
+      // Dialled directly: dockerode's own `pruneBuilder` drops its options, which would prune every
+      // unused record — never acceptable here.
+      await new Promise<void>((resolveDial, rejectDial) => {
+        docker.modem.dial(
+          {
+            path: '/build/prune?',
+            method: 'POST',
+            options: { filters: { id: [`^${id}$`] } },
+            statusCodes: { 200: true, 400: 'bad parameter', 500: 'server error' },
+          },
+          (err: unknown) => {
+            if (err === null || err === undefined) resolveDial();
+            else rejectDial(err instanceof Error ? err : new Error('build cache prune failed'));
+          },
+        );
+      });
     },
 
     async inspectNetwork(name): Promise<BuildNetworkInfo | null> {

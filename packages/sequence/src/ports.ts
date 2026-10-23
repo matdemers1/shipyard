@@ -399,10 +399,19 @@ export interface DockerPort {
    * validated (a volume name, an image ID, a cache record ID). Never throws on a non-zero exit.
    */
   dockerCli?(args: string[], options?: { timeoutMs?: number }): Promise<ExecResult>;
-  /** The image ID (`sha256:…`) a container runs, from its inspect; null when the Engine does not know it. */
-  containerImageId?(id: string): Promise<string | null>;
+  /**
+   * From a container's inspect, what the agent needs about its own: the image it runs (the archive
+   * helper's image) and its compose project label (the stack it must never stop). Null when the
+   * Engine does not know the container.
+   */
+  containerIdentity?(id: string): Promise<{ imageId: string; composeProject: string | null } | null>;
   /** The Engine's build cache records (`/system/df`'s BuildCache). */
   buildCacheRecords?(): Promise<BuildCacheRecord[]>;
+  /**
+   * Removes one build cache record through the Engine's `POST /build/prune`, its full ID anchored
+   * (`id=^<id>$`: the Engine matches `id` as a regular expression, so a bare ID is a prefix).
+   */
+  pruneBuildCacheRecord?(id: string): Promise<void>;
 }
 
 // ─── BuildKit (SHP-T-7.7) ────────────────────────────────────────────────────
@@ -481,7 +490,7 @@ export interface FsPort {
  * computes the hash and size itself; it never trusts what a helper container says it wrote.
  */
 export interface ArchiveFilesPort {
-  /** `mkdir -p`, then mode 0700 on `dir` itself. */
+  /** `mkdir -p`; every directory it creates is mode 0700, and one that already existed is left as it is. */
   ensureDir(dir: string): Promise<void>;
   /** Creates an empty file, mode 0600; fails when it exists. */
   createEmpty(path: string): Promise<void>;

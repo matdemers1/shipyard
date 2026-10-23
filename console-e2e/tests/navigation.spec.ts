@@ -3,12 +3,13 @@ import { DESKTOP, PHONE, h1 } from '../harness/console.js';
 import { storageStateFor } from '../harness/env.js';
 
 /**
- * Navigation after SHP-ADR-006 (SHP-REQ-159, SHP-REQ-169), against the real built console: three
- * destinations — Apps, Activity, Settings — as a sidebar on a desktop and a tab bar on a phone, and
+ * Navigation after SHP-ADR-006 and SHP-ADR-009 (SHP-REQ-159, SHP-REQ-169, SHP-REQ-178), against the
+ * real built console: four destinations — Apps, Activity, Host, Settings — as a sidebar on a
+ * desktop and a tab bar on a phone, and
  * every address the old ten-item nav had still landing somewhere that makes sense.
  */
 
-const DESTINATIONS = [/^Apps/, /^Activity/, /^Settings/];
+const DESTINATIONS = [/^Apps/, /^Activity/, /^Host/, /^Settings/];
 
 test.describe('as an admin', () => {
   test.use({ storageState: storageStateFor('admin') });
@@ -16,7 +17,7 @@ test.describe('as an admin', () => {
   test.describe('at 1440 px', () => {
     test.use({ viewport: DESKTOP });
 
-    test('the sidebar holds the three destinations, and its host line links to Settings › Host', async ({ page }) => {
+    test('the sidebar holds the four destinations, and its host line links to Settings › Host', async ({ page }) => {
       await page.goto('/');
       await h1(page, 'Apps');
       const nav = page.getByRole('navigation', { name: 'Main' });
@@ -25,6 +26,10 @@ test.describe('as an admin', () => {
       await nav.getByRole('link', { name: /^Activity/ }).click();
       await h1(page, 'Activity');
       await expect(nav.getByRole('link', { name: /^Activity/ })).toHaveAttribute('aria-current', 'page');
+      await nav.getByRole('link', { name: /^Host/ }).click();
+      await h1(page, 'Host');
+      await expect(page).toHaveURL(/\/host$/);
+      await expect(nav.getByRole('link', { name: /^Host/ })).toHaveAttribute('aria-current', 'page');
       await page.getByRole('link', { name: /^Host (healthy|· \d+ to look at)/ }).click();
       await expect(page).toHaveURL(/\/settings\/host$/);
       await h1(page, 'Host');
@@ -34,7 +39,7 @@ test.describe('as an admin', () => {
   test.describe('at 390 px', () => {
     test.use(PHONE);
 
-    test('the tab bar holds the three destinations and moves between them without a reload', async ({ page }) => {
+    test('the tab bar holds the four destinations and moves between them without a reload', async ({ page }) => {
       await page.goto('/');
       await h1(page, 'Apps');
       const tabs = page.getByRole('navigation', { name: 'Primary' });
@@ -48,6 +53,9 @@ test.describe('as an admin', () => {
       await h1(page, 'Host');
       await tabs.getByRole('link', { name: /^Activity/ }).click();
       await h1(page, 'Activity');
+      await tabs.getByRole('link', { name: /^Host/ }).click();
+      await h1(page, 'Host');
+      await expect(page).toHaveURL(/\/host$/);
       expect(await page.evaluate(() => (window as unknown as { consoleE2eMarker?: boolean }).consoleE2eMarker)).toBe(true);
     });
   });

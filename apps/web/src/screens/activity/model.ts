@@ -1,4 +1,6 @@
+import type { ActionStatus } from '@shipyard/schema';
 import type { StageState } from '../../components/pipeline';
+import { isTerminalAction } from '../../lib/actions';
 import { STAGE_LABEL, isTerminalBuild, type BuildState, type BuildSummary } from '../../lib/builds';
 import type { ScheduleEntry } from '../../lib/schedules';
 import {
@@ -22,7 +24,7 @@ import { DEPLOY_ALL_READY, checkName, stateWords } from '../../lib/words';
 // ── Filters, in the URL ──────────────────────────────────────────────────
 
 /** The kind chips. `refusal` is a deploy outcome, not a stored kind. */
-export type ActivityKind = 'deploy' | 'rollback' | 'refusal' | 'build' | 'schedule' | 'restore';
+export type ActivityKind = 'deploy' | 'rollback' | 'refusal' | 'build' | 'schedule' | 'restore' | 'action';
 
 export const KIND_CHIPS: readonly { value: ActivityKind; label: string }[] = [
   { value: 'deploy', label: 'Deploys' },
@@ -32,6 +34,8 @@ export const KIND_CHIPS: readonly { value: ActivityKind; label: string }[] = [
   { value: 'refusal', label: 'Refusals' },
   { value: 'build', label: 'Builds' },
   { value: 'schedule', label: 'Schedules' },
+  // Start, stop, restart and recreate of an app or stack (SHP-T-15.7, SHP-ADR-010).
+  { value: 'action', label: 'Actions' },
 ];
 
 const KIND_VALUES: readonly string[] = KIND_CHIPS.map((k) => k.value);
@@ -67,15 +71,18 @@ export interface Sources {
   /** Past schedules as rows. The upcoming card has its own rule: `showUpcoming`. */
   scheduleRows: boolean;
   showUpcoming: boolean;
+  /** Lifecycle actions; refused ones under Refusals too. */
+  actions: boolean;
 }
 
 export function sourcesFor(filters: ActivityFilters): Sources {
   const kind = filters.kind;
   return {
-    deploys: kind !== 'build' && kind !== 'schedule',
+    deploys: kind !== 'build' && kind !== 'schedule' && kind !== 'action',
     builds: kind === undefined || kind === 'build',
     scheduleRows: kind === undefined || kind === 'schedule' || kind === 'refusal',
     showUpcoming: kind === undefined || kind === 'schedule',
+    actions: kind === undefined || kind === 'action' || kind === 'refusal',
   };
 }
 
@@ -100,6 +107,15 @@ function outcomeMatches(outcome: TimelineOutcome | undefined, state: string): bo
   if (outcome === undefined) return true;
   if (outcome === 'active') return !isTerminal(state as DeployTargetState) && !isTerminalBuild(state as BuildState);
   return state === outcome;
+}
+
+/** An action against the filters the server did not apply: app, requester, outcome; Refusals is its refused state. */
+export function actionMatches(action: ActionStatus, filters: ActivityFilters): boolean {
+  if (filters.app !== undefined && action.target.name !== filters.app) return false;
+  if (!contains(action.requesterLabel, filters.requester)) return false;
+  const outcome = filters.kind === 'refusal' ? 'refused' : filters.outcome;
+  if (outcome === 'active') return !isTerminalAction(action.state);
+  return outcome === undefined || action.state === outcome;
 }
 
 export function buildMatches(build: BuildSummary, filters: ActivityFilters): boolean {
@@ -130,6 +146,7 @@ export type FeedEntry =
   | { type: 'deploy'; key: string; at: string; item: TimelineItem }
   | { type: 'build'; key: string; at: string; build: BuildSummary }
   | { type: 'schedule'; key: string; at: string; entry: ScheduleEntry }
+  | { type: 'action'; key: string; at: string; action: ActionStatus }
   | {
       type: 'rollout';
       key: string;
@@ -321,6 +338,23 @@ export function deployNode(state: DeployTargetState): StageState {
     case 'locked':
       return 'held';
     default:
+      return 'running';
+  }
+}
+
+export function actionNode(state: ActionStatus['state']): StageState {
+  switch (state) {
+    case 'succeeded':
+      return 'done';
+    case 'failed':
+    case 'refused':
+      return 'failed';
+    case 'cancelled':
+      return 'skipped';
+    case 'queued':
+      return 'waiting';
+    case 'dispatched':
+    case 'running':
       return 'running';
   }
 }

@@ -1,5 +1,14 @@
 // Types only: a runtime import of the schema package would put zod and every schema in the bundle.
-import type { BuildState, ContainerHealth, ContainerState, ContainerTier, DeployTargetState, Gate } from '@shipyard/schema';
+import type {
+  ActionState,
+  BuildState,
+  ContainerHealth,
+  ContainerState,
+  ContainerTier,
+  DeployTargetState,
+  Gate,
+  LifecycleVerb,
+} from '@shipyard/schema';
 import type { CommitEntry, CommitsInfo } from './home';
 
 /**
@@ -219,4 +228,44 @@ export const HEALTH_WORDS: Record<ContainerHealth, string> = {
   unhealthy: 'unhealthy',
   starting: 'starting',
   none: '',
+};
+
+// ── Lifecycle actions (SHP-ADR-010) ──────────────────────────────────────
+
+/** The buttons: what a person asks for. Total records, so a verb the schema gains fails the typecheck. */
+export const LIFECYCLE_VERB_WORDS: Record<LifecycleVerb, string> = {
+  start: 'Start',
+  stop: 'Stop',
+  restart: 'Restart',
+  recreate: 'Recreate',
+};
+
+/** While it runs: the in-progress banner's headline. */
+export const LIFECYCLE_ACTIVE_WORDS: Record<LifecycleVerb, string> = {
+  start: 'Starting',
+  stop: 'Stopping',
+  restart: 'Restarting',
+  recreate: 'Recreating',
+};
+
+/** Once it worked: the Activity badge and the result line. */
+export const LIFECYCLE_PAST_WORDS: Record<LifecycleVerb, string> = {
+  start: 'Started',
+  stop: 'Stopped',
+  restart: 'Restarted',
+  recreate: 'Recreated',
+};
+
+/** A whole compose project at once, from a Host group's header. */
+export const RESTART_STACK = 'Restart stack';
+
+/** Where a lifecycle action is, in words: the same words as a deploy where the state is the same. */
+export const ACTION_STATE_WORDS: Record<ActionState, string> = {
+  queued: 'Queued',
+  dispatched: 'Sent to the agent',
+  running: 'Running',
+  succeeded: 'Succeeded',
+  failed: 'Failed',
+  refused: 'Refused',
+  cancelled: 'Cancelled',
 };

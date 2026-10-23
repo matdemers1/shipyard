@@ -1,7 +1,8 @@
 import { EmptyState, Page, PageHeader, Skeleton, Stack } from '@d3cloud/ui';
-import { useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useCallback, useMemo, useRef } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ageWords, chipFromParams, paramsForChip, useHost, type HostChip } from '../lib/host';
+import { ContainerSheet } from './host/ContainerSheet';
 import { AgentStatus, HostView } from './host/HostView';
 
 /**
@@ -10,9 +11,10 @@ import { AgentStatus, HostView } from './host/HostView';
  * volumes, images and disk, at 390 px and on a desktop. The snapshot's age is always on screen and
  * turns into a warning after two report intervals.
  *
- * Read-only (SHP-REQ-181): the page reads `GET /api/host` and nothing else, and offers no action
- * on a container, volume or image. The filter lives in the address (`?tier=` or `?state=`), so a
- * view can be linked.
+ * The inventory is read-only (SHP-REQ-181): nothing changes a volume or an image. A container's
+ * row opens its sheet (SHP-T-15.7) — logs, and the lifecycle actions its tier and the reader's role
+ * allow (SHP-ADR-010, SHP-ADR-011). The filter (`?tier=` or `?state=`) and the open sheet
+ * (`?container=<id>`) live in the address, so a view can be linked and Back closes the sheet.
  */
 
 const FOOTNOTE =
@@ -25,6 +27,37 @@ export function Host() {
   const onChip = (next: HostChip) => {
     setParams(paramsForChip(next, params), { replace: true });
   };
+
+  const navigate = useNavigate();
+  const location = useLocation();
+  const containerId = params.get('container');
+  const hrefFor = useCallback(
+    (id: string) => {
+      const next = new URLSearchParams(params);
+      next.set('container', id);
+      return { pathname: '/host', search: `?${next.toString()}` };
+    },
+    [params],
+  );
+  const closeSheet = () => {
+    // Opened from a row: Back is what closes it, so the history has no dangling sheet entry.
+    if ((location.state as { sheet?: boolean } | null)?.sheet === true) {
+      void navigate(-1);
+      return;
+    }
+    const next = new URLSearchParams(params);
+    next.delete('container');
+    setParams(next, { replace: true });
+  };
+  // Recreate gives a container a new ID: the sheet follows it by name once the next report lands.
+  const lastName = useRef<string | null>(null);
+  const sheetContainer = useMemo(() => {
+    if (containerId === null) return null;
+    const all = data.hosts.flatMap((h) => h.inventory.containers);
+    const found = all.find((c) => c.id === containerId) ?? all.find((c) => lastName.current !== null && c.name === lastName.current) ?? null;
+    return found;
+  }, [containerId, data.hosts]);
+  lastName.current = sheetContainer?.name ?? (containerId === null ? null : lastName.current);
 
   const first = data.hosts[0];
   const description =
@@ -58,7 +91,7 @@ export function Host() {
             The agent reports everything Docker runs once it is on version f574b79 or later.
           </EmptyState>
         ) : single ? (
-          <HostView snapshot={first} chip={chip} onChip={onChip} now={data.now} headingLevel={2} />
+          <HostView snapshot={first} chip={chip} onChip={onChip} now={data.now} headingLevel={2} hrefFor={hrefFor} />
         ) : (
           data.hosts.map((snapshot) => (
             <section key={snapshot.agent.id} aria-labelledby={`host-${snapshot.agent.id}`}>
@@ -67,7 +100,7 @@ export function Host() {
                   Agent {snapshot.agent.fingerprint}
                 </h2>
                 <AgentStatus snapshot={snapshot} now={data.now} />
-                <HostView snapshot={snapshot} chip={chip} onChip={onChip} now={data.now} headingLevel={3} />
+                <HostView snapshot={snapshot} chip={chip} onChip={onChip} now={data.now} headingLevel={3} hrefFor={hrefFor} />
               </Stack>
             </section>
           ))
@@ -75,6 +108,7 @@ export function Host() {
 
         <p className="shp-host-foot">{FOOTNOTE}</p>
       </Stack>
+      {containerId !== null && data.status === 'ready' ? <ContainerSheet container={sheetContainer} open onClose={closeSheet} /> : null}
     </Page>
   );
 }

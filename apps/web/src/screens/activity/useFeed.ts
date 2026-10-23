@@ -1,9 +1,12 @@
+import type { ActionStatus } from '@shipyard/schema';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { actions } from '../../lib/actions';
 import { RefusalError, unreachableRefusal } from '../../lib/api';
 import { builds, type BuildSummary } from '../../lib/builds';
 import { schedules, type ScheduleList } from '../../lib/schedules';
 import { fetchTimeline, type TimelineItem } from '../../lib/timeline';
 import {
+  actionMatches,
   buildMatches,
   byTimeDesc,
   groupRollouts,
@@ -16,9 +19,9 @@ import {
 } from './model';
 
 /**
- * Activity's data (SHP-T-13.13): the three stored sources — the deploy timeline, builds, schedules —
- * read through the endpoints that already exist and merged into one feed. The timeline and builds
- * page by cursor; schedules come whole (upcoming plus the fifty most recent past). A feed built
+ * Activity's data (SHP-T-13.13): the stored sources — the deploy timeline, builds, schedules and,
+ * since SHP-T-15.7, lifecycle actions — read through their own endpoints and merged into one feed.
+ * The timeline, builds and actions page by cursor; schedules come whole (upcoming plus the fifty most recent past). A feed built
  * from pages must not show a row newer than a source's oldest loaded one when that source has more
  * to give, or "Load more" would insert rows above ones already read: so the feed is cut at the
  * newest of those oldest times.
@@ -57,6 +60,7 @@ export function useFeed(filters: ActivityFilters): Feed {
 
   const [timeline, setTimeline] = useState<Paged<TimelineItem>>({ items: [], nextCursor: null });
   const [buildPage, setBuildPage] = useState<Paged<BuildSummary>>({ items: [], nextCursor: null });
+  const [actionPage, setActionPage] = useState<Paged<ActionStatus>>({ items: [], nextCursor: null });
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<RefusalError | null>(null);
@@ -106,6 +110,7 @@ export function useFeed(filters: ActivityFilters): Feed {
     const controller = new AbortController();
     const wantDeploys = sources.deploys;
     const wantBuilds = sources.builds;
+    const wantActions = sources.actions;
     setLoading(true);
     setError(null);
     const fromTimeline = wantDeploys ? fetchTimeline({ ...timelineFilters(filters), limit: PAGE_SIZE }) : Promise.resolve({ items: [], nextCursor: null });
@@ -116,11 +121,19 @@ export function useFeed(filters: ActivityFilters): Feed {
           return { items: [], nextCursor: null };
         })
       : Promise.resolve({ items: [], nextCursor: null });
-    Promise.all([fromTimeline, fromBuilds])
-      .then(([t, b]) => {
+    // The same for actions: the point of kind=action, merely absent beside the rest (an older server has none).
+    const fromActions: Promise<Paged<ActionStatus>> = wantActions
+      ? actions.list({ limit: PAGE_SIZE, signal: controller.signal }).catch((e: unknown) => {
+          if (filters.kind === 'action') throw e;
+          return { items: [], nextCursor: null };
+        })
+      : Promise.resolve({ items: [], nextCursor: null });
+    Promise.all([fromTimeline, fromBuilds, fromActions])
+      .then(([t, b, a]) => {
         if (controller.signal.aborted) return;
         setTimeline(t);
         setBuildPage(b);
+        setActionPage(a);
         setLoading(false);
       })
       .catch((e: unknown) => {
@@ -138,7 +151,8 @@ export function useFeed(filters: ActivityFilters): Feed {
     if (loadingMore) return;
     const wantTimeline = timeline.nextCursor !== null;
     const wantBuilds = buildPage.nextCursor !== null;
-    if (!wantTimeline && !wantBuilds) return;
+    const wantActions = actionPage.nextCursor !== null;
+    if (!wantTimeline && !wantBuilds && !wantActions) return;
     setLoadingMore(true);
     const t =
       timeline.nextCursor !== null
@@ -148,16 +162,18 @@ export function useFeed(filters: ActivityFilters): Feed {
       buildPage.nextCursor !== null
         ? builds.list({ ...(filters.app !== undefined ? { app: filters.app } : {}), limit: PAGE_SIZE, cursor: buildPage.nextCursor })
         : Promise.resolve(null);
-    Promise.all([t, b])
-      .then(([tp, bp]) => {
+    const a = actionPage.nextCursor !== null ? actions.list({ limit: PAGE_SIZE, cursor: actionPage.nextCursor }) : Promise.resolve(null);
+    Promise.all([t, b, a])
+      .then(([tp, bp, ap]) => {
         if (tp !== null) setTimeline((prev) => ({ items: [...prev.items, ...tp.items], nextCursor: tp.nextCursor }));
         if (bp !== null) setBuildPage((prev) => ({ items: [...prev.items, ...bp.items], nextCursor: bp.nextCursor }));
+        if (ap !== null) setActionPage((prev) => ({ items: [...prev.items, ...ap.items], nextCursor: ap.nextCursor }));
       })
       .catch(() => undefined)
       .finally(() => {
         setLoadingMore(false);
       });
-  }, [loadingMore, timeline.nextCursor, buildPage.nextCursor, filterKey]);
+  }, [loadingMore, timeline.nextCursor, buildPage.nextCursor, actionPage.nextCursor, filterKey]);
 
   const { entries, hasMore } = useMemo(() => {
     const dedupe = new Set<string>();
@@ -178,6 +194,9 @@ export function useFeed(filters: ActivityFilters): Feed {
         .map((item): FeedEntry => ({ type: 'deploy', key: `deploy:${item.deployId}`, at: item.createdAt, item })),
       ...buildPage.items.filter((b) => buildMatches(b, filters)).map((build): FeedEntry => ({ type: 'build', key: `build:${build.buildId}`, at: build.createdAt, build })),
       ...scheduleEntries,
+      ...actionPage.items
+        .filter((action) => actionMatches(action, filters))
+        .map((action): FeedEntry => ({ type: 'action', key: `action:${action.id}`, at: action.createdAt, action })),
     ].sort(byTimeDesc);
 
     // The cut: the newest of the oldest loaded times among sources that still have more pages.
@@ -185,13 +204,14 @@ export function useFeed(filters: ActivityFilters): Feed {
     const oldest = (times: string[]): number => Math.min(...times.map((t) => Date.parse(t)));
     if (timeline.nextCursor !== null && timeline.items.length > 0) cuts.push(oldest(timeline.items.map((i) => i.createdAt)));
     if (buildPage.nextCursor !== null && buildPage.items.length > 0) cuts.push(oldest(buildPage.items.map((b) => b.createdAt)));
+    if (actionPage.nextCursor !== null && actionPage.items.length > 0) cuts.push(oldest(actionPage.items.map((a) => a.createdAt)));
     const cut = cuts.length === 0 ? -Infinity : Math.max(...cuts);
     const visible = rows.filter((r) => Date.parse(r.at) >= cut);
     return {
       entries: groupRollouts(visible),
-      hasMore: timeline.nextCursor !== null || buildPage.nextCursor !== null,
+      hasMore: timeline.nextCursor !== null || buildPage.nextCursor !== null || actionPage.nextCursor !== null,
     };
-  }, [timeline, buildPage, scheduleList, filterKey]);
+  }, [timeline, buildPage, actionPage, scheduleList, filterKey]);
 
   return { loading, error, entries, hasMore, loadingMore, loadMore, scheduleList, scheduleError, reloadSchedules, anyBuilds };
 }

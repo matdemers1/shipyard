@@ -1660,3 +1660,305 @@
     overflow-wrap: anywhere;
   }
 }
+
+/* A container's sheet, its logs and its lifecycle actions (SHP-T-15.7). */
+@layer shipyard {
+  /* A container row is a link: its name, with a hit area stretched over the whole row. */
+  .shp-hc {
+    position: relative;
+  }
+  .shp-hc__open {
+    color: inherit;
+    text-decoration: none;
+  }
+  .shp-hc__open::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+  }
+  .shp-hc:hover {
+    background: var(--color-surface-hover);
+  }
+  .shp-hc__open:focus-visible {
+    outline: none;
+  }
+  .shp-hc__open:focus-visible::after {
+    outline: var(--focus-width) solid var(--color-focus);
+    outline-offset: calc(-1 * var(--focus-width));
+  }
+
+  /* A group's "Restart stack", and its progress on a line of its own under the header. */
+  .shp-hg__act {
+    margin-left: auto;
+  }
+  .shp-hg__link + .shp-hg__act {
+    margin-left: 0;
+  }
+  .shp-hg__progress {
+    flex-basis: 100%;
+    min-width: 0;
+    padding: 0 var(--space-4) var(--space-12) var(--space-8);
+  }
+
+  /* The in-progress banner. */
+  .shp-action-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4) var(--space-8);
+    min-width: 0;
+    padding: var(--space-8) var(--space-12);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-card);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+  }
+  .shp-action-banner__head {
+    font-weight: var(--weight-semibold);
+  }
+  .shp-action-banner__detail {
+    min-width: 0;
+    color: var(--color-fg-muted);
+    overflow-wrap: anywhere;
+  }
+  .shp-action-fix {
+    margin: 0;
+  }
+  .shp-action-output {
+    max-height: 16rem;
+    margin: 0;
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* The sheet: a bottom sheet on a phone (the Modal's own), a panel on the right on a desktop. */
+  .shp-csheet__facts {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-width: 0;
+  }
+  .shp-csheet__line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4) var(--space-12);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .shp-csheet__image {
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+    overflow-wrap: anywhere;
+  }
+  .shp-csheet__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+    min-width: 0;
+  }
+  .shp-csheet__actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    min-width: 0;
+  }
+  .shp-csheet__buttons {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-8);
+  }
+  .shp-csheet__hint {
+    display: none;
+    margin-left: auto;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
+  .shp-csheet__muted {
+    margin: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+  }
+  .shp-csheet__note {
+    flex: 1;
+    margin: 0;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-20);
+    text-align: left;
+  }
+  /* The Modal shows its own close control below 600 px; this one is the desktop panel's. */
+  .shp-csheet__close {
+    display: none;
+  }
+  @media (min-width: 600px) {
+    .shp-csheet__close {
+      display: block;
+      position: absolute;
+      top: var(--space-16);
+      right: var(--space-16);
+    }
+    .shp-csheet .d3-modal__head {
+      padding-right: var(--space-64);
+    }
+    .shp-csheet__hint {
+      display: inline;
+    }
+  }
+  @media (min-width: 1024px) {
+    .shp-csheet,
+    .shp-csheet.d3-modal--lg {
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: auto;
+      transform: none;
+      display: flex;
+      flex-direction: column;
+      width: min(48rem, calc(100vw - 20rem));
+      max-height: none;
+      border-radius: 0;
+      overflow: hidden;
+      animation: none;
+    }
+    .shp-csheet[data-state='closed'] {
+      animation: none;
+    }
+    .shp-csheet .d3-modal__head,
+    .shp-csheet .d3-modal__desc,
+    .shp-csheet .d3-modal__footer {
+      flex: none;
+    }
+    .shp-csheet .d3-modal__body {
+      display: block;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+    }
+  }
+
+  /* Logs. */
+  .shp-logs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    min-width: 0;
+  }
+  .shp-logs__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-4) var(--space-12);
+  }
+  .shp-logs__title {
+    margin: 0;
+    font-size: var(--text-16);
+    font-weight: var(--weight-semibold);
+  }
+  .shp-logs__muted {
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+  }
+  .shp-logs__follow {
+    margin-left: auto;
+  }
+  .shp-logs__frame {
+    position: relative;
+    min-width: 0;
+  }
+  .shp-logs__scroll {
+    max-height: min(28rem, 50vh);
+    overflow: auto;
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+  }
+  .shp-logs__scroll:focus-visible {
+    outline: var(--focus-width) solid var(--color-focus);
+    outline-offset: var(--focus-offset);
+  }
+  .shp-logs__lines {
+    margin: 0;
+    padding: var(--space-8) var(--space-12);
+    list-style: none;
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+    line-height: var(--leading-20);
+  }
+  .shp-logs__line {
+    display: flex;
+    gap: var(--space-12);
+    min-width: 0;
+  }
+  .shp-logs__line[data-stream='stderr'] {
+    color: var(--color-warning);
+  }
+  .shp-logs__time {
+    flex: none;
+    color: var(--color-fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .shp-logs__line[data-stream='stderr'] .shp-logs__time {
+    color: inherit;
+  }
+  .shp-logs__text {
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .shp-logs__jump {
+    position: absolute;
+    right: var(--space-12);
+    bottom: var(--space-12);
+  }
+  .shp-logs__state {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    margin: 0;
+    padding: var(--space-16);
+    border: var(--border-width) dashed var(--color-border);
+    border-radius: var(--radius-md);
+    color: var(--color-fg-muted);
+    font-size: var(--text-14);
+  }
+  p.shp-logs__state {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-8);
+  }
+  .shp-logs__state p {
+    margin: 0;
+  }
+  .shp-logs__state-head {
+    color: var(--color-fg);
+    font-weight: var(--weight-semibold);
+  }
+}
+
+/* Activity's action row (SHP-T-15.7): the requester beside the time on a desktop, under the name on a phone. */
+@layer shipyard {
+  .shp-feed-row__who {
+    display: none;
+    flex: none;
+    color: var(--color-fg-muted);
+    font-size: var(--text-13);
+    line-height: var(--leading-13);
+    white-space: nowrap;
+  }
+  @media (min-width: 600px) {
+    .shp-feed-row__who {
+      display: inline;
+    }
+    .shp-feed-row__who-inline {
+      display: none;
+    }
+  }
+}

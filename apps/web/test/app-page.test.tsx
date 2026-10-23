@@ -358,6 +358,58 @@ describe('the tabs', () => {
     expect(within(panel).getByText(`sha256:${'e'.repeat(12)}`)).toBeInTheDocument();
     expect(within(panel).getByRole('textbox', { name: 'Manifest' })).toBeInTheDocument();
   });
+
+  it("links each running container to its sheet on Host (SHP-T-15.7)", async () => {
+    const web = 'c'.repeat(64);
+    const hostContainer = (id: string, service: string, app: string | null) => ({
+      id,
+      name: `${app ?? 'other'}-${service}-1`,
+      image: 'ghcr.io/matdemers1/bindery/web:sha-1',
+      imageId: `sha256:${'b'.repeat(64)}`,
+      digest: null,
+      state: 'running',
+      health: 'none',
+      restartCount: 0,
+      createdAt: '2026-10-20T00:00:00.000Z',
+      startedAt: null,
+      compose: { project: app ?? 'other', service },
+      tier: app === null ? 'observed' : 'shipped',
+      app,
+      ports: [],
+      mounts: [],
+      stats: null,
+    });
+    routes('deployer', {
+      'GET /api/host': {
+        status: 200,
+        body: {
+          hosts: [
+            {
+              agent: { id: '7c0f4a0e-3b51-4d8e-9a8e-1f2e3d4c5b6a', fingerprint: 'SHA256:agent' },
+              reportedAt: '2026-10-20T00:00:00.000Z',
+              inventory: {
+                sampledAt: '2026-10-20T00:00:00.000Z',
+                containers: [hostContainer(web, 'web', 'bindery'), hostContainer('d'.repeat(64), 'api', null)],
+                volumes: [],
+                images: [],
+                networks: [],
+                builderCache: { bytes: 0, reclaimableBytes: 0 },
+                disk: { dataRoot: { path: '/DATA', freeBytes: 1, totalBytes: 2 }, dockerRoot: null },
+              },
+              samples: {},
+            },
+          ],
+        },
+      },
+    });
+    const user = userEvent.setup();
+    renderAt('/apps/bindery');
+    await user.click(await screen.findByRole('tab', { name: 'Config' }, { timeout: 4000 }));
+    const panel = screen.getByRole('tabpanel');
+    expect(await within(panel).findByRole('link', { name: /Logs and actions for web/ })).toHaveAttribute('href', `/host?container=${web}`);
+    // Another project's container with the same service name is not this app's.
+    expect(within(panel).queryByRole('link', { name: /Logs and actions for api/ })).not.toBeInTheDocument();
+  });
 });
 
 describe('the facts rail', () => {

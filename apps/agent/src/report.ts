@@ -80,14 +80,17 @@ function stackKey(name: string): string {
   return `stack/${name}`;
 }
 
-/** The combined hash of the manifests and stacks currently on disk. Throws as `loadManifests` and `loadStacks` do. */
+/** The combined hash of the manifests and stacks currently on disk. Throws as `loadManifests` does. */
 export async function manifestsHash(fs: FsPort, dataRoot: string): Promise<string> {
   const loaded = await loadManifests(fs, dataRoot);
-  const stacks = await loadStacks(fs, dataRoot);
-  return combinedHash([
-    ...[...loaded].map(([name, m]) => ({ name, sha256: m.sha256 })),
-    ...[...stacks].map(([name, s]) => ({ name: stackKey(name), sha256: s.sha256 })),
-  ]);
+  // An invalid stacks/ folder hashes as its error, so fixing it is still noticed at once.
+  let stackEntries: { name: string; sha256: string }[];
+  try {
+    stackEntries = [...(await loadStacks(fs, dataRoot))].map(([name, s]) => ({ name: stackKey(name), sha256: s.sha256 }));
+  } catch (err) {
+    stackEntries = [{ name: 'stack/!invalid', sha256: createHash('sha256').update(err instanceof Error ? err.message : String(err)).digest('hex') }];
+  }
+  return combinedHash([...[...loaded].map(([name, m]) => ({ name, sha256: m.sha256 })), ...stackEntries]);
 }
 
 /** The combined hash of the manifests and stacks a report carries. */
@@ -138,7 +141,16 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
     apps.push({ manifest: m.manifest, manifestSha256: m.sha256, running });
   }
 
-  const stacks = [...(await loadStacks(ports.fs, dataRoot)).values()].sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
+  // A broken stack file must not cost the apps their report, nor the agent its heartbeat: the
+  // stacks are left out (the server keeps what it had) and the agent says why in its log.
+  let stacks: LoadedStack[] = [];
+  let stacksFailed = false;
+  try {
+    stacks = [...(await loadStacks(ports.fs, dataRoot)).values()].sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
+  } catch (err) {
+    stacksFailed = true;
+    ports.log?.warn({ err: err instanceof Error ? err.message : String(err) }, 'stack manifests failed to load; reporting without stacks');
+  }
 
   const engine = (await ports.engineApiVersion()).trim();
   const releases = await ledgerReleases(ports, loaded);
@@ -151,7 +163,7 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
     patExpiresAt: versions.patExpiresAt,
     apps,
     // Absent rather than empty when nothing is adopted, as an older agent's report is.
-    ...(stacks.length === 0 ? {} : { stacks: stacks.map((s) => ({ manifest: s.manifest, manifestSha256: s.sha256 })) }),
+    ...(stacks.length === 0 || stacksFailed ? {} : { stacks: stacks.map((s) => ({ manifest: s.manifest, manifestSha256: s.sha256 })) }),
     ...(releases === undefined ? {} : { releases }),
     ...(buildCache === undefined ? {} : { buildCache }),
     ...(host === undefined ? {} : { host }),

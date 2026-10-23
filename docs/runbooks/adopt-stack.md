@@ -38,11 +38,19 @@ envFiles: []              # any env files whose values must be redacted from log
 updates: none             # until SHP-P-16; something else keeps the images current
 ```
 
-The agent reads every file in `stacks/` together: one invalid file and none of them load (the same
-all-or-nothing rule as `apps/`), so validate before you save — the agent's next report names the
-field that failed.
+The agent reads every file in `stacks/` together: one invalid file and **no stack loads**. The apps
+are unaffected — the agent reports them as usual, leaves stacks out of its report (the server keeps
+what it had) and logs `stack manifests failed to load` naming the file and field. Check before you
+save:
 
-A stack's name must not equal an app's name, and a compose project belongs to at most one manifest.
+```bash
+cd /DATA/shipyard && docker compose -p shipyard run --rm --no-deps --entrypoint shipyard-run agent check-manifests
+```
+
+It lists every app and stack and exits 1 on an invalid file or a clash. Two clashes matter, because
+otherwise they are settled silently: a stack with the **same name as an app** is never adopted (the
+server ignores it with a warning), and a **compose project already named** by an app or an earlier
+stack stays with that one.
 
 ## 3. Let the agent see the compose file
 

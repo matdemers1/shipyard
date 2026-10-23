@@ -219,7 +219,11 @@ export function envFileRedactionValues(text: string): string[] {
   // name this reader's pattern refuses (a digit-leading name, KEY[0]=…) still has its value redacted
   // on its own, not only as a whole line (SHP-REQ-190).
   // Its line-at-a-time values may keep one stray quote of a value that spans lines; drop it.
-  for (const value of parseEnvFile(text).values()) out.add(value.replace(/^["']|["']$/g, ''));
+  // Both forms: a short value that loses a quote must still be caught as written.
+  for (const value of parseEnvFile(text).values()) {
+    out.add(value);
+    out.add(value.replace(/^["']|["']$/g, ''));
+  }
   return [...out].filter((v) => v.length > 0);
 }
 

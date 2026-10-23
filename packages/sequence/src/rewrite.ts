@@ -103,7 +103,27 @@ function findImage(text: string, service: string): FindImageResult {
  * ambiguous (present in more than one file), foreign (a different repository), or unverifiable
  * (`${...}` interpolation).
  */
-export function planRewrite(files: RewriteFile[], mappings: RewriteMapping[]): RewritePlanFile[] {
+export interface PlanRewriteOptions {
+  /**
+   * Whether the image line's repository is the mapped one. Default: the same string. A stack
+   * (SHP-REQ-197) passes a comparison that treats Docker Hub's spellings (`docker.io/library/x`,
+   * `x`) as one repository.
+   */
+  sameRepository?: (current: string, mapped: string) => boolean;
+}
+
+/** The value of each service's literal image line, or null when it has none (or none that is literal). */
+export function currentImageValues(files: RewriteFile[], services: string[]): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const service of services) {
+    const found = files.map((file) => findImage(file.text, service)).filter((f) => f.kind === 'found');
+    out[service] = found.length === 1 && found[0] !== undefined ? found[0].currentValue : null;
+  }
+  return out;
+}
+
+export function planRewrite(files: RewriteFile[], mappings: RewriteMapping[], options: PlanRewriteOptions = {}): RewritePlanFile[] {
+  const sameRepository = options.sameRepository ?? ((current: string, mapped: string) => current === mapped);
   // fileIndex -> list of { range, replacement, service, originalValue }
   interface PlannedEdit {
     range: [number, number];
@@ -166,7 +186,7 @@ export function planRewrite(files: RewriteFile[], mappings: RewriteMapping[]): R
     }
 
     const currentRepo = repositoryOf(match.currentValue);
-    if (currentRepo !== mapping.repo) {
+    if (!sameRepository(currentRepo, mapping.repo)) {
       throw new RefusalError(
         refusal(
           'image_line_invalid',

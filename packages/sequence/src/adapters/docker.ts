@@ -435,7 +435,7 @@ export function createDockerAdapter(
   Required<
     Pick<DockerPort, 'loadImage' | 'inspectNetwork' | 'hostContainers' | 'hostVolumes' | 'systemDf' | 'hostImages' | 'hostNetworks' | 'containerStats' | 'dockerRootSpace'>
   > &
-  Required<Pick<DockerPort, 'containerLogs' | 'inspectEnv'>> {
+  Required<Pick<DockerPort, 'containerLogs' | 'inspectEnv' | 'pullImage'>> {
   const docker = options.docker ?? dockerodeFor(options.dockerHost);
   const composeBin = options.composeBin ?? 'docker';
   const probeImage = options.probeImage ?? 'busybox:1.37';
@@ -660,6 +660,15 @@ export function createDockerAdapter(
     // `loadImage` instead resolves a raw response stream with no exit code to report.
     async loadImage(tarPath) {
       return execFile(composeBin, ['load', '-i', tarPath], { env: composeEnv() });
+    },
+
+    // A stack update's pull by digest (SHP-REQ-197): the CLI, so it uses the same DOCKER_CONFIG
+    // credentials as compose, and an argv with exactly one reference.
+    async pullImage(reference) {
+      if (reference.startsWith('-') || !/^[^\s@]+@sha256:[0-9a-f]{64}$/.test(reference)) {
+        return { exitCode: 2, stdout: '', stderr: `refusing to pull ${reference}: not a repo@sha256 reference` };
+      }
+      return execFile(composeBin, ['pull', '--quiet', reference], { env: composeEnv(), timeoutMs: 600_000 });
     },
 
     async inspectNetwork(name): Promise<BuildNetworkInfo | null> {

@@ -45,6 +45,35 @@ export interface UnfinishedAction {
   detail: Record<string, unknown> | undefined;
 }
 
+/**
+ * The journal steps of a stack update (SHP-ADR-010, SHP-REQ-197): a `stack-update` bracket under
+ * the update ID (in `deployId`) and the stack name (in `app`), and inside it one `stack-update:<step>`
+ * pair per step, each written before the step runs. Not a deploy: `unfinished()` ignores them, and
+ * `unfinishedStackUpdates()` is how restart recovery finds one the agent stopped in the middle of.
+ */
+export const STACK_UPDATE_STEP = 'stack-update';
+
+/** `stack-update:<step>`, the journal name of one step of a stack update. */
+export function stackUpdateStep(step: string): string {
+  return `${STACK_UPDATE_STEP}:${step}`;
+}
+
+function isStackUpdateLine(step: string): boolean {
+  return step === STACK_UPDATE_STEP || step.startsWith(`${STACK_UPDATE_STEP}:`);
+}
+
+/** A stack update whose bracket has no `end` line: the agent stopped mid-update. */
+export interface UnfinishedStackUpdate {
+  updateId: string;
+  stack: string;
+  /** The bracket's `start` detail: `{ kind, composeFiles, project, services }`. */
+  detail: Record<string, unknown> | undefined;
+  /** The last step that started without ending, e.g. `stack-update:check`. */
+  lastStep: string | undefined;
+  /** True once the compose file was about to be rewritten: recovery restores the previous one. */
+  swapped: boolean;
+}
+
 export class Journal {
   constructor(
     private readonly fs: FsPort,
@@ -127,7 +156,7 @@ export class Journal {
     const order: string[] = [];
 
     for (const entry of entries) {
-      if (entry.step === ACTION_STEP) continue;
+      if (entry.step === ACTION_STEP || isStackUpdateLine(entry.step)) continue;
       let state = deploys.get(entry.deployId);
       if (!state) {
         state = { app: entry.app, detail: undefined, ended: false, openSteps: [] };
@@ -168,6 +197,29 @@ export class Journal {
       });
     }
     return unfinished;
+  }
+
+  /** Stack updates started and never ended, in the order they started (SHP-REQ-197). */
+  async unfinishedStackUpdates(): Promise<UnfinishedStackUpdate[]> {
+    const open = new Map<string, UnfinishedStackUpdate & { openSteps: string[] }>();
+    for (const entry of await this.readAll()) {
+      if (!isStackUpdateLine(entry.step)) continue;
+      if (entry.step === STACK_UPDATE_STEP) {
+        if (entry.phase === 'start') open.set(entry.deployId, { updateId: entry.deployId, stack: entry.app, detail: entry.detail, lastStep: undefined, swapped: false, openSteps: [] });
+        else open.delete(entry.deployId);
+        continue;
+      }
+      const state = open.get(entry.deployId);
+      if (state === undefined) continue;
+      if (entry.phase === 'start') {
+        state.openSteps.push(entry.step);
+        if (entry.step === stackUpdateStep('swap')) state.swapped = true;
+      } else {
+        const i = state.openSteps.lastIndexOf(entry.step);
+        if (i !== -1) state.openSteps.splice(i, 1);
+      }
+    }
+    return [...open.values()].map(({ openSteps, ...rest }) => ({ ...rest, lastStep: openSteps.at(-1) }));
   }
 
   /** Lifecycle actions started and never ended, in the order they started (SHP-REQ-187). */

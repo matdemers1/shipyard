@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import pino from 'pino';
+import { refusal } from '@shipyard/schema';
 import {
   AppLock,
   Journal,
@@ -7,6 +8,7 @@ import {
   createBuildKitAdapter,
   createDockerAdapter,
   createGitHubAdapter,
+  createOciRegistry,
   createRegistryAdapter,
   dockerConfigCredentials,
   isAppLockLive,
@@ -16,11 +18,15 @@ import {
   lockPath,
   nodeFs,
   recoverInterrupted,
+  recoverInterruptedStackUpdates,
+  registryCredentials,
   runArgv,
   runDeploy,
   runRestore,
   runRollback,
+  runStackUpdate,
   systemClock,
+  ManifestLoadError,
   type Log,
   type SequencePorts,
 } from '@shipyard/sequence';
@@ -35,6 +41,8 @@ import { POLL_TIMEOUT_MS, createTargetRunner, fileTargetStore, reportLeftovers, 
 import { createInventoryCollector } from './inventory.js';
 import { createLogsRunner } from './logs.js';
 import { buildReport, manifestsHash, startReporting } from './report.js';
+import { createCandidateChecker } from './stack-candidates.js';
+import { createStackUpdateRunner, reportInterruptedStackUpdates } from './stack-updates.js';
 
 /**
  * The agent's entry (SHP-T-2.4). It opens no port, ever (SHP-ADR-002, SHP-REQ-033): everything
@@ -137,6 +145,29 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // chain onto the file's true tail, since the host CLI appends to the same file (SHP-T-6.11).
   const ledger = await Ledger.open(ports.fs, paths.ledgerPath);
 
+  // A stack update is never resumed forward either (SHP-REQ-197): put back what one left mid-swap,
+  // and tell the server.
+  const stackRecovered = await recoverInterruptedStackUpdates({ fs: ports.fs, docker: ports.docker, log }, journal, {
+    historyDir: paths.historyDir,
+    ledger,
+    isLive,
+  });
+  await reportInterruptedStackUpdates({
+    client,
+    recovered: stackRecovered,
+    succeeded: (stack, updateId) => {
+      const record = ledger.stackUpdate(stack, updateId);
+      const images = (list: { service: string; tag: string | null; digest: string }[]) => list.map(({ service, tag, digest }) => ({ service, tag, digest }));
+      return record === null ? null : { images: images(record.images), previous: images(record.previous) };
+    },
+    log: logger,
+  });
+
+  // Stack updates (SHP-ADR-010): any OCI registry, with the same read-only docker config the
+  // agent's pulls use; candidates are checked on the report interval, cached and rate-limit aware.
+  const stackRegistry = createOciRegistry({ credentials: registryCredentials(process.env.DOCKER_CONFIG) });
+  const candidates = createCandidateChecker({ registry: stackRegistry, docker: ports.docker, log: logger });
+
   // Set once builds are enabled below; a plain variable so `reporting`'s closure (built before it
   // exists) always reads whatever it is by the time a report is actually sent (SHP-T-7.11).
   let cacheManager: CacheManager | undefined;
@@ -156,6 +187,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
           ledger,
           buildCache: () => cacheManager?.snapshot(),
           inventory,
+          stackServices: (stack) => candidates.services(stack),
           log: logger,
         },
         config.dataRoot,
@@ -247,6 +279,32 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   }
   const worker = builds;
 
+  // Stack updates by digest (SHP-P-16): always on, in the background, one at a time.
+  const stackUpdates = createStackUpdateRunner({
+    client,
+    execute: async (job, onStep) => {
+      let stacks;
+      try {
+        stacks = await loadStacks(ports.fs, config.dataRoot);
+      } catch (err) {
+        const why = err instanceof ManifestLoadError ? err.toRefusal() : refusal('manifest_invalid', `The host's stack manifests could not be read: ${err instanceof Error ? err.message : String(err)}`);
+        return { updateId: job.updateId, state: 'refused', images: [], previous: [], refusal: why };
+      }
+      return runStackUpdate(
+        { registry: stackRegistry, docker: ports.docker, fs: ports.fs, clock: ports.clock, log },
+        { dataRoot: config.dataRoot, stacks, journal, ledger, historyDir: paths.historyDir, onStep },
+        job,
+      );
+    },
+    // What runs changed: re-check the stack's candidates and tell the server now.
+    onFinished: (job) => {
+      candidates.invalidate(job.stack);
+      void reporting.sendNow();
+    },
+    log: logger,
+    signal: stopping.signal,
+  });
+
   // Lifecycle actions and logs (SHP-ADR-010, SHP-ADR-011): always on, each in the background.
   const actions = createActionRunner({
     client,
@@ -261,6 +319,17 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     // Held for the action, so a deploy arriving meanwhile is refused `locked` rather than racing it.
     lockApp: (app, job) =>
       AppLock.acquire(config.dataRoot, app, {
+        pid: process.pid,
+        deployId: job.actionId,
+        requesterLabel: job.requesterLabel ?? 'shipyard server',
+        sha: '',
+        step: `action ${job.verb}`,
+        at: new Date().toISOString(),
+      }),
+    // A stack is held the same way, and never acted on mid-update (SHP-P-16).
+    stackBusy: (stack) => stackUpdates.inFlightFor(stack),
+    lockStack: (stack, job) =>
+      AppLock.acquire(config.dataRoot, stack, {
         pid: process.pid,
         deployId: job.actionId,
         requesterLabel: job.requesterLabel ?? 'shipyard server',
@@ -286,6 +355,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       runTarget: targets.run,
       actions,
       logs,
+      stackUpdates,
       log: logger,
       signal: stopping.signal,
       ...(worker === undefined ? {} : { builds: { canTake: () => !worker.busy(), offer: (job) => void worker.offer(job) } }),

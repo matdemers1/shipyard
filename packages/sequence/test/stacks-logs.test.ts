@@ -296,3 +296,10 @@ describe('the Docker adapter: containerLogs and inspectEnv (read-only)', () => {
     expect(await createDockerAdapter({ docker: fakeDockerode({ env: null, labels: null }).docker }).inspectEnv(ID)).toEqual({ envValues: [], composeProject: null });
   });
 });
+
+describe('envFileRedactionValues covers every name parseEnvFile does (SHP-REQ-190)', () => {
+  it.each(['1ABC=digitnamesecret', 'KEY[0]=digitnamesecret', 'A:B=digitnamesecret'])('redacts the value of %s on its own', (line) => {
+    const redact = createRedactor(redactionValues(envFileRedactionValues(`${line}\n`), []));
+    expect(redact('printed digitnamesecret here')).toBe(`printed ${REDACTED} here`);
+  });
+});

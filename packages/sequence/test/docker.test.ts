@@ -301,6 +301,8 @@ describe('containers', () => {
         networks: ['app_default', 'app_internal'],
         startedAt: '2026-09-24T10:00:00.000000000Z',
         restartCount: 2,
+        // No healthcheck in the inspect (SHP-T-15.3: a lifecycle action waits for healthy where there is one).
+        health: 'none',
       },
     ]);
     expect(f.raw.getContainer).toHaveBeenCalledWith('svc-container');

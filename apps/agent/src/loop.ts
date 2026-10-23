@@ -1,7 +1,9 @@
 import {
   PollResponse,
   refusal,
+  type ActionJob,
   type BuildJob,
+  type LogsJob,
   type BuildSettings,
   type PollRequest,
   type Refusal,
@@ -44,7 +46,7 @@ export const POLL_TIMEOUT_MS = 35_000;
 export type PollTarget = NonNullable<PollResponse['target']>;
 
 /** Every top-level poll-answer field this agent understands. */
-const POLL_RESPONSE_KEYS: ReadonlySet<string> = new Set(['target', 'build', 'buildSettings']);
+const POLL_RESPONSE_KEYS: ReadonlySet<string> = new Set(['target', 'build', 'buildSettings', 'action', 'logs']);
 
 /**
  * Parses a poll answer, dropping top-level fields this agent does not know first. The server is
@@ -123,30 +125,64 @@ export interface LoopBuilds {
   offer: (job: BuildJob) => void;
 }
 
-/** The poll body: `capabilities: ['build']` only while a build could be taken. */
-export function pollBody(builds: LoopBuilds | undefined): PollRequest {
-  return builds?.canTake() === true ? { waitSeconds: POLL_WAIT_SECONDS, capabilities: ['build'] } : { waitSeconds: POLL_WAIT_SECONDS };
+/**
+ * The loop's side of the lifecycle-action and log runners (SHP-ADR-010, SHP-ADR-011). `offer`
+ * returns at once: an action waits up to a minute for health and a followed log stream lasts up to
+ * five, and the loop must keep polling meanwhile so deploys still arrive. A runner that is already
+ * busy answers the job with a refusal itself rather than queueing it.
+ */
+export interface LoopJobs<Job> {
+  offer: (job: Job) => void;
+}
+
+/** What this agent can take besides deploy targets, for the poll body. */
+export interface PollCapabilities {
+  builds?: LoopBuilds | undefined;
+  actions?: boolean;
+  logs?: boolean;
+}
+
+/**
+ * The poll body: `build` only while a build could be taken; `actions` and `logs` whenever the
+ * agent runs them (always, as `index.ts` wires it — a busy runner refuses rather than goes quiet,
+ * so the console says why instead of waiting on a job no agent will take).
+ */
+export function pollBody(caps: LoopBuilds | PollCapabilities | undefined): PollRequest {
+  const { builds, actions = false, logs = false } = caps === undefined || 'canTake' in caps ? { builds: caps } : caps;
+  const capabilities: NonNullable<PollRequest['capabilities']> = [];
+  if (builds?.canTake() === true) capabilities.push('build');
+  if (actions) capabilities.push('actions');
+  if (logs) capabilities.push('logs');
+  return capabilities.length === 0 ? { waitSeconds: POLL_WAIT_SECONDS } : { waitSeconds: POLL_WAIT_SECONDS, capabilities };
 }
 
 /**
  * Wraps a target runner so the agent knows when a deploy is in flight (SHP-REQ-130): the build
- * worker holds its next stage while `inFlight()` is true.
+ * worker holds its next stage while `inFlight()` is true, and a lifecycle action on an app is
+ * refused `locked` while `inFlightFor(app)` is (SHP-REQ-184).
  */
 export function trackInFlight(runTarget: (target: PollTarget) => Promise<void>): {
   run: (target: PollTarget) => Promise<void>;
   inFlight: () => boolean;
+  inFlightFor: (app: string) => boolean;
 } {
   let running = 0;
+  const byApp = new Map<string, number>();
   return {
     run: async (target) => {
       running += 1;
+      byApp.set(target.app, (byApp.get(target.app) ?? 0) + 1);
       try {
         await runTarget(target);
       } finally {
         running -= 1;
+        const left = (byApp.get(target.app) ?? 1) - 1;
+        if (left === 0) byApp.delete(target.app);
+        else byApp.set(target.app, left);
       }
     },
     inFlight: () => running > 0,
+    inFlightFor: (app) => (byApp.get(app) ?? 0) > 0,
   };
 }
 
@@ -156,6 +192,10 @@ export interface LoopOptions {
   runTarget: (target: PollTarget) => Promise<void>;
   /** The build worker, when builds are configured. */
   builds?: LoopBuilds;
+  /** The lifecycle-action runner (SHP-REQ-184); with it the agent advertises `actions`. */
+  actions?: LoopJobs<ActionJob>;
+  /** The log-read runner (SHP-REQ-189); with it the agent advertises `logs`. */
+  logs?: LoopJobs<LogsJob>;
   /**
    * Called with `buildSettings` whenever a poll response carries it (SHP-T-7.11): the loop's only
    * hook into the BuildKit cache manager. Never awaited by the loop itself — a slow or failing
@@ -185,8 +225,14 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
   while (!stopped()) {
     let target: PollTarget | null;
     let build: BuildJob | undefined;
+    let action: ActionJob | undefined;
+    let logs: LogsJob | undefined;
     try {
-      const body = await opts.client.request('POST', POLL_PATH, pollBody(opts.builds));
+      const body = await opts.client.request(
+        'POST',
+        POLL_PATH,
+        pollBody({ builds: opts.builds, actions: opts.actions !== undefined, logs: opts.logs !== undefined }),
+      );
       const parsed = parsePollResponse(body, (keys) => {
         const fresh = keys.filter((key) => !ignoredKeys.has(key));
         if (fresh.length === 0) return;
@@ -195,6 +241,8 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
       });
       target = parsed.target;
       build = 'build' in parsed ? parsed.build : undefined;
+      action = 'action' in parsed ? parsed.action : undefined;
+      logs = 'logs' in parsed ? parsed.logs : undefined;
       if (parsed.buildSettings !== undefined && opts.onBuildSettings !== undefined) {
         try {
           opts.onBuildSettings(parsed.buildSettings);
@@ -217,6 +265,14 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
         opts.builds.offer(build);
       }
     }
+    if (action !== undefined) {
+      if (opts.actions === undefined) opts.log.warn({ actionId: action.actionId }, 'sent an action without asking for one; ignoring it');
+      else offerSafely(opts.actions, action, opts.log, { actionId: action.actionId });
+    }
+    if (logs !== undefined) {
+      if (opts.logs === undefined) opts.log.warn({ logsId: logs.logsId }, 'sent a log read without asking for one; ignoring it');
+      else offerSafely(opts.logs, logs, opts.log, { logsId: logs.logsId });
+    }
     if (target === null) continue;
     try {
       await opts.runTarget(target);
@@ -226,6 +282,15 @@ export async function runLoop(opts: LoopOptions): Promise<void> {
     }
   }
   opts.log.info({}, 'agent loop stopped');
+}
+
+/** A runner's `offer` must never take the loop down with it. */
+function offerSafely<Job>(runner: LoopJobs<Job>, job: Job, log: LoopLog, ids: object): void {
+  try {
+    runner.offer(job);
+  } catch (err) {
+    log.error({ ...ids, err: message(err) }, 'job runner threw');
+  }
 }
 
 // ─── Targets taken but not yet reported ──────────────────────────────────────

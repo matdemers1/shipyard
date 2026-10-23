@@ -77,3 +77,40 @@ export function redact(output: string, secrets: Map<string, string>): string {
   const lines = result.split('\n');
   return lines.slice(Math.max(0, lines.length - MAX_STORED_LINES)).join('\n');
 }
+
+// ─── Action output and container logs (SHP-REQ-190, SHP-ADR-011) ─────────────
+
+/** What every secret value becomes in a lifecycle action's output or a log line. */
+export const REDACTED = '[redacted]';
+
+/**
+ * A container Env value is redacted when it is longer than this (SHP-REQ-190). Env carries
+ * ordinary settings too (`PORT=3000`, `NODE_ENV=production`), and blanking every short value would
+ * turn a log into noise; a credential is longer than eight characters.
+ */
+export const MIN_REDACTED_ENV_LENGTH = 9;
+
+/**
+ * The values to redact from an action's output or a container's logs: every env-file value of the
+ * matching manifest or stack (less the trivial ones `redact` already skips, so `true` or `3000`
+ * never blanks a log), and every inspected container Env value longer than eight characters. Only
+ * values: a variable's name is never a secret and stays readable.
+ */
+export function redactionValues(envFileSecrets: ReadonlyMap<string, string>, inspectedEnvValues: readonly string[]): string[] {
+  const values = new Set<string>();
+  for (const value of envFileSecrets.values()) if (!isTrivial(value)) values.add(value);
+  for (const value of inspectedEnvValues) if (value.length >= MIN_REDACTED_ENV_LENGTH) values.add(value);
+  return [...values];
+}
+
+/**
+ * A redactor replacing every one of `values` with `[redacted]`. One regular expression with the
+ * longest values first, so a value containing another is replaced whole, and so a log stream of
+ * thousands of lines does not build a pattern per line.
+ */
+export function createRedactor(values: readonly string[]): (text: string) => string {
+  const usable = [...new Set(values)].filter((v) => v.length > 0).sort((a, b) => b.length - a.length);
+  if (usable.length === 0) return (text) => text;
+  const pattern = new RegExp(usable.map(escapeRegExp).join('|'), 'g');
+  return (text) => text.replace(pattern, REDACTED);
+}

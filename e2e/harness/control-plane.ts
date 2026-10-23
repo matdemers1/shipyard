@@ -2,8 +2,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 
 /**
- * A stand-in for the Shipyard server's agent API (`/api/agent/poll|progress|steps|result|report`, and the
- * build worker's `build-progress|build-result`), for e2e tests that run the real agent loop. It hands out queued targets, records everything the
+ * A stand-in for the Shipyard server's agent API (`/api/agent/poll|progress|steps|result|report`, the
+ * build worker's `build-progress|build-result`, and SHP-T-15.3's `actions/:id/progress|result` and
+ * `logs/:id/chunks`), for e2e tests that run the real agent loop. It hands out queued targets, records everything the
  * agent sends, and can be taken down and brought back on the same port, the way a broken
  * self-deployed server disappears and a fixed one returns.
  *
@@ -25,6 +26,12 @@ export interface FakeControlPlane {
   readonly keys: Set<string>;
   /** Hands `target` to the next poll. */
   enqueue(target: object): void;
+  /** Hands a lifecycle `ActionJob` to the next poll (`{ target: null, action }`). */
+  enqueueAction(job: object): void;
+  /** Hands a `LogsJob` to the next poll (`{ target: null, logs }`). */
+  enqueueLogs(job: object): void;
+  /** The answer to each log chunk: `{ continue }`. Default true. */
+  logsContinue: boolean;
   /** Called for each progress body before it is answered (e.g. to take the plane down). */
   onProgress: ((body: Record<string, unknown>) => void) | null;
   readonly up: boolean;
@@ -62,6 +69,7 @@ export async function startFakeControlPlane(options: { idlePollMs?: number } = {
   const idlePollMs = options.idlePollMs ?? 200;
   const received: ReceivedRequest[] = [];
   const keys = new Set<string>();
+  /** Whole poll answers, in order. */
   const queue: object[] = [];
   let server: Server | null = null;
   let isUp = false;
@@ -86,7 +94,7 @@ export async function startFakeControlPlane(options: { idlePollMs?: number } = {
       case '/api/agent/poll': {
         const next = queue.shift();
         if (next !== undefined) {
-          send(res, 200, { target: next });
+          send(res, 200, next);
           return;
         }
         // A short hold, so an idle agent does not spin.
@@ -117,6 +125,15 @@ export async function startFakeControlPlane(options: { idlePollMs?: number } = {
         send(res, 200, { accepted: true });
         return;
       default:
+        // SHP-T-15.3: a lifecycle action's progress and result, and log chunks — recorded, always taken.
+        if (/^\/api\/agent\/actions\/[^/]+\/(progress|result)$/.test(path)) {
+          send(res, 200, { ok: true });
+          return;
+        }
+        if (/^\/api\/agent\/logs\/[^/]+\/chunks$/.test(path)) {
+          send(res, 200, { continue: plane.logsContinue });
+          return;
+        }
         send(res, 404, { error: { code: 'not_found', message: path } });
     }
   };
@@ -163,7 +180,10 @@ export async function startFakeControlPlane(options: { idlePollMs?: number } = {
     },
     received,
     keys,
-    enqueue: (target) => queue.push(target),
+    enqueue: (target) => queue.push({ target }),
+    enqueueAction: (job) => queue.push({ target: null, action: job }),
+    enqueueLogs: (job) => queue.push({ target: null, logs: job }),
+    logsContinue: true,
     onProgress: null,
     get up() {
       return isUp;

@@ -97,6 +97,14 @@ describe('digestsFor (SHP-REQ-195)', () => {
     expect(digestsFor(stack(), {})).toMatchObject({ refusal: { code: 'invalid_request' } });
   });
 
+  it('never takes an Object.prototype key for a tracked service', () => {
+    for (const name of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) {
+      expect(digestsFor(stack(), { [name]: D1 })).toMatchObject({ refusal: { code: 'digest_not_tracked' } });
+    }
+    const services = JSON.parse(`{"__proto__": {"running": null, "candidate": {"tag": "x", "digest": "${D2}"}, "checkedAt": null, "error": null}}`) as Record<string, never>;
+    expect(digestsFor({ name: 'forgejo', manifest, services }, undefined)).toMatchObject({ refusal: { code: 'conflict' } });
+  });
+
   it('is not fooled by a service named code', () => {
     const coded = { ...manifest, services: { code: { image: 'gitea/gitea', track: { tag: 'latest' } } } } satisfies StackManifest;
     expect(digestsFor({ name: 'forgejo', manifest: coded, services: {} }, { code: D1 })).toEqual({ digests: { code: D1 } });

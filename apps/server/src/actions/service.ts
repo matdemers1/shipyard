@@ -35,7 +35,9 @@ import { snapshotContainers } from '../host/index.js';
  * - a token whose scope does not name the target (`forbidden`);
  * - a name that is only an Observed compose project in the host snapshot (`not_adopted`,
  *   SHP-REQ-185), or that nothing reports (`unknown_app`);
- * - an app whose deploy holds its lock (`locked`, naming the holder, SHP-REQ-186);
+ * - an app whose deploy holds its lock (`locked`, naming the holder, SHP-REQ-186), or a stack an
+ *   update or rollback is queued for or running on (`locked`, naming it and its requester,
+ *   SHP-T-16.3) — the lock runs both ways with `POST /api/stacks/:name/updates`;
  * - an owning agent that is not polling (`agent_offline`) or never advertised `actions`
  *   (`agent_too_old`), so nothing waits forever for a poll that will never take it.
  */
@@ -166,6 +168,24 @@ async function resolveTarget(db: Db, target: ActionRequest['target']): Promise<R
   return refusal('unknown_app', `No app or adopted stack named ${name} has been reported by the agent.`);
 }
 
+/** The states of a stack update that hold its stack (stack_update_one_active_per_stack). */
+const STACK_UPDATE_HOLDING = ['queued', 'dispatched', 'running'] as const;
+
+/** `locked` while an update or rollback of the stack is queued, dispatched or running (SHP-T-16.3). */
+export async function stackUpdateLockRefusal(db: Db, stackName: string): Promise<Refusal | null> {
+  const holder = await db.stackUpdate.findFirst({
+    where: { stackName, state: { in: [...STACK_UPDATE_HOLDING] } },
+    select: { id: true, kind: true, state: true, step: true, requesterLabel: true },
+  });
+  if (holder === null) return null;
+  const what = holder.kind === 'rollback' ? 'rolled back' : 'updated';
+  return refusal(
+    'locked',
+    `${stackName} is being ${what} by ${holder.requesterLabel}: ${holder.step ?? holder.state} (stack update ${holder.id}).`,
+    `Wait for stack update ${holder.id} to finish, then request again.`,
+  );
+}
+
 /**
  * Queues a lifecycle action, or returns why not. On success the action is `queued`, audited as
  * `action.request`, and the owning agent's waiting poll is woken.
@@ -181,6 +201,9 @@ export async function requestAction(deps: ServiceDeps, caller: DeployCaller, inp
   if ('code' in target) return target;
   if (target.appId !== null) {
     const locked = await lockRefusal(db, input.target.name, target.appId);
+    if (locked !== null) return locked;
+  } else {
+    const locked = await stackUpdateLockRefusal(db, input.target.name);
     if (locked !== null) return locked;
   }
   const cannot = capabilityRefusal(bus, target.agentId, 'actions');
@@ -291,7 +314,8 @@ export async function listActions(db: Db, options: ListActionsOptions): Promise<
 /**
  * Claims the oldest queued action for `agentId` (`queued → dispatched`) in one statement: `FOR
  * UPDATE SKIP LOCKED` means two concurrent polls never take the same one. An action on an app whose
- * deploy took the lock after the action was queued waits for that deploy to end (SHP-REQ-186).
+ * deploy took the lock after the action was queued waits for that deploy to end (SHP-REQ-186); an
+ * action on a stack waits the same way for an update or rollback of it (SHP-T-16.3).
  */
 export async function claimAction(db: Db, agentId: string): Promise<ActionJob | null> {
   const active = [...ACTIVE_STATES];
@@ -306,6 +330,10 @@ export async function claimAction(db: Db, agentId: string): Promise<ActionJob | 
               join "app" ap on ap."id" = t."app_id"
               where ap."name" = a."target_name"
                 and t."state"::text in (${Prisma.join(active)})))
+        and (a."target_kind" <> 'stack' or not exists (
+              select 1 from "stack_update" u
+              where u."stack_name" = a."target_name"
+                and u."state"::text in (${Prisma.join([...STACK_UPDATE_HOLDING])})))
       order by a."created_at", a."id"
       for update of a skip locked
       limit 1

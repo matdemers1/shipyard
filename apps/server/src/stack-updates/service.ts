@@ -61,6 +61,9 @@ import { notifyStackAwaitingApproval } from '../push/notify.js';
 export const STACK_UPDATE_STALE_MS = 30 * 60_000;
 /** The longest `waitForStackUpdate`. */
 export const MAX_STACK_UPDATE_WAIT_MS = 90_000;
+/** A held update or rollback unanswered for this long expires, like a held deploy (SHP-REQ-061). */
+export const STACK_APPROVAL_TTL_MS = 60 * 60_000;
+export const STACK_APPROVAL_EXPIRED_MESSAGE = 'approval expired after one hour; request the update again';
 /** What `requesterLabel` is cut to: the agent's job allows no more (StackUpdateJob). */
 export const STACK_REQUESTER_LABEL_MAX = 200;
 
@@ -223,7 +226,9 @@ export function digestsFor(
       return { refusal: refusal('invalid_request', 'digests names no service.', 'Leave digests out to update to the reported candidates, or name at least one service.') };
     }
     for (const [service] of entries) {
-      const spec = tracked[service];
+      // Own keys only: the names come from the request, and `constructor` or `toString` must not
+      // resolve to something on Object.prototype and pass for a tracked service (SHP-REQ-195).
+      const spec = Object.hasOwn(tracked, service) ? tracked[service] : undefined;
       if (spec === undefined) {
         return {
           refusal: refusal('digest_not_tracked', `${service} is not a tracked service of ${stack.name}.`, `Name only services the stack's manifest tracks: ${names.join(', ')}.`),
@@ -240,7 +245,7 @@ export function digestsFor(
   const digests: Record<string, string> = {};
   for (const service of names) {
     const spec = tracked[service];
-    const candidate = stack.services[service]?.candidate ?? null;
+    const candidate = (Object.hasOwn(stack.services, service) ? stack.services[service]?.candidate : null) ?? null;
     if (spec !== undefined && !isPinned(spec.track) && candidate !== null) digests[service] = candidate.digest;
   }
   if (Object.keys(digests).length === 0) {
@@ -411,12 +416,70 @@ function deciderRefusal(decider: Decider): Refusal | null {
 
 const NO_SUCH_HELD = refusal('not_found', 'No stack update awaiting approval has that ID.', 'List what needs you and use one of its stack update IDs.');
 
-async function loadHeld(db: Db, id: string): Promise<StackUpdateRow | Refusal> {
+/**
+ * The held update, or why it cannot be decided. Lazily expires first, so one past its hour can never
+ * be approved (SHP-REQ-061), and refuses one whose stack is no longer the adopted stack it was
+ * requested for — retired, or not the row that name is adopted as now.
+ */
+async function loadHeld(deps: Pick<ServiceDeps, 'db' | 'bus' | 'logger'>, id: string): Promise<StackUpdateRow | Refusal> {
+  const { db } = deps;
   if (!UUID_RE.test(id)) return NO_SUCH_HELD;
+  await expireHeldStackUpdates(deps);
   const row = await db.stackUpdate.findUnique({ where: { id }, select: STACK_UPDATE_SELECT });
   if (row === null) return NO_SUCH_HELD;
+  if (row.state === 'cancelled') {
+    const stored = RefusalSchema.safeParse(row.refusal);
+    if (stored.success) return stored.data;
+  }
   if (row.state !== 'awaiting_approval') return refusal('conflict', `This stack update is ${row.state}, not awaiting approval.`);
+  const adopted = await db.stack.findFirst({ where: { name: row.stackName, retiredAt: null }, select: { id: true } });
+  if (adopted?.id !== row.stackId) {
+    return refusal(
+      'conflict',
+      `${row.stackName} is no longer adopted as the stack this update was requested for.`,
+      'Request the update again against the stack as it is adopted now; this one expires on its own.',
+    );
+  }
   return row;
+}
+
+const EXPIRY_ACTOR = { type: 'system', label: 'shipyard: stack approval expiry' } as const;
+
+/**
+ * Expires every held update or rollback whose hour is up (as of `now`), like `expireApprovals` does
+ * for deploys (SHP-REQ-061): it ends `cancelled` with an `approval_required` refusal saying so,
+ * audited `stack_update.expired` as the system, and anyone waiting on it is woken. Returns the IDs.
+ */
+export async function expireHeldStackUpdates(deps: Pick<ServiceDeps, 'db' | 'bus' | 'logger'>, now: Date = new Date()): Promise<string[]> {
+  const { db, bus, logger } = deps;
+  const due = await db.stackUpdate.findMany({
+    where: { state: 'awaiting_approval', heldAt: { lte: new Date(now.getTime() - STACK_APPROVAL_TTL_MS) } },
+    select: { id: true, stackName: true, kind: true },
+  });
+  const expired: string[] = [];
+  for (const row of due) {
+    // Conditional on still being held, so a concurrent approve or deny wins cleanly.
+    const marked = await db.stackUpdate.updateMany({
+      where: { id: row.id, state: 'awaiting_approval' },
+      data: {
+        state: 'cancelled',
+        endedAt: now,
+        refusal: refusal('approval_required', STACK_APPROVAL_EXPIRED_MESSAGE, 'Request the update again, and ask a deployer to approve it within the hour.'),
+      },
+    });
+    if (marked.count === 0) continue;
+    expired.push(row.id);
+    await directAudit(db, EXPIRY_ACTOR)({
+      action: 'stack_update.expired',
+      entityType: 'stack_update',
+      entityId: row.id,
+      before: { state: 'awaiting_approval' },
+      after: { state: 'cancelled', refusal: 'approval_required', stack: row.stackName, kind: row.kind },
+    });
+    bus.publish(`stack-update:${row.id}`);
+  }
+  if (expired.length > 0) logger.info({ stackUpdateIds: expired }, 'stack update approvals expired');
+  return expired;
 }
 
 /**
@@ -428,7 +491,7 @@ export async function approveStackUpdate(deps: ServiceDeps, decider: Decider, id
   const { db, bus } = deps;
   const denied = deciderRefusal(decider);
   if (denied !== null) return denied;
-  const row = await loadHeld(db, id);
+  const row = await loadHeld(deps, id);
   if ('code' in row) return row;
   const stack = await resolveStack(db, row.stackName);
   if ('code' in stack) return stack;
@@ -470,7 +533,7 @@ export async function denyStackUpdate(deps: ServiceDeps, decider: Decider, id: s
   const { db, bus } = deps;
   const denied = deciderRefusal(decider);
   if (denied !== null) return denied;
-  const row = await loadHeld(db, id);
+  const row = await loadHeld(deps, id);
   if ('code' in row) return row;
   const label = decider.actor?.label ?? 'a deployer';
   const userId = decider.actor?.id;

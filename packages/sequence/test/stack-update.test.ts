@@ -6,18 +6,23 @@ import { StackManifest, type StackUpdateJob, type StackUpdateStep } from '@shipy
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { nodeFs } from '../src/adapters/node.js';
+import { createOciRegistry } from '../src/adapters/oci.js';
 import { Journal } from '../src/journal.js';
 import { Ledger } from '../src/ledger.js';
 import { AppLock } from '../src/machine.js';
 import type { LoadedStacks } from '../src/manifest.js';
 import { RegistryError } from '../src/ports.js';
 import type { Clock, DockerPort, ExecResult, FsPort, Log, RunningContainer, StackRegistryPort } from '../src/ports.js';
+import { applyRewrite, planRewrite } from '../src/rewrite.js';
 import {
+  STACK_COMPOSE_TIMEOUT_MS,
   recoverInterruptedStackUpdates,
   resolveTrack,
   runStackUpdate,
+  stackImageTags,
   stackRunningDigests,
   tagOfReference,
+  wouldGoBackwards,
   type StackUpdateContext,
   type StackUpdatePorts,
 } from '../src/stack-update.js';
@@ -78,6 +83,8 @@ interface World {
   steps: StackUpdateStep[];
   pulls: string[];
   composeCalls: string[][];
+  /** The timeout each compose call was given. */
+  composeTimeouts: (number | undefined)[];
   running: Map<string, { repo: string; digest: string; startedAt: string; restartCount: number }>;
   knobs: Knobs;
   ports: StackUpdatePorts;
@@ -140,6 +147,7 @@ async function makeWorld(options: WorldOptions = {}): Promise<World> {
   const steps: StackUpdateStep[] = [];
   const pulls: string[] = [];
   const composeCalls: string[][] = [];
+  const composeTimeouts: (number | undefined)[] = [];
   const registryCalls: string[] = [];
   const running = new Map([
     ['web', { repo: 'lscr.io/linuxserver/sonarr', digest: OLD, startedAt: 's0', restartCount: 0 }],
@@ -177,8 +185,9 @@ async function makeWorld(options: WorldOptions = {}): Promise<World> {
   };
 
   const docker: DockerPort = {
-    async compose(_target, args) {
+    async compose(_target, args, opts) {
       composeCalls.push(args);
+      composeTimeouts.push(opts?.timeoutMs);
       events.push(`compose:${args[0] ?? ''}`);
       if (args[0] === 'exec') {
         if (knobs.backupExit === 0) {
@@ -270,7 +279,7 @@ async function makeWorld(options: WorldOptions = {}): Promise<World> {
     soakIntervalMs: 1_000,
     probeTimeoutMs: 1_000,
   };
-  return { root, dataRoot, composePath, artifactsDir, events, steps, pulls, composeCalls, running, knobs, ports, ctx, ledger, journal, registryCalls };
+  return { root, dataRoot, composePath, artifactsDir, events, steps, pulls, composeCalls, composeTimeouts, running, knobs, ports, ctx, ledger, journal, registryCalls };
 }
 
 let ids = 0;
@@ -295,6 +304,31 @@ describe('resolveTrack and running digests', () => {
     expect(w.registryCalls).toEqual([]);
     w.knobs.registryDown = true;
     await expect(resolveTrack(w.ports.registry, 'postgres', { tag: '16' })).rejects.toBeInstanceOf(RegistryError);
+  });
+
+  it('a semver range it cannot read is "missing", not a crash', async () => {
+    const w = await makeWorld();
+    await expect(resolveTrack(w.ports.registry, 'postgres', { semver: '>=1.2.3.4' })).resolves.toMatchObject({ kind: 'missing', why: expect.stringContaining('semver range') as unknown });
+  });
+
+  it('wouldGoBackwards: only a semver track, only between two versions', () => {
+    expect(wouldGoBackwards({ semver: '16.x' }, '17.0', '16.4')).toBe(true);
+    expect(wouldGoBackwards({ semver: '16.x' }, '16.3', '16.4')).toBe(false);
+    expect(wouldGoBackwards({ semver: '16.x' }, '16.4', '16.4')).toBe(false);
+    expect(wouldGoBackwards({ semver: '16.x' }, 'latest', '16.4')).toBe(false);
+    expect(wouldGoBackwards({ semver: '16.x' }, null, '16.4')).toBe(false);
+    expect(wouldGoBackwards({ tag: '16' }, '17.0', '16')).toBe(false);
+    expect(wouldGoBackwards('pinned', '17.0', '16')).toBe(false);
+  });
+
+  it("stackImageTags reads each service's tag from its literal image line", async () => {
+    const w = await makeWorld();
+    await expect(stackImageTags(w.ports.fs, { files: [w.composePath], project: 'media' }, ['web', 'db', 'cache', 'nope'])).resolves.toEqual({
+      web: 'latest',
+      db: '16',
+      cache: null,
+      nope: null,
+    });
   });
 
   it('reads running digests across Docker Hub spellings', async () => {
@@ -338,6 +372,9 @@ describe('runStackUpdate: an update', () => {
       'journal:start:stack-update:backup',
       'compose:exec',
       'journal:end:stack-update:backup',
+      // The track re-resolved right before the pull (SHP-REQ-195).
+      'journal:start:stack-update:reverify',
+      'journal:end:stack-update:reverify',
       'journal:start:stack-update:pull',
       `pull:lscr.io/linuxserver/sonarr@${NEW}`,
       'journal:end:stack-update:pull',
@@ -431,6 +468,15 @@ describe('runStackUpdate: refusals change nothing', () => {
     w.knobs.registryDown = true;
     const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
     expect(result).toMatchObject({ state: 'refused', refusal: { code: 'registry_unreachable' } });
+    await expectUntouched(w);
+  });
+
+  it('registry_unreachable: a registry whose answer stalls mid-body, through the real OCI adapter', async () => {
+    const w = await makeWorld();
+    const stalled: typeof fetch = () => Promise.resolve(new Response(new ReadableStream({ start: () => undefined }), { status: 200 }));
+    w.ports.registry = createOciRegistry({ fetch: stalled, timeoutMs: 50 });
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    expect(result).toMatchObject({ state: 'refused', refusal: { code: 'registry_unreachable', message: expect.stringContaining('timed out') as unknown } });
     await expectUntouched(w);
   });
 
@@ -609,5 +655,259 @@ describe('restart recovery', () => {
     expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
     expect(ups).toEqual([['up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'web']]);
     expect(await w.journal.unfinishedStackUpdates()).toEqual([]);
+  });
+});
+
+describe('runStackUpdate: a semver track never goes backwards (SHP-REQ-195)', () => {
+  it('refuses when the image line names a higher version than the track resolves to', async () => {
+    const w = await makeWorld({ compose: COMPOSE.replace('"postgres:16"', '"postgres:17.0"'), manifest: { steps: undefined } });
+    const result = await runStackUpdate(w.ports, w.ctx, update({ db: DB_NEW }));
+    expect(result).toMatchObject({ state: 'refused', refusal: { code: 'digest_not_tracked', message: expect.stringContaining('backwards') as unknown } });
+    expect(await readFile(w.composePath, 'utf8')).toContain('"postgres:17.0"');
+    expect(w.pulls).toEqual([]);
+  });
+
+  it('a running tag that is not a version keeps the update', async () => {
+    const w = await makeWorld({ compose: COMPOSE.replace('"postgres:16"', '"postgres:latest"'), manifest: { steps: undefined } });
+    await expect(runStackUpdate(w.ports, w.ctx, update({ db: DB_NEW }))).resolves.toMatchObject({ state: 'succeeded', images: [{ service: 'db', tag: '16.4' }] });
+  });
+});
+
+describe('runStackUpdate: what changes between verify and the write', () => {
+  it('re-resolves the track after the backup: a tag that moved meanwhile is refused before the pull', async () => {
+    const w = await makeWorld();
+    const compose = w.ports.docker.compose.bind(w.ports.docker);
+    w.ports.docker.compose = async (target, args, opts) => {
+      const res = await compose(target, args, opts);
+      if (args[0] === 'exec') w.knobs.tags.get('lscr.io/linuxserver/sonarr')?.set('latest', NEWER);
+      return res;
+    };
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'digest_not_tracked', message: expect.stringContaining('moved') as unknown } });
+    expect(result.backupArtifact).toBeDefined();
+    expect(w.pulls).toEqual([]);
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    expect(w.composeCalls.filter((a) => a[0] === 'up')).toEqual([]);
+  });
+
+  it('re-resolving fails closed when the registry stops answering', async () => {
+    const w = await makeWorld({ manifest: { steps: undefined } });
+    let resolves = 0;
+    const resolveDigest = w.ports.registry.resolveDigest.bind(w.ports.registry);
+    w.ports.registry.resolveDigest = (image, tag) => {
+      resolves += 1;
+      if (resolves > 1) w.knobs.registryDown = true;
+      return resolveDigest(image, tag);
+    };
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    // No backup ran, so nothing at all happened: refused.
+    expect(result).toMatchObject({ state: 'refused', refusal: { code: 'registry_unreachable' } });
+    expect(w.pulls).toEqual([]);
+  });
+
+  it('a compose file edited after verify is not overwritten: conflict, no write, nothing recreated', async () => {
+    const w = await makeWorld();
+    const edited = COMPOSE.replace('restart: unless-stopped', 'restart: always');
+    const pullImage = w.ports.docker.pullImage?.bind(w.ports.docker);
+    w.ports.docker.pullImage = async (ref) => {
+      await writeFile(w.composePath, edited, 'utf8');
+      return pullImage === undefined ? exec(1) : pullImage(ref);
+    };
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'conflict' } });
+    expect(await readFile(w.composePath, 'utf8')).toBe(edited);
+    expect(w.composeCalls.filter((a) => a[0] === 'up')).toEqual([]);
+    expect(await w.journal.unfinishedStackUpdates()).toEqual([]);
+  });
+
+  it('refuses to pull with a Docker adapter that cannot pull by digest', async () => {
+    const w = await makeWorld();
+    delete w.ports.docker.pullImage;
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'step_failed', message: expect.stringContaining('cannot pull') as unknown } });
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+  });
+
+  it('a rewrite that cannot be written changes nothing and closes the update', async () => {
+    const w = await makeWorld();
+    const write = w.ports.fs.writeFileAtomic.bind(w.ports.fs);
+    w.ports.fs.writeFileAtomic = (path, text) => (path === w.composePath ? Promise.reject(new Error('read-only file system')) : write(path, text));
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'step_failed', message: expect.stringContaining('read-only') as unknown } });
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    expect(w.composeCalls.filter((a) => a[0] === 'up')).toEqual([]);
+    expect(await w.journal.unfinishedStackUpdates()).toEqual([]);
+  });
+
+  it('compose up in the swap and the rollback runs under a timeout', async () => {
+    const w = await makeWorld();
+    w.knobs.health.set(NEW, 'unhealthy');
+    w.ctx.composeTimeoutMs = 42_000;
+    await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    const ups = w.composeCalls.map((a, i) => [a[0], w.composeTimeouts[i]]).filter(([verb]) => verb === 'up');
+    expect(ups).toEqual([
+      ['up', 42_000],
+      ['up', 42_000],
+    ]);
+    expect(STACK_COMPOSE_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+});
+
+describe('runStackUpdate: a throw after the swap rolls back (SHP-REQ-198)', () => {
+  it('a journal that throws once the service is recreated: the previous line comes back', async () => {
+    const w = await makeWorld();
+    const begin = w.journal.begin.bind(w.journal);
+    w.journal.begin = (entry) => (entry.step === 'stack-update:check' ? Promise.reject(new Error('disk full')) : begin(entry));
+    const job = update({ web: NEW });
+    const result = await runStackUpdate(w.ports, w.ctx, job);
+    expect(result).toMatchObject({ state: 'rolled_back', refusal: { code: 'step_failed', message: expect.stringContaining('disk full') as unknown }, images: [{ service: 'web', digest: OLD }] });
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    expect(w.running.get('web')?.digest).toBe(OLD);
+    expect(w.composeCalls.filter((a) => a[0] === 'up')).toHaveLength(2);
+    expect(w.ledger.stackUpdate('media', job.updateId)).toBeNull();
+    expect(await w.journal.unfinishedStackUpdates()).toEqual([]);
+  });
+
+  it('a ledger that cannot record the success: not a success, rolled back', async () => {
+    const w = await makeWorld();
+    w.ledger.append = () => Promise.reject(new Error('ledger chain broken'));
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    expect(result).toMatchObject({ state: 'rolled_back', refusal: { code: 'step_failed', message: expect.stringContaining('ledger chain broken') as unknown } });
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    expect(w.running.get('web')?.digest).toBe(OLD);
+  });
+
+  it('a lock that cannot be written mid-check still rolls back', async () => {
+    const w = await makeWorld();
+    const original = Object.getOwnPropertyDescriptor(AppLock.prototype, 'setStep')?.value as (this: AppLock, step: string) => Promise<void>;
+    const spy = vi.spyOn(AppLock.prototype, 'setStep').mockImplementation(function (this: AppLock, step: string) {
+      return step === 'stack check' ? Promise.reject(new Error('lock file gone')) : original.call(this, step);
+    });
+    try {
+      const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+      expect(result).toMatchObject({ state: 'rolled_back', refusal: { message: expect.stringContaining('lock file gone') as unknown } });
+      expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a hand edit made during the soak is kept: only the image line is put back', async () => {
+    const w = await makeWorld();
+    w.knobs.restartWebAfterLooks = 6;
+    const containers = w.ports.docker.containers.bind(w.ports.docker);
+    let edited = false;
+    w.ports.docker.containers = async (target, service) => {
+      if (!edited && w.steps.includes('soaking')) {
+        edited = true;
+        const text = await readFile(w.composePath, 'utf8');
+        await writeFile(w.composePath, text.replace('restart: unless-stopped', 'restart: always'), 'utf8');
+      }
+      return containers(target, service);
+    };
+    const result = await runStackUpdate(w.ports, w.ctx, update({ web: NEW }));
+    expect(result).toMatchObject({ state: 'rolled_back' });
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE.replace('restart: unless-stopped', 'restart: always'));
+  });
+
+  it('when even the image line cannot be put back, the bracket stays open and restart recovery restores the kept file', async () => {
+    const w = await makeWorld();
+    w.knobs.health.set(NEW, 'unhealthy');
+    const write = w.ports.fs.writeFileAtomic.bind(w.ports.fs);
+    let composeWrites = 0;
+    w.ports.fs.writeFileAtomic = (path, text) => {
+      if (path === w.composePath && ++composeWrites > 1) return Promise.reject(new Error('read-only file system'));
+      return write(path, text);
+    };
+    const job = update({ web: NEW });
+    const result = await runStackUpdate(w.ports, w.ctx, job);
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'health_failed', message: expect.stringContaining('Rolling back failed too') as unknown, fix: expect.stringContaining('next starts') as unknown } });
+    expect(await readFile(w.composePath, 'utf8')).toContain(`@${NEW}`);
+    expect(await w.journal.unfinishedStackUpdates()).toMatchObject([{ updateId: job.updateId, swapped: true }]);
+
+    w.ports.fs.writeFileAtomic = write;
+    // Until recovery has put it back, a new update of the stack is refused rather than written over it.
+    await expect(runStackUpdate(w.ports, w.ctx, update({ db: DB_NEW }))).resolves.toMatchObject({ state: 'refused', refusal: { code: 'conflict' } });
+    const results = await recoverInterruptedStackUpdates({ fs: w.ports.fs, docker: w.ports.docker, log: w.ports.log }, w.journal, { historyDir: w.ctx.historyDir, ledger: w.ledger });
+    expect(results).toMatchObject([{ updateId: job.updateId, succeeded: false, restored: [w.composePath] }]);
+    expect(results[0]?.error).toBeUndefined();
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    expect(await w.journal.unfinishedStackUpdates()).toEqual([]);
+  });
+});
+
+describe('runStackUpdate: a rollback job whose target the manifest no longer tracks', () => {
+  it('is rollback_target_invalid', async () => {
+    const w = await makeWorld();
+    const first = update({ web: NEW });
+    await expect(runStackUpdate(w.ports, w.ctx, first)).resolves.toMatchObject({ state: 'succeeded' });
+    const loaded = w.ctx.stacks.get('media');
+    if (loaded === undefined || loaded.manifest.updates !== 'digest') throw new Error('no stack');
+    const services = Object.fromEntries(Object.entries(loaded.manifest.services).filter(([service]) => service !== 'web'));
+    w.ctx.stacks.set('media', { ...loaded, manifest: { ...loaded.manifest, services } });
+    const result = await runStackUpdate(w.ports, w.ctx, { updateId: uuid(), kind: 'rollback', stack: 'media', toUpdateId: first.updateId });
+    expect(result).toMatchObject({ state: 'refused', refusal: { code: 'rollback_target_invalid', message: expect.stringContaining('no longer tracks') as unknown } });
+  });
+});
+
+describe('restart recovery: the other cases', () => {
+  async function openBracket(w: World, updateId: string, steps: string[]): Promise<void> {
+    await w.journal.begin({ deployId: updateId, app: 'media', step: 'stack-update', detail: { kind: 'update', composeFiles: [w.composePath], project: 'media', services: ['web'] } });
+    for (const step of steps) await w.journal.begin({ deployId: updateId, app: 'media', step: `stack-update:${step}` });
+  }
+
+  async function swapByHand(w: World, updateId: string): Promise<void> {
+    const plan = planRewrite([{ path: w.composePath, text: COMPOSE }], [{ service: 'web', repo: 'lscr.io/linuxserver/sonarr', reference: `lscr.io/linuxserver/sonarr:latest@${NEW}` }]);
+    await applyRewrite(w.ports.fs, plan, { dir: w.ctx.historyDir, deployId: updateId });
+  }
+
+  it('one the ledger shows succeeded is only closed, succeeded', async () => {
+    const w = await makeWorld();
+    const id = uuid();
+    await openBracket(w, id, ['verify', 'swap']);
+    await swapByHand(w, id);
+    await w.ledger.append({ kind: 'stack-update', app: 'media', deployId: id, updateKind: 'update', images: [{ service: 'web', repo: 'lscr.io/linuxserver/sonarr', tag: 'latest', digest: NEW }], previous: [], backupArtifact: null, at: new Date().toISOString() });
+    const results = await recoverInterruptedStackUpdates({ fs: w.ports.fs, docker: w.ports.docker, log: w.ports.log }, w.journal, { historyDir: w.ctx.historyDir, ledger: w.ledger });
+    expect(results).toMatchObject([{ updateId: id, succeeded: true, restored: [] }]);
+    expect(await readFile(w.composePath, 'utf8')).toContain(`@${NEW}`);
+    expect(w.composeCalls).toEqual([]);
+    expect(await w.journal.unfinishedStackUpdates()).toEqual([]);
+  });
+
+  it('one whose lock is still live is left alone, open', async () => {
+    const w = await makeWorld();
+    const id = uuid();
+    await openBracket(w, id, ['swap']);
+    await swapByHand(w, id);
+    const results = await recoverInterruptedStackUpdates({ fs: w.ports.fs, docker: w.ports.docker, log: w.ports.log }, w.journal, { historyDir: w.ctx.historyDir, ledger: w.ledger, isLive: () => Promise.resolve(true) });
+    expect(results).toEqual([]);
+    expect(await readFile(w.composePath, 'utf8')).toContain(`@${NEW}`);
+    expect(await w.journal.unfinishedStackUpdates()).toMatchObject([{ updateId: id }]);
+  });
+
+  it('one stopped before its swap restores nothing and recreates nothing', async () => {
+    const w = await makeWorld();
+    const id = uuid();
+    await openBracket(w, id, ['verify', 'backup']);
+    const results = await recoverInterruptedStackUpdates({ fs: w.ports.fs, docker: w.ports.docker, log: w.ports.log }, w.journal, { historyDir: w.ctx.historyDir, ledger: w.ledger });
+    expect(results).toMatchObject([{ updateId: id, succeeded: false, restored: [], lastStep: 'stack-update:backup' }]);
+    expect(results[0]?.error).toBeUndefined();
+    expect(w.composeCalls).toEqual([]);
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    expect(await w.journal.unfinishedStackUpdates()).toEqual([]);
+  });
+
+  it('a compose up that exits non-zero is reported as the error, with a timeout given', async () => {
+    const w = await makeWorld();
+    const id = uuid();
+    await openBracket(w, id, ['swap']);
+    await swapByHand(w, id);
+    w.knobs.upExits = [130];
+    const results = await recoverInterruptedStackUpdates({ fs: w.ports.fs, docker: w.ports.docker, log: w.ports.log }, w.journal, { historyDir: w.ctx.historyDir, composeTimeoutMs: 9_000 });
+    expect(results).toMatchObject([{ updateId: id, succeeded: false, restored: [w.composePath], error: expect.stringContaining('exited 130') as unknown }]);
+    expect(w.composeTimeouts).toEqual([9_000]);
+    expect(await readFile(w.composePath, 'utf8')).toBe(COMPOSE);
+    const closed = (await w.journal.readAll()).filter((e) => e.deployId === id && e.step === 'stack-update' && e.phase === 'end');
+    expect(closed).toMatchObject([{ detail: { state: 'failed', error: expect.stringContaining('exited 130') as unknown } }]);
   });
 });

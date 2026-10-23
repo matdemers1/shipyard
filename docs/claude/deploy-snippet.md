@@ -23,7 +23,13 @@ hand is drift, and Shipyard refuses the next one until someone resolves it.
   Observed ones) · `shipyard_stack_update` (update an adopted Operated stack, by digest, to the
   newest images its track resolves to; a token's update waits for a deployer to approve it in the
   console's Needs you, so do not poll for it; image-only rollback if it fails) ·
-  `shipyard_stack_update_status` (the update, its digests and the images before and after).
+  `shipyard_stack_update_status` (the update, its digests and the images before and after) ·
+  `shipyard_volume_backup` (back up one named volume of a Deployed app or an Operated stack, and wait
+  for the archive; the token must be scoped to the owner, and restoring or deleting a volume is
+  console-only) · `shipyard_prune` (a dry run by default, listing dangling and old unused images and old
+  build cache with sizes; call again with `dryRun: false` and `fromDryRunId` to remove exactly that
+  list; volumes are never pruned) · `shipyard_maintenance_status` (follow a backup or prune that was
+  still running after the wait).
 - **What you can deploy:** only a SHA on the default branch whose image workflow is green and that
   is ahead of what is live. For a `build: shipyard` app, "green" means a Shipyard build of that SHA
   has succeeded — queue one with `shipyard_build` if none has, then poll `shipyard_build_status`

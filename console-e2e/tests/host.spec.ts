@@ -159,7 +159,8 @@ test.describe('at 390 px', () => {
   test('Host is the third tab, current on /host, and its chips scroll inside their own row', async ({ page }) => {
     await openHost(page);
     const tabs = page.getByRole('navigation', { name: 'Primary' });
-    await expect(tabs.getByRole('link')).toHaveText([/^Apps/, /^Activity/, /^Host/, /^Settings/]);
+    // The Apps tab carries its Needs-you count before its label on a phone ("3Apps").
+    await expect(tabs.getByRole('link')).toHaveText([/Apps$/, /^Activity/, /^Host/, /^Settings/]);
     await expect(tabs.getByRole('link', { name: /^Host/ })).toHaveAttribute('aria-current', 'page');
     const chips = page.getByRole('group', { name: 'Filter containers' });
     const box = await chips.boundingBox();

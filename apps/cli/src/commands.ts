@@ -4,6 +4,7 @@ import {
   Ledger,
   ManifestLoadError,
   loadManifests,
+  loadStacks,
   isAppLockLive,
   recoverInterrupted,
   deleteBuildSecret,
@@ -139,7 +140,22 @@ export async function runCheckManifestsCommand(ports: SequencePorts, dataRoot: s
     for (const [name, loaded] of manifests) {
       deps.stdout.write(`${name} ${loaded.file}\n`);
     }
-    return 0;
+    // Adopted stacks (SHP-ADR-010, docs/runbooks/adopt-stack.md): the same all-or-nothing load the
+    // agent does, plus the two clashes the agent and server would otherwise settle silently — a stack
+    // named like an app is never adopted, and a compose project goes to the app (or the first stack).
+    const stacks = await loadStacks(ports.fs, dataRoot);
+    const projects = new Map<string, string>();
+    for (const [name, loaded] of manifests) projects.set(loaded.manifest.compose.project, `app ${name}`);
+    const clashes: string[] = [];
+    for (const [name, loaded] of stacks) {
+      deps.stdout.write(`stack ${name} ${loaded.file}\n`);
+      if (manifests.has(name)) clashes.push(`stack ${name} has the same name as an app; it would not be adopted. Rename it.`);
+      const owner = projects.get(loaded.manifest.compose.project);
+      if (owner !== undefined) clashes.push(`stack ${name} names compose project ${loaded.manifest.compose.project}, already ${owner}'s. Each project belongs to one manifest.`);
+      else projects.set(loaded.manifest.compose.project, `stack ${name}`);
+    }
+    for (const clash of clashes) deps.stderr.write(`${clash}\n`);
+    return clashes.length === 0 ? 0 : 1;
   } catch (err) {
     if (err instanceof ManifestLoadError) {
       deps.stderr.write(`${err.message}\n`);

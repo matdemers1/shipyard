@@ -66,4 +66,6 @@ export const TOOLS: readonly { name: string; does: string }[] = [
   { name: 'shipyard_build', does: 'Queues a Shipyard build of a commit, for an app whose images Shipyard builds.' },
   { name: 'shipyard_build_status', does: 'Follows a build and says when its images are ready to deploy.' },
   { name: 'shipyard_host', does: 'Everything running on the host — every container with its tier, and the volumes, images and disk. Changes nothing.' },
+  { name: 'shipyard_action', does: 'Restarts, recreates or starts a Deployed app or an adopted stack, or one service of it. Stop is console-only.' },
+  { name: 'shipyard_logs', does: 'A redacted tail of a container’s logs, for the apps and stacks the token is scoped to and allowed to read logs for.' },
 ];

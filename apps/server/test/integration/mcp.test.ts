@@ -217,7 +217,7 @@ describe('two sessions race (the doneWhen)', () => {
 });
 
 describe('the endpoint', () => {
-  it('lists exactly the eight tools', async () => {
+  it('lists exactly the ten tools', async () => {
     const client = await connect(await tokenFor('a', ['web']));
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(TOOLS);

@@ -122,8 +122,8 @@ describe('log and action redaction (SHP-REQ-190)', () => {
     expect(fromFile).toContain('plain-value');
     const values = redactionValues(fromFile, []);
     for (const line of ['-----BEGIN PRIVATE KEY-----', ...body, '-----END PRIVATE KEY-----', 'c d e f g h', 'second-line']) expect(values).toContain(line);
-    // No leading quote left on a first line; `Zg==` is accepted residue (under eight characters).
-    expect(values.some((v) => v.startsWith('"-----BEGIN'))).toBe(false);
+    // The unquoted first line is a pattern (above); a quoted copy may be too, which only over-redacts.
+    // `Zg==` is accepted residue (under eight characters).
     expect(values).not.toContain('Zg==');
   });
 
@@ -301,5 +301,13 @@ describe('envFileRedactionValues covers every name parseEnvFile does (SHP-REQ-19
   it.each(['1ABC=digitnamesecret', 'KEY[0]=digitnamesecret', 'A:B=digitnamesecret'])('redacts the value of %s on its own', (line) => {
     const redact = createRedactor(redactionValues(envFileRedactionValues(`${line}\n`), []));
     expect(redact('printed digitnamesecret here')).toBe(`printed ${REDACTED} here`);
+  });
+});
+
+describe('envFileRedactionValues keeps a short quoted value as written (SHP-REQ-190)', () => {
+  it.each(["1ABC=Zxa\"", "K[0]='Zxa"])('redacts %s', (line) => {
+    const value = line.slice(line.indexOf('=') + 1);
+    const redact = createRedactor(redactionValues(envFileRedactionValues(`${line}\n`), []));
+    expect(redact(`printed ${value} here`)).toBe(`printed ${REDACTED} here`);
   });
 });

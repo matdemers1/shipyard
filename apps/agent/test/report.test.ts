@@ -141,6 +141,21 @@ describe('buildReport', () => {
   });
 });
 
+describe('buildReport with a broken stack file (SHP-REQ-183)', () => {
+  it('still reports the apps, leaves stacks out and warns; the hash notices the fix', async () => {
+    const files = new Map([[`${ROOT}/apps/web.yml`, manifestYaml('web')], [`${ROOT}/stacks/immich.yml`, 'kind: stack\nname: immich\ncommand: nope\n']]);
+    const fs: FsPort = { ...fakeFs(files), exists: (path) => Promise.resolve(path === `${ROOT}/apps` || [...files.keys()].some((p) => p.startsWith(`${path}/`))) };
+    const warn = vi.fn();
+    const report = await buildReport({ fs, docker: fakeDocker({}), engineApiVersion: () => Promise.resolve('1.51'), log: { info: vi.fn(), warn } }, ROOT, { agentVersion: '0', patExpiresAt: null });
+    expect(report.apps.map((a) => a.manifest.name)).toEqual(['web']);
+    expect('stacks' in report).toBe(false);
+    expect(warn).toHaveBeenCalledOnce();
+    const broken = await manifestsHash(fs, ROOT);
+    files.set(`${ROOT}/stacks/immich.yml`, ['kind: stack', 'name: immich', 'compose:', '  files: [/x/docker-compose.yml]', '  project: immich', ''].join('\n'));
+    expect(await manifestsHash(fs, ROOT)).not.toBe(broken);
+  });
+});
+
 /** A shared in-memory ledger file, as the agent and a host CLI process would share one on disk. */
 function ledgerFs(): FsPort {
   const files = new Map<string, string>();

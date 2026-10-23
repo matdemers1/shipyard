@@ -601,11 +601,35 @@ describe('maintenance reads and the CLI seam (SHP-T-17.2)', () => {
     expect(calls[0]?.options.timeoutMs).toBe(1000);
   });
 
-  it("containerImageId reads the container's Image, null on a 404", async () => {
+  it("containerIdentity reads the container's Image and compose project, null on a 404", async () => {
     const make = (inspect: () => Promise<unknown>) => ({ getContainer: () => ({ inspect }) }) as unknown as Dockerode;
-    await expect(createDockerAdapter({ docker: make(() => Promise.resolve({ Image: `sha256:${'a'.repeat(64)}` })) }).containerImageId('self')).resolves.toBe(`sha256:${'a'.repeat(64)}`);
-    await expect(createDockerAdapter({ docker: make(() => Promise.reject(Object.assign(new Error('gone'), { statusCode: 404 }))) }).containerImageId('self')).resolves.toBeNull();
-    await expect(createDockerAdapter({ docker: make(() => Promise.reject(Object.assign(new Error('x'), { statusCode: 500 }))) }).containerImageId('self')).rejects.toThrow();
+    const image = `sha256:${'a'.repeat(64)}`;
+    await expect(
+      createDockerAdapter({ docker: make(() => Promise.resolve({ Image: image, Config: { Labels: { 'com.docker.compose.project': 'shipyard', SECRET: 'x' } } })) }).containerIdentity('self'),
+    ).resolves.toEqual({ imageId: image, composeProject: 'shipyard' });
+    await expect(createDockerAdapter({ docker: make(() => Promise.resolve({ Image: image, Config: { Labels: null } })) }).containerIdentity('self')).resolves.toEqual({
+      imageId: image,
+      composeProject: null,
+    });
+    await expect(createDockerAdapter({ docker: make(() => Promise.reject(Object.assign(new Error('gone'), { statusCode: 404 }))) }).containerIdentity('self')).resolves.toBeNull();
+    await expect(createDockerAdapter({ docker: make(() => Promise.reject(Object.assign(new Error('x'), { statusCode: 500 }))) }).containerIdentity('self')).rejects.toThrow();
+  });
+
+  it('pruneBuildCacheRecord posts /build/prune with the full ID anchored, and nothing else', async () => {
+    const dials: { path: string; method: string; options: unknown }[] = [];
+    const docker = {
+      modem: {
+        dial: (opts: { path: string; method: string; options: unknown }, cb: (err: unknown) => void) => {
+          dials.push({ path: opts.path, method: opts.method, options: opts.options });
+          cb(null);
+        },
+      },
+    } as unknown as Dockerode;
+    const adapter = createDockerAdapter({ docker });
+    await adapter.pruneBuildCacheRecord('abc123');
+    expect(dials).toEqual([{ path: '/build/prune?', method: 'POST', options: { filters: { id: ['^abc123$'] } } }]);
+    await expect(adapter.pruneBuildCacheRecord('.*')).rejects.toThrow();
+    expect(dials).toHaveLength(1);
   });
 
   it('buildCacheRecords maps /system/df BuildCache, never its description', async () => {

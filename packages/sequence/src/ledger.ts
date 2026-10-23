@@ -591,6 +591,11 @@ export class Ledger {
     return this.volumeArchives().find((a) => a.archiveId === archiveId) ?? null;
   }
 
+  /** True when `archiveId` was ever recorded, live or since removed: recovery adopts only one that never was. */
+  volumeArchiveRecorded(archiveId: string): boolean {
+    return this.lines.some(({ entry }) => entry.kind === 'volume-archive' && entry.archiveId === archiveId);
+  }
+
   /** The prune dry run `jobId` recorded, or null (SHP-REQ-205). */
   prunePlan(jobId: string): PrunePlanRecord | null {
     for (let i = this.lines.length - 1; i >= 0; i--) {

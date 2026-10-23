@@ -106,10 +106,12 @@ describe('maintenance runner', () => {
     expect(refusing.calls).toHaveLength(1);
   });
 
-  it('a throwing engine is reported failed', async () => {
+  it('a throwing engine is reported failed, without a host path', async () => {
     const client = fakeClient();
-    const runner = createMaintenanceRunner({ client, execute: () => Promise.reject(new Error('boom')), log: quiet });
-    await expect(runner.run(job())).resolves.toMatchObject({ state: 'failed', refusal: { code: 'step_failed' } });
+    const runner = createMaintenanceRunner({ client, execute: () => Promise.reject(new Error("boom at '/DATA/AppData/shipyard/agent'")), log: quiet });
+    const result = await runner.run(job());
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'step_failed' } });
+    expect(result.refusal?.message).not.toContain('/');
   });
 });
 
@@ -123,6 +125,9 @@ describe('reportInterruptedMaintenance', () => {
     restarted: true,
     startExitCode: 0,
     archives: ['77777777-7777-4777-8777-777777777777'],
+    restoredFromSafety: false,
+    leftStopped: false,
+    safetyArchiveId: '77777777-7777-4777-8777-777777777777',
     ...o,
   });
 
@@ -136,6 +141,21 @@ describe('reportInterruptedMaintenance', () => {
     expect(body.refusal?.message).toContain('started again');
     expect(body.refusal?.message).toContain('77777777-7777-4777-8777-777777777777');
     expect(closed).toEqual([JOB_ID]);
+  });
+
+  it('says when a half-restored volume was put back from its safety archive, or its stack left stopped', async () => {
+    const client = fakeClient();
+    await reportInterruptedMaintenance({
+      client,
+      recovered: [recovery({ restoredFromSafety: true }), recovery({ jobId: OTHER_ID, leftStopped: true, restarted: false, startExitCode: null })],
+      close: () => Promise.resolve(),
+      log: quiet,
+    });
+    const [back, stopped] = client.calls.map((c) => MaintenanceResult.parse(c.body));
+    expect(back?.refusal?.message).toContain('put back from safety archive 77777777-7777-4777-8777-777777777777');
+    expect(stopped?.refusal?.message).toContain('left stopped');
+    expect(stopped?.refusal?.message).not.toContain('started again');
+    expect(stopped?.refusal?.fix).toContain('77777777-7777-4777-8777-777777777777');
   });
 
   it('keeps one it cannot report for the next start; only closes one the server does not know', async () => {

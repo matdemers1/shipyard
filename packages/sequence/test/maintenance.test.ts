@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,6 +17,7 @@ import {
   runMaintenance,
   type MaintenanceContext,
   type MaintenancePorts,
+  type MaintenanceRecoveryContext,
 } from '../src/maintenance.js';
 import type { LoadedManifests, LoadedStacks } from '../src/manifest.js';
 import type { BuildCacheRecord, Clock, DockerPort, ExecResult, HostContainerRecord, HostImageRecord, Log } from '../src/ports.js';
@@ -100,7 +101,9 @@ interface World {
   cache: BuildCacheRecord[];
   /** What the volume "holds": what `tar -c` writes and `tar -x` restores. */
   volumeContent: { value: string };
-  knobs: { tarExit: number; extractExit: number; wipeExit: number; stopExit: number; startExit: number; rmExit: number };
+  knobs: { tarExit: number; extractExits: number[]; wipeExit: number; stopExit: number; startExit: number; rmExit: number; rmNoop: boolean };
+  /** Build cache records pruned through the Engine. */
+  cachePrunes: string[];
 }
 
 async function makeWorld(options: { retain?: number; quiesce?: boolean; volumes?: string[] } = {}): Promise<World> {
@@ -113,7 +116,8 @@ async function makeWorld(options: { retain?: number; quiesce?: boolean; volumes?
   const compose: string[][] = [];
   const events: string[] = [];
   const steps: MaintenanceStep[] = [];
-  const knobs = { tarExit: 0, extractExit: 0, wipeExit: 0, stopExit: 0, startExit: 0, rmExit: 0 };
+  const knobs = { tarExit: 0, extractExits: [] as number[], wipeExit: 0, stopExit: 0, startExit: 0, rmExit: 0, rmNoop: false };
+  const cachePrunes: string[] = [];
   const volumeContent = { value: 'original' };
   const containers = [container({ name: 'media-app-1', compose: { project: PROJECT, service: 'app' }, mounts: [volumeMount(VOLUME)] })];
   const images: HostImageRecord[] = [];
@@ -145,6 +149,9 @@ async function makeWorld(options: { retain?: number; quiesce?: boolean; volumes?
       compose.push(args);
       events.push(`compose:${args.join(' ')}`);
       const code = args[0] === 'stop' ? knobs.stopExit : args[0] === 'start' ? knobs.startExit : 0;
+      if (code === 0 && (args[0] === 'stop' || args[0] === 'start')) {
+        for (const c of containers) if (c.compose?.project === PROJECT) c.state = args[0] === 'stop' ? 'exited' : 'running';
+      }
       return Promise.resolve({ exitCode: code, stdout: '', stderr: '' });
     },
     containers: () => Promise.resolve([]),
@@ -155,6 +162,13 @@ async function makeWorld(options: { retain?: number; quiesce?: boolean; volumes?
     hostContainers: () => Promise.resolve(containers.map((c) => ({ ...c }))),
     hostImages: () => Promise.resolve(images.map((i) => ({ ...i }))),
     buildCacheRecords: () => Promise.resolve(cache.map((c) => ({ ...c }))),
+    pruneBuildCacheRecord: (id) => {
+      cachePrunes.push(id);
+      events.push('cache-prune');
+      if (knobs.rmExit !== 0) return Promise.reject(new Error('Error response from daemon'));
+      if (!knobs.rmNoop) cache.splice(0, cache.length, ...cache.filter((c) => c.id !== id));
+      return Promise.resolve();
+    },
     async dockerCli(args): Promise<ExecResult> {
       cli.push(args);
       events.push(`docker:${args.slice(0, 2).join(' ')}`);
@@ -173,11 +187,19 @@ async function makeWorld(options: { retain?: number; quiesce?: boolean; volumes?
         return { exitCode: knobs.wipeExit, stdout: '', stderr: '' };
       }
       if (args[0] === 'run' && entry === 'tar' && args.includes('-xpf')) {
-        if (knobs.extractExit !== 0) return { exitCode: knobs.extractExit, stdout: '', stderr: '' };
+        const exit = knobs.extractExits.shift() ?? 0;
+        if (exit !== 0) {
+          volumeContent.value = 'half';
+          return { exitCode: exit, stdout: '', stderr: '' };
+        }
         const dir = mountOf(args, '/in') ?? '';
         const file = (args[args.indexOf('-xpf') + 1] ?? '').replace('/in/', '');
         volumeContent.value = (await readFile(join(dir, file), 'utf8')).replace(/^archive of /, '');
         return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'image' && args[1] === 'rm' && knobs.rmExit === 0 && !knobs.rmNoop) {
+        const refs = args.slice(2);
+        images.splice(0, images.length, ...images.filter((i) => !refs.includes(i.id) && !i.repoTags.some((t) => refs.includes(t))));
       }
       return { exitCode: knobs.rmExit, stdout: '', stderr: knobs.rmExit === 0 ? '' : 'Error: conflict: unable to remove' };
     },
@@ -205,7 +227,7 @@ async function makeWorld(options: { retain?: number; quiesce?: boolean; volumes?
     helperImage: () => Promise.resolve(IMAGE),
     onStep: (s) => steps.push(s),
   };
-  return { root, backupRoot, ports, ctx, ledger, journal, clock, cli, compose, events, steps, containers, images, cache, volumeContent, knobs };
+  return { root, backupRoot, ports, ctx, ledger, journal, clock, cli, compose, events, steps, containers, images, cache, volumeContent, knobs, cachePrunes };
 }
 
 function backupJob(o: { quiesce?: boolean; volume?: string; owner?: { kind: 'app' | 'stack'; name: string } } = {}): MaintenanceJob {
@@ -214,6 +236,10 @@ function backupJob(o: { quiesce?: boolean; volume?: string; owner?: { kind: 'app
 
 function restoreJob(archiveId: string): MaintenanceJob {
   return { jobId: uuid(), kind: 'volume-restore', volume: VOLUME, owner: { kind: 'stack', name: 'media' }, archiveId };
+}
+
+function recoveryCtx(w: World): MaintenanceRecoveryContext {
+  return { backupRoot: w.backupRoot, ledger: w.ledger, helperImage: () => Promise.resolve(IMAGE) };
 }
 
 function sha256(text: string): string {
@@ -484,12 +510,38 @@ describe('volume restore (SHP-REQ-202)', () => {
   it('an extract that fails still starts the project, and names the safety archive', async () => {
     const w = await makeWorld();
     const archiveId = await backedUp(w);
-    w.knobs.extractExit = 2;
+    w.volumeContent.value = 'changed';
+    w.knobs.extractExits = [2];
     const result = await runMaintenance(w.ports, w.ctx, restoreJob(archiveId));
     expect(result).toMatchObject({ state: 'failed', refusal: { code: 'step_failed' } });
     const safety = w.ledger.volumeArchives(VOLUME)[1]?.archiveId ?? 'missing';
     expect(result.refusal?.message).toContain(safety);
+    expect(result.refusal?.message).toContain('put back');
+    // The safety archive went back in (empty, extract), then the stack started.
+    expect(w.volumeContent.value).toBe('changed');
+    expect(w.cli.map((a) => a[3])).toEqual([
+      expect.stringContaining('-archive-') as unknown,
+      expect.stringMatching(/-empty$/) as unknown,
+      expect.stringMatching(/-extract$/) as unknown,
+      expect.stringMatching(/-safety-empty$/) as unknown,
+      expect.stringMatching(/-safety-extract$/) as unknown,
+    ]);
     expect(w.compose).toEqual([['stop'], ['start']]);
+    expect(await w.journal.unfinishedMaintenance()).toEqual([]);
+  });
+
+  it('when putting the safety archive back fails too, the stack is left stopped and the message names the safety archive', async () => {
+    const w = await makeWorld();
+    const archiveId = await backedUp(w);
+    w.knobs.extractExits = [2, 2];
+    const result = await runMaintenance(w.ports, w.ctx, restoreJob(archiveId));
+    const safety = w.ledger.volumeArchives(VOLUME)[1]?.archiveId ?? 'missing';
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'step_failed' } });
+    expect(result.refusal?.message).toContain(safety);
+    expect(result.refusal?.message).toContain('left stopped');
+    expect(result.refusal?.fix).toContain(safety);
+    expect(w.compose).toEqual([['stop']]);
+    expect(w.steps).not.toContain('starting');
   });
 
   it('a safety backup that fails leaves the volume untouched and starts the project', async () => {
@@ -619,8 +671,9 @@ describe('prune (SHP-REQ-205)', () => {
     expect(w.cli).toEqual([
       ['image', 'rm', `sha256:${'1'.repeat(64)}`],
       ['image', 'rm', 'a:1', 'b:1'],
-      ['builder', 'prune', '--force', '--filter', 'id=oldcache1'],
     ]);
+    // A cache record goes through the Engine by its full ID (the adapter anchors it).
+    expect(w.cachePrunes).toEqual(['oldcache1']);
     expect(w.cli.flat()).not.toContain('-f');
     expect(result.prune).toMatchObject({ reclaimableBytes: 100 + 700 + 50, reclaimedBytes: 100 + 700 + 50 });
     expect(result.prune?.items.map((i) => i.id.slice(0, 8))).toEqual(['sha256:1', 'sha256:7', 'oldcache']);
@@ -643,7 +696,17 @@ describe('prune (SHP-REQ-205)', () => {
     const plan = await runMaintenance(w.ports, w.ctx, dry());
     w.knobs.rmExit = 1;
     const result = await runMaintenance(w.ports, w.ctx, real(plan.jobId));
-    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'step_failed' }, prune: { reclaimedBytes: 0 } });
+    expect(result).toMatchObject({ state: 'failed', refusal: { code: 'step_failed' }, prune: { reclaimedBytes: 0, items: [] } });
+  });
+
+  it('reclaimed is what is measurably gone afterwards, not what was planned', async () => {
+    const w = await makeWorld();
+    seed(w);
+    const plan = await runMaintenance(w.ports, w.ctx, dry());
+    // Docker says yes to every removal, and removes nothing.
+    w.knobs.rmNoop = true;
+    const result = await runMaintenance(w.ports, w.ctx, real(plan.jobId));
+    expect(result).toMatchObject({ state: 'failed', prune: { reclaimedBytes: 0, items: [], reclaimableBytes: 100 + 400 + 700 + 50 } });
   });
 });
 
@@ -651,14 +714,15 @@ describe('restart recovery', () => {
   it('starts again a project an interrupted quiesced backup had stopped, removes its temp file and helper', async () => {
     const w = await makeWorld();
     const jobId = uuid();
-    const tmp = join(w.root, '.x.tar.zst.tmp');
+    await mkdir(join(w.backupRoot, 'volumes', VOLUME), { recursive: true });
+    const tmp = join(w.backupRoot, 'volumes', VOLUME, '.x.tar.zst.tmp');
     await writeFile(tmp, 'partial');
     await w.journal.begin({ deployId: jobId, app: 'media', step: MAINTENANCE_STEP, detail: { kind: 'volume-backup', volume: VOLUME, composeFiles: ['/c.yml'], project: PROJECT } });
     await w.journal.begin({ deployId: jobId, app: 'media', step: maintenanceStep('volume-backup', 'stop'), argv: ['stop'] });
     await w.journal.end({ deployId: jobId, app: 'media', step: maintenanceStep('volume-backup', 'stop'), argv: ['stop'], exitCode: 0 });
     await w.journal.begin({ deployId: jobId, app: 'media', step: maintenanceStep('volume-backup', 'archive'), detail: { tmp, helper: `shipyard-maintenance-${jobId}-archive-1` } });
 
-    const recovered = await recoverInterruptedMaintenance(w.ports, w.journal);
+    const recovered = await recoverInterruptedMaintenance(w.ports, w.journal, recoveryCtx(w));
     expect(recovered).toMatchObject([{ jobId, kind: 'volume-backup', restarted: true, startExitCode: 0, report: true, lastStep: maintenanceStep('volume-backup', 'archive') }]);
     expect(w.compose).toEqual([['start']]);
     expect(w.cli).toEqual([['rm', '--force', `shipyard-maintenance-${jobId}-archive-1`]]);
@@ -681,14 +745,13 @@ describe('restart recovery', () => {
     await w.journal.end({ deployId: b, app: 'media', step: maintenanceStep('volume-restore', 'stop'), exitCode: 0 });
     await w.journal.begin({ deployId: b, app: 'media', step: maintenanceStep('volume-restore', 'start') });
     await w.journal.end({ deployId: b, app: 'media', step: maintenanceStep('volume-restore', 'start'), exitCode: 0 });
-    const recovered = await recoverInterruptedMaintenance(w.ports, w.journal);
+    const recovered = await recoverInterruptedMaintenance(w.ports, w.journal, recoveryCtx(w));
     expect(recovered.map((r) => r.restarted)).toEqual([false, false]);
     expect(w.compose).toEqual([]);
   });
 
   it('maintenance lines are never read as an interrupted deploy, action or stack update', async () => {
     const w = await makeWorld();
-    w.knobs.tarExit = 0;
     await w.journal.begin({ deployId: uuid(), app: 'media', step: MAINTENANCE_STEP, detail: { kind: 'volume-backup' } });
     await runMaintenance(w.ports, w.ctx, backupJob({ quiesce: true }));
     expect(await w.journal.unfinished()).toEqual([]);
@@ -727,5 +790,196 @@ describe('before a stack update (volumeBackups.beforeUpdate)', () => {
 describe('archiveTimestamp', () => {
   it('is UTC YYYYMMDDTHHMMSSZ', () => {
     expect(archiveTimestamp(new Date('2026-01-02T03:04:05.999Z'))).toBe('20260102T030405Z');
+  });
+});
+
+describe("never the agent's own stack (self-guard)", () => {
+  it("refuses a quiesced backup or a restore of the agent's own compose project, before anything is stopped", async () => {
+    const w = await makeWorld();
+    const archiveId = (await runMaintenance(w.ports, w.ctx, backupJob())).archive?.archiveId ?? '';
+    w.cli.length = 0;
+    w.ctx.ownProject = () => Promise.resolve(PROJECT);
+    const quiesced = await runMaintenance(w.ports, w.ctx, backupJob({ quiesce: true }));
+    expect(quiesced).toMatchObject({ state: 'refused', refusal: { code: 'locked', message: expect.stringContaining('cannot stop its own stack') as unknown } });
+    expect(quiesced.refusal?.fix).toContain('without quiesce');
+    const restore = await runMaintenance(w.ports, w.ctx, restoreJob(archiveId));
+    expect(restore).toMatchObject({ state: 'refused', refusal: { code: 'locked' } });
+    expect(w.compose).toEqual([]);
+    expect(w.cli).toEqual([]);
+    // A backup without quiesce stops nothing, so it stays allowed.
+    await expect(runMaintenance(w.ports, w.ctx, backupJob())).resolves.toMatchObject({ state: 'succeeded' });
+    // Another project is not the agent's.
+    w.ctx.ownProject = () => Promise.resolve('shipyard');
+    await expect(runMaintenance(w.ports, w.ctx, backupJob({ quiesce: true }))).resolves.toMatchObject({ state: 'succeeded' });
+  });
+
+  it('a stack update with quiesced volume backups of its own stack is refused too', async () => {
+    const w = await makeWorld({ quiesce: true });
+    w.ctx.ownProject = () => Promise.resolve(PROJECT);
+    await expect(backupVolumesBeforeUpdate(w.ports, w.ctx, { stack: 'media', updateId: uuid() })).resolves.toMatchObject({ refusal: { code: 'locked' } });
+    expect(w.compose).toEqual([]);
+  });
+});
+
+describe('restore: what else holds the volume, after the stop', () => {
+  it('refuses volume_in_use when a running container of another project still mounts it, and starts the owner again', async () => {
+    const w = await makeWorld();
+    const archiveId = (await runMaintenance(w.ports, w.ctx, backupJob())).archive?.archiveId ?? '';
+    w.cli.length = 0;
+    w.containers.push(container({ name: 'sidecar', compose: { project: 'other', service: 's' }, mounts: [volumeMount(VOLUME)] }));
+    const result = await runMaintenance(w.ports, w.ctx, restoreJob(archiveId));
+    expect(result).toMatchObject({ state: 'refused', refusal: { code: 'volume_in_use', message: expect.stringContaining('sidecar') as unknown } });
+    expect(w.compose).toEqual([['stop'], ['start']]);
+    expect(w.cli).toEqual([]);
+  });
+
+  it('a stopped container of another project does not hold it', async () => {
+    const w = await makeWorld();
+    const archiveId = (await runMaintenance(w.ports, w.ctx, backupJob())).archive?.archiveId ?? '';
+    w.containers.push(container({ name: 'old', state: 'exited', mounts: [volumeMount(VOLUME)] }));
+    await expect(runMaintenance(w.ports, w.ctx, restoreJob(archiveId))).resolves.toMatchObject({ state: 'succeeded' });
+  });
+});
+
+describe('restart recovery: a restore interrupted mid-wipe or mid-extract', () => {
+  /** A journal as a crash during the restore's extract leaves it, with `safety` as its safety archive. */
+  async function crashedRestore(w: World, safety: string): Promise<string> {
+    const jobId = uuid();
+    const id = { deployId: jobId, app: 'media' };
+    const at = (leaf: string) => maintenanceStep('volume-restore', leaf);
+    await w.journal.begin({ ...id, step: MAINTENANCE_STEP, detail: { kind: 'volume-restore', volume: VOLUME, owner: { kind: 'stack', name: 'media' }, composeFiles: ['/c.yml'], project: PROJECT } });
+    await w.journal.begin({ ...id, step: at('stop') });
+    await w.journal.end({ ...id, step: at('stop'), exitCode: 0 });
+    await w.journal.begin({ ...id, step: at('archive'), detail: { archiveId: safety } });
+    await w.journal.end({ ...id, step: at('archive'), exitCode: 0, detail: { archiveId: safety } });
+    await w.journal.begin({ ...id, step: at('empty') });
+    await w.journal.end({ ...id, step: at('empty'), exitCode: 0 });
+    await w.journal.begin({ ...id, step: at('extract') });
+    return jobId;
+  }
+
+  it('puts the safety archive back, then starts the stack', async () => {
+    const w = await makeWorld();
+    const safety = (await runMaintenance(w.ports, w.ctx, backupJob())).archive?.archiveId ?? '';
+    w.cli.length = 0;
+    w.volumeContent.value = 'half';
+    const jobId = await crashedRestore(w, safety);
+    const [r] = await recoverInterruptedMaintenance(w.ports, w.journal, recoveryCtx(w));
+    expect(r).toMatchObject({ jobId, restoredFromSafety: true, leftStopped: false, restarted: true, startExitCode: 0, safetyArchiveId: safety });
+    expect(w.volumeContent.value).toBe('original');
+    expect(w.cli.map((a) => a[3])).toEqual([`shipyard-maintenance-${jobId}-recover-empty`, `shipyard-maintenance-${jobId}-recover-extract`]);
+    expect(w.compose).toEqual([['start']]);
+  });
+
+  it('when that fails, leaves the stack stopped', async () => {
+    const w = await makeWorld();
+    const safety = (await runMaintenance(w.ports, w.ctx, backupJob())).archive?.archiveId ?? '';
+    w.knobs.extractExits = [2];
+    await crashedRestore(w, safety);
+    const [r] = await recoverInterruptedMaintenance(w.ports, w.journal, recoveryCtx(w));
+    expect(r).toMatchObject({ restoredFromSafety: false, leftStopped: true, restarted: false, safetyArchiveId: safety });
+    expect(w.compose).toEqual([]);
+  });
+
+  it('a safety archive whose file changed is never extracted: the stack stays stopped', async () => {
+    const w = await makeWorld();
+    const safety = (await runMaintenance(w.ports, w.ctx, backupJob())).archive?.archiveId ?? '';
+    await writeFile(w.ledger.volumeArchive(safety)?.file ?? '', 'tampered');
+    w.cli.length = 0;
+    await crashedRestore(w, safety);
+    const [r] = await recoverInterruptedMaintenance(w.ports, w.journal, recoveryCtx(w));
+    expect(r).toMatchObject({ leftStopped: true });
+    expect(w.cli).toEqual([]);
+    expect(w.compose).toEqual([]);
+  });
+
+  it('a restore whose extract had finished is only started again', async () => {
+    const w = await makeWorld();
+    const safety = (await runMaintenance(w.ports, w.ctx, backupJob())).archive?.archiveId ?? '';
+    w.cli.length = 0;
+    const jobId = await crashedRestore(w, safety);
+    await w.journal.end({ deployId: jobId, app: 'media', step: maintenanceStep('volume-restore', 'extract'), exitCode: 0 });
+    const [r] = await recoverInterruptedMaintenance(w.ports, w.journal, recoveryCtx(w));
+    expect(r).toMatchObject({ restoredFromSafety: false, leftStopped: false, restarted: true });
+    expect(w.cli).toEqual([]);
+  });
+});
+
+describe('restart recovery: the backup root', () => {
+  it('removes 0-byte temp files and archive files the ledger does not hold, keeps live ones', async () => {
+    const w = await makeWorld();
+    const live = (await runMaintenance(w.ports, w.ctx, backupJob())).archive?.archiveId ?? '';
+    const dir = join(w.backupRoot, 'volumes', VOLUME);
+    await writeFile(join(dir, '.20261022T000000Z-x.tar.zst.tmp'), '');
+    await writeFile(join(dir, '20250101T000000Z.tar.zst'), 'nobody recorded me');
+    await writeFile(join(dir, 'notes.txt'), 'left alone');
+    await recoverInterruptedMaintenance(w.ports, w.journal, recoveryCtx(w));
+    expect((await readdir(dir)).sort()).toEqual(['20261022T030405Z.tar.zst', 'notes.txt']);
+    expect(w.ledger.volumeArchive(live)).not.toBeNull();
+  });
+
+  it('adopts an archive an interrupted job committed but never recorded, when the journal places it', async () => {
+    const w = await makeWorld();
+    const dir = join(w.backupRoot, 'volumes', VOLUME);
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, '20261022T010203Z.tar.zst');
+    await writeFile(file, 'archive of committed');
+    const jobId = uuid();
+    const archiveId = '99999999-9999-4999-8999-999999999999';
+    const id = { deployId: jobId, app: 'media' };
+    await w.journal.begin({ ...id, step: MAINTENANCE_STEP, detail: { kind: 'volume-backup', volume: VOLUME, quiesce: false, owner: { kind: 'stack', name: 'media' }, composeFiles: ['/c.yml'], project: PROJECT } });
+    await w.journal.begin({ ...id, step: maintenanceStep('volume-backup', 'archive'), detail: { archiveId, final: file } });
+    await w.journal.end({ ...id, step: maintenanceStep('volume-backup', 'archive'), exitCode: 0, detail: { archiveId, final: file } });
+    const [r] = await recoverInterruptedMaintenance(w.ports, w.journal, recoveryCtx(w));
+    expect(r?.archives).toEqual([archiveId]);
+    expect(w.ledger.volumeArchive(archiveId)).toMatchObject({ volume: VOLUME, owner: { kind: 'stack', name: 'media' }, sha256: sha256('archive of committed'), quiesced: false, file });
+    expect(await readdir(dir)).toEqual(['20261022T010203Z.tar.zst']);
+  });
+});
+
+describe('backups that go partly wrong', () => {
+  it('a retention error does not fail a good backup; the output says so', async () => {
+    const w = await makeWorld({ retain: 1 });
+    await runMaintenance(w.ports, w.ctx, backupJob());
+    w.clock.advance(60_000);
+    w.ports.files = { ...w.ports.files, remove: () => Promise.reject(Object.assign(new Error(`EACCES: permission denied, unlink '${w.backupRoot}/x'`), { code: 'EACCES' })) };
+    const result = await runMaintenance(w.ports, w.ctx, backupJob());
+    expect(result.state).toBe('succeeded');
+    expect(result.archive).toBeDefined();
+    expect(result.removedArchives).toEqual([]);
+    expect(result.output).toContain('Retention could not finish (EACCES)');
+    expect(result.output).not.toContain(w.backupRoot);
+  });
+
+  it('never chmods a backup root that already existed; only the directories it made are 0700', async () => {
+    const w = await makeWorld();
+    await mkdir(w.backupRoot, { recursive: true });
+    await chmod(w.backupRoot, 0o755);
+    await runMaintenance(w.ports, w.ctx, backupJob());
+    expect((await stat(w.backupRoot)).mode & 0o777).toBe(0o755);
+    expect((await stat(join(w.backupRoot, 'volumes'))).mode & 0o777).toBe(0o700);
+    expect((await stat(join(w.backupRoot, 'volumes', VOLUME))).mode & 0o777).toBe(0o700);
+  });
+
+  it('a failed backup names the error code, never a host path', async () => {
+    const w = await makeWorld();
+    const enospc = Object.assign(new Error(`ENOSPC: no space left on device, open '${w.backupRoot}/volumes/${VOLUME}/.x.tmp'`), { code: 'ENOSPC' });
+    w.ports.files = { ...w.ports.files, createEmpty: () => Promise.reject(enospc) };
+    const full = await runMaintenance(w.ports, w.ctx, backupJob());
+    expect(full).toMatchObject({ state: 'failed', refusal: { code: 'backup_failed' } });
+    expect(full.refusal?.message).toContain('ENOSPC');
+    expect(full.refusal?.message).not.toContain('/');
+    expect(full.output ?? '').not.toContain('/');
+
+    const x = await makeWorld();
+    x.ports.files = { ...x.ports.files, ensureDir: () => Promise.reject(Object.assign(new Error(`EACCES: permission denied, mkdir '${x.backupRoot}'`), { code: 'EACCES' })) };
+    const denied = await runMaintenance(x.ports, x.ctx, backupJob());
+    expect(denied.refusal?.message).toContain('EACCES');
+    expect(denied.refusal?.message).not.toContain('/');
+
+    const y = await makeWorld();
+    y.ctx.helperImage = () => Promise.reject(new Error(`no such file /var/run/docker.sock`));
+    const noImage = await runMaintenance(y.ports, y.ctx, backupJob());
+    expect(noImage.refusal?.message).not.toContain('/');
   });
 });

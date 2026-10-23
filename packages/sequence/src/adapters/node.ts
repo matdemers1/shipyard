@@ -100,8 +100,14 @@ function errCode(err: unknown): string | undefined {
 export function nodeArchiveFiles(): ArchiveFilesPort {
   return {
     async ensureDir(dir) {
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      await chmod(dir, 0o700);
+      // `mkdir -p` returns the first directory it made: that one and each below it down to `dir`
+      // are ours, and set 0700 whatever the umask. One that existed (the backup root) is left alone.
+      const first = await mkdir(dir, { recursive: true, mode: 0o700 });
+      if (first === undefined) return;
+      for (let d = dir; d.length >= first.length; d = dirname(d)) {
+        await chmod(d, 0o700);
+        if (d === first || d === dirname(d)) break;
+      }
     },
 
     async createEmpty(path) {

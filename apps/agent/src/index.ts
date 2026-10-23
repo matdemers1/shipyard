@@ -31,6 +31,8 @@ import {
   closeInterruptedMaintenance,
   nodeArchiveFiles,
   recoverInterruptedMaintenance,
+  safeError,
+  stripPaths,
   runMaintenance,
   type Log,
   type MaintenanceContext,
@@ -149,15 +151,45 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   // A lifecycle action is never redone after a restart: it is reported interrupted (SHP-REQ-187).
   await reportInterruptedActions({ client, journal, log: logger });
 
-  // Nor is a volume job (SHP-ADR-012): a project one had stopped is started again first — a stack
-  // is never left stopped because the agent restarted — then the server is told.
   const archiveFiles = nodeArchiveFiles();
-  const maintenanceRecovered = await recoverInterruptedMaintenance({ docker: ports.docker, files: archiveFiles, log }, journal);
-  await reportInterruptedMaintenance({ client, recovered: maintenanceRecovered, close: (r) => closeInterruptedMaintenance(journal, r), log: logger });
+  // The agent's own container, inspected once (SHP-ADR-012): its image is the archive helper (never
+  // pulled), and its compose project is the stack a volume job must never stop. A failed lookup is
+  // tried again next time rather than remembered.
+  let ownIdentity: Promise<{ imageId: string; composeProject: string | null }> | undefined;
+  const selfIdentity = (): Promise<{ imageId: string; composeProject: string | null }> => {
+    if (ownIdentity === undefined) {
+      const self = config.selfContainerId;
+      const inspect = ports.docker.containerIdentity?.bind(ports.docker);
+      ownIdentity =
+        self === undefined || inspect === undefined
+          ? Promise.reject(new Error('the agent is not running in a container (no HOSTNAME under /.dockerenv, no SHIPYARD_SELF_CONTAINER_ID)'))
+          : inspect(self).then((found) => {
+              if (found === null) throw new Error("Docker does not know the agent's own container");
+              return found;
+            });
+      ownIdentity.catch(() => {
+        ownIdentity = undefined;
+      });
+    }
+    return ownIdentity;
+  };
+  const helperImage = async (): Promise<string> => (await selfIdentity()).imageId;
+  // Outside a container no project is the agent's own; inside one, a lookup that fails refuses the job.
+  const ownProject = async (): Promise<string | null> => (config.selfContainerId === undefined ? null : (await selfIdentity()).composeProject);
 
   // Opened once: the ledger's hash chain is verified on open. Appends take a cross-process lock and
   // chain onto the file's true tail, since the host CLI appends to the same file (SHP-T-6.11).
   const ledger = await Ledger.open(ports.fs, paths.ledgerPath);
+
+  // Nor is a volume job (SHP-ADR-012): stray temp archives go, an archive committed but never
+  // recorded is adopted, a half-restored volume is put back from its safety archive (or its stack
+  // left stopped), and a project a job had stopped is started again — then the server is told.
+  const maintenanceRecovered = await recoverInterruptedMaintenance({ docker: ports.docker, fs: ports.fs, files: archiveFiles, log }, journal, {
+    backupRoot: config.backupRoot,
+    ledger,
+    helperImage,
+  });
+  await reportInterruptedMaintenance({ client, recovered: maintenanceRecovered, close: (r) => closeInterruptedMaintenance(journal, r), log: logger });
 
   // A stack update is never resumed forward either (SHP-REQ-197): put back what one left mid-swap,
   // and tell the server.
@@ -293,27 +325,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   }
   const worker = builds;
 
-  // Volume backups, restores, deletes and prunes (SHP-ADR-012). The helper is the agent's own
-  // image, found once by inspecting its own container; it is never pulled.
-  let ownImage: Promise<string> | undefined;
-  const helperImage = (): Promise<string> => {
-    if (ownImage === undefined) {
-      const self = config.selfContainerId;
-      const inspect = ports.docker.containerImageId?.bind(ports.docker);
-      ownImage =
-        self === undefined || inspect === undefined
-          ? Promise.reject(new Error('the agent is not running in a container (no HOSTNAME under /.dockerenv, no SHIPYARD_SELF_CONTAINER_ID)'))
-          : inspect(self).then((id) => {
-              if (id === null) throw new Error(`Docker does not know the agent's own container ${self}`);
-              return id;
-            });
-      // A failed lookup is tried again next time rather than remembered.
-      ownImage.catch(() => {
-        ownImage = undefined;
-      });
-    }
-    return ownImage;
-  };
+  // Volume backups, restores, deletes and prunes (SHP-ADR-012), with the identity found above.
   const maintenancePorts: MaintenancePorts = { docker: ports.docker, fs: ports.fs, files: archiveFiles, clock: ports.clock, log };
   const maintenanceContext = async (onStep?: MaintenanceContext['onStep']): Promise<MaintenanceContext> => ({
     dataRoot: config.dataRoot,
@@ -323,6 +335,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     journal,
     ledger,
     helperImage,
+    ownProject,
     // A prune never runs beside a deploy, a stack update or an action (their locks show it).
     busy: async () => targets.inFlight() || (await anyLockLive()),
     ...(onStep === undefined ? {} : { onStep }),
@@ -405,8 +418,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
       try {
         ctx = await maintenanceContext(onStep);
       } catch (err) {
-        const why = err instanceof ManifestLoadError ? err.toRefusal() : refusal('manifest_invalid', `The host's manifests could not be read: ${err instanceof Error ? err.message : String(err)}`);
-        return { jobId: job.jobId, state: 'refused', refusal: why };
+        // No host path in what reaches the server (SHP-T-17.2): the error's code, or its message without paths.
+        const why = err instanceof ManifestLoadError ? err.toRefusal() : refusal('manifest_invalid', `The host's manifests could not be read (${safeError(err)}).`);
+        return { jobId: job.jobId, state: 'refused', refusal: { ...why, message: stripPaths(why.message) } };
       }
       return runMaintenance(maintenancePorts, ctx, job);
     },

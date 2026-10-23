@@ -1,5 +1,5 @@
 import { refusal, type MaintenanceJob, type MaintenanceProgress, type MaintenanceResult, type MaintenanceStep } from '@shipyard/schema';
-import type { MaintenanceRecovery } from '@shipyard/sequence';
+import { safeError, type MaintenanceRecovery } from '@shipyard/sequence';
 import type { AgentClient } from './client.js';
 import { DEFAULT_BACKOFF, abortableSleep, isPermanent, nextDelay, type Backoff, type LoopLog, type Sleep } from './loop.js';
 
@@ -110,7 +110,8 @@ export function createMaintenanceRunner(opts: MaintenanceRunnerOptions): Mainten
       result = await opts.execute(job, onStep);
     } catch (err) {
       log.error({ jobId: job.jobId, err: message(err) }, 'maintenance runner failed');
-      result = { jobId: job.jobId, state: 'failed', refusal: refusal('step_failed', `The agent could not run this ${job.kind}: ${message(err)}`) };
+      // No host path in what reaches the server (SHP-T-17.2).
+      result = { jobId: job.jobId, state: 'failed', refusal: refusal('step_failed', `The agent could not run this ${job.kind} (${safeError(err)}).`) };
     } finally {
       current = null;
     }
@@ -145,20 +146,28 @@ export async function reportInterruptedMaintenance(opts: {
 }): Promise<void> {
   for (const r of opts.recovered) {
     if (r.report) {
-      const restarted = r.restarted
-        ? r.startExitCode === 0
-          ? ` Its containers had been stopped for it and were started again.`
-          : ` Its containers had been stopped for it, and starting them again failed (exit ${String(r.startExitCode)}).`
-        : '';
-      const safety = r.kind === 'volume-restore' && r.archives.length > 0 ? ` What the volume held before is in archive ${r.archives.join(', ')}.` : '';
+      const safety = r.safetyArchiveId ?? r.archives.at(-1) ?? null;
+      let detail = '';
+      let fix = `Check ${r.name} on the Host view, then run it again if it is still needed.`;
+      if (r.leftStopped) {
+        detail = ` The volume may be half-restored and putting back ${safety === null ? 'what it held before failed' : `safety archive ${safety} failed`}, so ${r.name} was left stopped so nothing writes to a half-restored volume.`;
+        fix = safety === null ? `Restore the volume by hand, then start ${r.name}.` : `Restore archive ${safety} (what the volume held before) by hand, then start ${r.name}.`;
+      } else if (r.restoredFromSafety) {
+        detail = ` The volume was put back from safety archive ${safety ?? 'unknown'}, as it was before the restore.`;
+        fix = `Check ${r.name}, then restore again if it is still needed.`;
+      } else if (r.kind === 'volume-restore' && safety !== null) {
+        detail = ` What the volume held before is in archive ${safety}.`;
+      }
+      if (!r.leftStopped && r.restarted) {
+        detail +=
+          r.startExitCode === 0
+            ? ' Its containers had been stopped for it and were started again.'
+            : ` Its containers had been stopped for it, and starting them again failed (exit ${String(r.startExitCode)}).`;
+      }
       const result: MaintenanceResult = {
         jobId: r.jobId,
         state: 'failed',
-        refusal: refusal(
-          'interrupted',
-          `The agent restarted during this ${r.kind} of ${r.name}.${restarted}${safety}`,
-          r.kind === 'volume-restore' ? `The volume may be partly restored; check ${r.name}, then restore again.` : `Check ${r.name} on the Host view, then run it again if it is still needed.`,
-        ),
+        refusal: refusal('interrupted', `The agent restarted during this ${r.kind} of ${r.name}.${detail}`, fix),
       };
       try {
         await opts.client.request('POST', maintenanceResultPath(r.jobId), result);

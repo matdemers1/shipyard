@@ -58,7 +58,9 @@ async function fakeAction(page: Page, polled: Record<string, unknown>): Promise<
 
 async function openSheet(page: Page, name = WORKER): Promise<Locator> {
   await page.goto(`/host?container=${containerId(name)}`);
-  await h1(page, 'Host');
+  // The sheet opens straight from the URL and makes the page behind it inert, so the heading may
+  // already be out of the accessibility tree; it only has to have rendered.
+  await expect(page.locator('h1', { hasText: 'Host' })).toBeAttached();
   const sheet = page.getByRole('dialog', { name });
   await expect(sheet).toBeVisible();
   return sheet;
@@ -170,14 +172,14 @@ test.describe('at 1440 px', () => {
     await logsSettled(sheet);
   });
 
-  test('a real restart is queued — no agent takes it here — with the buttons held', async ({ page }) => {
+  test('with no agent polling, a real restart is refused agent_offline, shown verbatim', async ({ page }) => {
+    // The harness world has no agent polling the server, so the server refuses at once rather than
+    // queueing work nobody would take (SHP-T-15.4); the sheet shows its message and fix as sent.
     const sheet = await openSheet(page);
     await sheet.getByRole('button', { name: 'Restart', exact: true }).click();
-    const banner = sheet.locator('.shp-action-banner');
-    await expect(banner).toBeVisible();
-    await expect(banner.locator('.shp-action-banner__head')).toHaveText('Queued');
-    await expect(banner).toContainText('waiting for the agent to pick it up');
-    for (const name of ['Restart', 'Recreate', 'Stop']) await expect(sheet.getByRole('button', { name, exact: true })).toBeDisabled();
+    await expect(sheet.getByText('The agent that runs this has not polled the server recently.').first()).toBeVisible();
+    await expect(sheet.getByText('Check the agent is running and can reach the server, then retry.').first()).toBeVisible();
+    for (const name of ['Restart', 'Recreate']) await expect(sheet.getByRole('button', { name, exact: true })).toBeEnabled();
   });
 
   test("a refusal shows the server's message and fix verbatim", async ({ page }) => {

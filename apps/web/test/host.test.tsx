@@ -308,7 +308,7 @@ describe('the Host destination', () => {
 
     // A Deployed group links to its app page; an Observed one does not.
     expect(within(projects).getByRole('link', { name: /Open app bindery/ })).toHaveAttribute('href', '/apps/bindery');
-    expect(within(projects).getAllByRole('link')).toHaveLength(1);
+    expect(within(projects).getAllByRole('link', { name: /^Open app/ })).toHaveLength(1);
     expect(within(projects).getAllByText('Deployed')).toHaveLength(1);
     expect(within(projects).getByText('Operated')).toBeInTheDocument();
 

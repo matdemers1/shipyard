@@ -50,7 +50,7 @@ export const USAGE = `Usage:
   shipyard-run deploy <app> <sha> [--dry-run] [--label <text>] [--json]
   shipyard-run status <app>
   shipyard-run recover
-  shipyard-run check-manifests
+  shipyard-run check-manifests   (apps/ and stacks/; exits 1 on an invalid file or a clash)
   shipyard-run build-secret set <app> <name>      (the value is read from stdin)
   shipyard-run build-secret delete <app> <name>
   shipyard-run build-secret list <app>

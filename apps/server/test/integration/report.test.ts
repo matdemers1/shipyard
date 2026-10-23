@@ -265,6 +265,70 @@ describe('drift', () => {
   });
 });
 
+function stack(name: string, project = name): NonNullable<AgentReport['stacks']>[number] {
+  return { manifest: { kind: 'stack', name, compose: { files: [`/DATA/AppData/${name}/docker-compose.yml`], project }, updates: 'none' }, manifestSha256: 'e'.repeat(64) };
+}
+
+describe('the stack mirror (SHP-T-15.4, SHP-ADR-010)', () => {
+  const web = (): AgentReport['apps'][number] => ({ manifest: manifest('web'), manifestSha256: 'a'.repeat(64), running: { web: DIGEST_A } });
+
+  it('creates stack rows from a report, retires one the agent stops naming, and revives it', async () => {
+    const first = await send({ ...report([web()]), stacks: [stack('pg-stack'), stack('immich', 'immich-app')] });
+    expect(first.status).toBe(200);
+    expect((first.body as { stacks: { created: string[] } }).stacks.created).toEqual(['pg-stack', 'immich']);
+    const row = await db.stack.findUniqueOrThrow({ where: { name: 'immich' } });
+    expect(row).toMatchObject({ agentId, composeProject: 'immich-app', manifestSha256: 'e'.repeat(64), retiredAt: null });
+    expect(JSON.parse(row.manifestJson)).toMatchObject({ kind: 'stack', name: 'immich' });
+
+    const second = await send({ ...report([web()]), stacks: [stack('pg-stack')] });
+    expect((second.body as { stacks: { retired: string[] } }).stacks.retired).toEqual(['immich']);
+    expect((await db.stack.findUniqueOrThrow({ where: { name: 'immich' } })).retiredAt).not.toBeNull();
+    const audit = await db.auditEvent.findFirst({ where: { action: 'agent.report' }, orderBy: { at: 'desc' } });
+    expect(audit?.after).toMatchObject({ stacks: { retired: ['immich'] } });
+
+    const third = await send({ ...report([web()]), stacks: [stack('pg-stack'), stack('immich', 'immich-app')] });
+    expect((third.body as { stacks: { revived: string[] } }).stacks.revived).toEqual(['immich']);
+    expect((await db.stack.findUniqueOrThrow({ where: { name: 'immich' } })).retiredAt).toBeNull();
+  });
+
+  it('leaves the mirror alone when an older agent sends no stacks, and retires nothing on an empty list', async () => {
+    await send({ ...report([web()]), stacks: [stack('pg-stack')] });
+    await send(report([web()]));
+    await send({ ...report([web()]), stacks: [] });
+    expect((await db.stack.findUniqueOrThrow({ where: { name: 'pg-stack' } })).retiredAt).toBeNull();
+  });
+
+  it('never mirrors a stack named like an app, and retires one an app has since taken the name of (SHP-T-15.4)', async () => {
+    const res = await send({ ...report([web()]), stacks: [stack('web'), stack('pg-stack')] });
+    expect(res.status).toBe(200);
+    expect((res.body as { stacks: { nameTaken: string[]; created: string[] } }).stacks).toMatchObject({ nameTaken: ['web'], created: ['pg-stack'] });
+    expect(await db.stack.findUnique({ where: { name: 'web' } })).toBeNull();
+
+    // An app row that already exists (here retired) holds its name too.
+    const api = { manifest: manifest('api'), manifestSha256: 'c'.repeat(64), running: { web: DIGEST_A } };
+    await send({ ...report([web(), api]), stacks: [stack('pg-stack')] });
+    await send({ ...report([web()]), stacks: [stack('pg-stack'), stack('api')] });
+    expect(await db.stack.findUnique({ where: { name: 'api' } })).toBeNull();
+
+    // A mirrored stack whose name an app later takes stops being adopted.
+    const pg = { manifest: manifest('pg-stack'), manifestSha256: 'd'.repeat(64), running: { web: DIGEST_A } };
+    const taken = await send({ ...report([web(), pg]), stacks: [stack('pg-stack'), stack('immich')] });
+    expect((taken.body as { stacks: { nameTaken: string[]; retired: string[] } }).stacks).toMatchObject({ nameTaken: ['pg-stack'], retired: ['pg-stack'] });
+    expect((await db.stack.findUniqueOrThrow({ where: { name: 'pg-stack' } })).retiredAt).not.toBeNull();
+  });
+
+  it('refuses a stack another agent owns, and a report naming one twice', async () => {
+    await send({ ...report([web()]), stacks: [stack('pg-stack')] });
+    const other = makeKey();
+    await db.agent.create({ data: { publicKey: other.b64, fingerprint: other.fingerprint, confirmedAt: new Date() } });
+    const res = await send({ ...report([]), stacks: [stack('pg-stack')] }, other);
+    expect((res.body as { stacks: { refused: string[] } }).stacks.refused).toEqual(['pg-stack']);
+    expect((await db.stack.findUniqueOrThrow({ where: { name: 'pg-stack' } })).agentId).toBe(agentId);
+    const twice = await send({ ...report([web()]), stacks: [stack('pg-stack'), stack('pg-stack')] });
+    expect(twice.status).toBe(400);
+  });
+});
+
 describe('only the report writes app rows (SHP-REQ-104)', () => {
   it('refuses a report naming an app another agent owns, and leaves the app with its owner', async () => {
     const entry = { manifest: manifest('web'), manifestSha256: 'a'.repeat(64), running: { web: DIGEST_A, worker: null } };
@@ -297,6 +361,25 @@ describe('only the report writes app rows (SHP-REQ-104)', () => {
       if (writes.test(flat)) offenders.push(`${rel}: ORM write to app`);
       if (/\$(executeRaw|executeRawUnsafe|queryRaw|queryRawUnsafe)\b[^;]*\b(insert\s+into|update|delete\s+from)\s+"?app"?\b/i.test(flat)) {
         offenders.push(`${rel}: raw SQL write to app`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('finds no stack create/upsert/update outside src/apps/report.ts (SHP-T-15.4)', async () => {
+    const root = join(import.meta.dirname, '../../src');
+    const writes = /\.stack\s*\.\s*(create|createMany|createManyAndReturn|upsert|update|updateMany|updateManyAndReturn|delete|deleteMany)\s*\(/;
+    const offenders: string[] = [];
+    const entries = await readdir(root, { recursive: true, withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.tsx?$/.test(entry.name)) continue;
+      const file = join(entry.parentPath, entry.name);
+      const rel = relative(root, file).split('\\').join('/');
+      if (rel.startsWith('generated/') || rel === 'apps/report.ts') continue;
+      const flat = (await readFile(file, 'utf8')).replace(/\s+/g, ' ');
+      if (writes.test(flat)) offenders.push(`${rel}: ORM write to stack`);
+      if (/\$(executeRaw|executeRawUnsafe|queryRaw|queryRawUnsafe)\b[^;]*\b(insert\s+into|update|delete\s+from)\s+"?stack"?\b/i.test(flat)) {
+        offenders.push(`${rel}: raw SQL write to stack`);
       }
     }
     expect(offenders).toEqual([]);

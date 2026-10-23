@@ -12,13 +12,14 @@ import {
   matchesChip,
   type HostChip,
 } from '../../lib/host';
-import { ContainerGroups } from './ContainerGroups';
+import { ContainerGroups, type ContainerHref } from './ContainerGroups';
 import { Volumes } from './Volumes';
 
 /**
  * One agent's host snapshot (SHP-T-14.7, SHP-REQ-178): the summary tiles, the filter chips, the
- * containers by compose project, the volumes and the images. Read-only (SHP-REQ-181): nothing here
- * changes the server or the host; the buttons only filter, expand and collapse what is shown.
+ * containers by compose project, the volumes and the images. The inventory itself is read-only
+ * (SHP-REQ-181); a container's lifecycle actions live in its sheet and a group's "Restart stack"
+ * (SHP-T-15.7, SHP-ADR-010), never on a volume or an image.
  */
 
 export interface HostViewProps {
@@ -28,6 +29,8 @@ export interface HostViewProps {
   now: number;
   /** 2 for the only host, 3 when each host has its own heading. */
   headingLevel: 2 | 3;
+  /** Where a container's row opens its sheet. */
+  hrefFor: ContainerHref;
 }
 
 function plural(n: number, one: string, other: string): string {
@@ -44,7 +47,7 @@ export function AgentStatus({ snapshot, now }: { snapshot: HostSnapshot; now: nu
   );
 }
 
-export function HostView({ snapshot, chip, onChip, now, headingLevel }: HostViewProps) {
+export function HostView({ snapshot, chip, onChip, now, headingLevel, hrefFor }: HostViewProps) {
   const inventory = snapshot.inventory;
   const totals = useMemo(() => hostTotals(inventory), [inventory]);
   const counts = useMemo(() => chipCounts(inventory.containers), [inventory]);
@@ -122,7 +125,7 @@ export function HostView({ snapshot, chip, onChip, now, headingLevel }: HostView
             {chip === 'all' ? 'Docker runs no containers on this host.' : 'Choose All to see every container.'}
           </EmptyState>
         ) : (
-          <ContainerGroups groups={groups} samples={snapshot.samples} />
+          <ContainerGroups groups={groups} samples={snapshot.samples} hrefFor={hrefFor} />
         )}
       </Section>
 

@@ -1,0 +1,16 @@
+{
+  "id": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "target": {
+    "kind": "stack",
+    "name": "jellyfin"
+  },
+  "verb": "restart",
+  "service": "jellyfin",
+  "state": "succeeded",
+  "requesterLabel": "matthew@demers.dev (console)",
+  "createdAt": "2026-10-22T12:00:00.000Z",
+  "startedAt": "2026-10-22T12:00:00.000Z",
+  "endedAt": "2026-10-22T12:00:00.000Z",
+  "refusal": null,
+  "output": " Container jellyfin  Restarting\n Container jellyfin  Started"
+}

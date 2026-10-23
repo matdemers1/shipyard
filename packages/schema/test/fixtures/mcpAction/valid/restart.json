@@ -1,0 +1,9 @@
+{
+  "name": "jellyfin",
+  "verb": "restart",
+  "requester": {
+    "repo": "matdemers1/shipyard",
+    "branch": "main",
+    "label": "claude: test"
+  }
+}

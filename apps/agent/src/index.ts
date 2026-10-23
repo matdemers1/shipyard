@@ -1,6 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import pino from 'pino';
 import {
+  AppLock,
   Journal,
   Ledger,
   createBuildKitAdapter,
@@ -11,6 +12,7 @@ import {
   isAppLockLive,
   loadAgentPrivateKey,
   loadManifests,
+  loadStacks,
   lockPath,
   nodeFs,
   recoverInterrupted,
@@ -22,6 +24,7 @@ import {
   type Log,
   type SequencePorts,
 } from '@shipyard/sequence';
+import { createActionRunner, reportInterruptedActions } from './actions.js';
 import { createBuildWorker, type BuildWorker } from './build.js';
 import { createCacheManager, type CacheManager } from './cache.js';
 import { createAgentClient, type FetchLike } from './client.js';
@@ -30,6 +33,7 @@ import { waitForConfirmation } from './enrol.js';
 import { loadOrCreateIdentity } from './identity.js';
 import { POLL_TIMEOUT_MS, createTargetRunner, fileTargetStore, reportLeftovers, runLoop, targetStorePath, trackInFlight } from './loop.js';
 import { createInventoryCollector } from './inventory.js';
+import { createLogsRunner } from './logs.js';
 import { buildReport, manifestsHash, startReporting } from './report.js';
 
 /**
@@ -126,6 +130,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     recovered: new Map(recovered.map((r) => [r.deployId, r.lastStep])),
     isLive,
   });
+  // A lifecycle action is never redone after a restart: it is reported interrupted (SHP-REQ-187).
+  await reportInterruptedActions({ client, journal, log: logger });
 
   // Opened once: the ledger's hash chain is verified on open. Appends take a cross-process lock and
   // chain onto the file's true tail, since the host CLI appends to the same file (SHP-T-6.11).
@@ -241,10 +247,45 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   }
   const worker = builds;
 
+  // Lifecycle actions and logs (SHP-ADR-010, SHP-ADR-011): always on, each in the background.
+  const actions = createActionRunner({
+    client,
+    docker: ports.docker,
+    fs: ports.fs,
+    journal,
+    clock: ports.clock,
+    apps: () => loadManifests(ports.fs, config.dataRoot),
+    stacks: () => loadStacks(ports.fs, config.dataRoot),
+    // This agent running a target for the app, or any live lock on it — a host-CLI deploy too.
+    deployInFlight: async (app) => targets.inFlightFor(app) || (await isAppLockLive(config.dataRoot, app)),
+    // Held for the action, so a deploy arriving meanwhile is refused `locked` rather than racing it.
+    lockApp: (app, job) =>
+      AppLock.acquire(config.dataRoot, app, {
+        pid: process.pid,
+        deployId: job.actionId,
+        requesterLabel: job.requesterLabel ?? 'shipyard server',
+        sha: '',
+        step: `action ${job.verb}`,
+        at: new Date().toISOString(),
+      }),
+    log: logger,
+    signal: stopping.signal,
+  });
+  const logs = createLogsRunner({
+    client,
+    docker: ports.docker,
+    fs: ports.fs,
+    apps: () => loadManifests(ports.fs, config.dataRoot),
+    stacks: () => loadStacks(ports.fs, config.dataRoot),
+    log: logger,
+  });
+
   try {
     await runLoop({
       client: pollClient,
       runTarget: targets.run,
+      actions,
+      logs,
       log: logger,
       signal: stopping.signal,
       ...(worker === undefined ? {} : { builds: { canTake: () => !worker.busy(), offer: (job) => void worker.offer(job) } }),

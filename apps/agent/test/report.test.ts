@@ -124,6 +124,36 @@ describe('buildReport', () => {
     files.set(`${ROOT}/apps/web.yml`, manifestYaml('web', 90));
     expect(await manifestsHash(fs, ROOT)).not.toBe(reportHash(report));
   });
+
+  it('covers stacks in the combined hash: an added or edited stack file changes it (SHP-REQ-183)', async () => {
+    const stack = (project: string): string => ['kind: stack', 'name: immich', 'compose:', '  files: [/DATA/AppData/immich/docker-compose.yml]', `  project: ${project}`, ''].join('\n');
+    const files = new Map([[`${ROOT}/apps/web.yml`, manifestYaml('web')]]);
+    const fs: FsPort = { ...fakeFs(files), exists: (path) => Promise.resolve(path === `${ROOT}/apps` || [...files.keys()].some((p) => p.startsWith(`${path}/`))) };
+    const ports = { fs, docker: fakeDocker({}), engineApiVersion: () => Promise.resolve('1.51') };
+    const plain = await buildReport(ports, ROOT, { agentVersion: '0', patExpiresAt: null });
+    files.set(`${ROOT}/stacks/immich.yml`, stack('immich'));
+    expect(await manifestsHash(fs, ROOT)).not.toBe(reportHash(plain));
+    const adopted = await buildReport(ports, ROOT, { agentVersion: '0', patExpiresAt: null });
+    expect(adopted.stacks?.map((s) => s.manifest.name)).toEqual(['immich']);
+    expect(await manifestsHash(fs, ROOT)).toBe(reportHash(adopted));
+    files.set(`${ROOT}/stacks/immich.yml`, stack('immich-2'));
+    expect(await manifestsHash(fs, ROOT)).not.toBe(reportHash(adopted));
+  });
+});
+
+describe('buildReport with a broken stack file (SHP-REQ-183)', () => {
+  it('still reports the apps, leaves stacks out and warns; the hash notices the fix', async () => {
+    const files = new Map([[`${ROOT}/apps/web.yml`, manifestYaml('web')], [`${ROOT}/stacks/immich.yml`, 'kind: stack\nname: immich\ncommand: nope\n']]);
+    const fs: FsPort = { ...fakeFs(files), exists: (path) => Promise.resolve(path === `${ROOT}/apps` || [...files.keys()].some((p) => p.startsWith(`${path}/`))) };
+    const warn = vi.fn();
+    const report = await buildReport({ fs, docker: fakeDocker({}), engineApiVersion: () => Promise.resolve('1.51'), log: { info: vi.fn(), warn } }, ROOT, { agentVersion: '0', patExpiresAt: null });
+    expect(report.apps.map((a) => a.manifest.name)).toEqual(['web']);
+    expect('stacks' in report).toBe(false);
+    expect(warn).toHaveBeenCalledOnce();
+    const broken = await manifestsHash(fs, ROOT);
+    files.set(`${ROOT}/stacks/immich.yml`, ['kind: stack', 'name: immich', 'compose:', '  files: [/x/docker-compose.yml]', '  project: immich', ''].join('\n'));
+    expect(await manifestsHash(fs, ROOT)).not.toBe(broken);
+  });
 });
 
 /** A shared in-memory ledger file, as the agent and a host CLI process would share one on disk. */

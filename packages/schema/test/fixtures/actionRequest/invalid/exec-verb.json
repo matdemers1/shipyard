@@ -1,0 +1,7 @@
+{
+  "target": {
+    "kind": "stack",
+    "name": "jellyfin"
+  },
+  "verb": "exec"
+}

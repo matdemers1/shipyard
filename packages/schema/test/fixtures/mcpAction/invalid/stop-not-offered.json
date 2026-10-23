@@ -1,0 +1,9 @@
+{
+  "name": "jellyfin",
+  "verb": "stop",
+  "requester": {
+    "repo": "a/b",
+    "branch": "main",
+    "label": "x"
+  }
+}

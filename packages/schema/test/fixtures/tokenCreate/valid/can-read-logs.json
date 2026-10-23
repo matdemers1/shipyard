@@ -1,0 +1,7 @@
+{
+  "label": "claude foreman",
+  "apps": [
+    "foreman"
+  ],
+  "canReadLogs": true
+}

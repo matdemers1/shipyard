@@ -20,6 +20,8 @@ interface TokenSummary {
   label: string;
   prefix: string;
   apps: string[];
+  /** May it read container logs (SHP-ADR-011)? */
+  canReadLogs: boolean;
   createdAt: string;
   lastUsedAt: string | null;
   lastUsedIp: string | null;
@@ -31,11 +33,13 @@ const SUMMARY_SELECT = {
   userId: true,
   label: true,
   prefix: true,
+  canReadLogs: true,
   createdAt: true,
   lastUsedAt: true,
   lastUsedIp: true,
   revokedAt: true,
   apps: { select: { app: { select: { name: true } } } },
+  stacks: { select: { stack: { select: { name: true } } } },
 } satisfies Prisma.ApiTokenSelect;
 
 function summarise(row: {
@@ -43,18 +47,22 @@ function summarise(row: {
   userId: string;
   label: string;
   prefix: string;
+  canReadLogs: boolean;
   createdAt: Date;
   lastUsedAt: Date | null;
   lastUsedIp: string | null;
   revokedAt: Date | null;
   apps: { app: { name: string } }[];
+  stacks: { stack: { name: string } }[];
 }): TokenSummary {
   return {
     id: row.id,
     userId: row.userId,
     label: row.label,
     prefix: row.prefix,
-    apps: row.apps.map((a) => a.app.name).sort(),
+    // A scope names apps and adopted stacks alike (SHP-T-15.4).
+    apps: [...row.apps.map((a) => a.app.name), ...row.stacks.map((s) => s.stack.name)].sort(),
+    canReadLogs: row.canReadLogs,
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     lastUsedIp: row.lastUsedIp,
@@ -106,12 +114,25 @@ export function tokensRouter(deps: ServiceDeps): Router {
       return;
     }
     const label = parsed.data.label;
+    const canReadLogs = parsed.data.canReadLogs === true;
+    // A token never reads more than its owner could: only an admin or operator reads logs (SHP-ADR-011).
+    if (canReadLogs && req.role !== 'admin' && req.role !== 'operator') {
+      sendRefusal(res, refusal('forbidden', 'Only an admin or operator can issue a token that reads container logs.', 'Leave "can read logs" off, or ask an admin.'));
+      return;
+    }
     const names = [...new Set(parsed.data.apps)].sort();
+    // A scope names apps and adopted stacks (SHP-T-15.4). A stack never shares an app's name (the
+    // report refuses one that would), so each name is one or the other.
     const apps = await db.app.findMany({ where: { name: { in: names }, retiredAt: null }, select: { id: true, name: true } });
-    const known = new Set(apps.map((a) => a.name));
+    const appNames = new Set(apps.map((a) => a.name));
+    const stacks = await db.stack.findMany({
+      where: { name: { in: names.filter((n) => !appNames.has(n)) }, retiredAt: null },
+      select: { id: true, name: true },
+    });
+    const known = new Set([...appNames, ...stacks.map((s) => s.name)]);
     const missing = names.find((n) => !known.has(n));
     if (missing !== undefined) {
-      sendRefusal(res, refusal('unknown_app', `No app named ${missing} has been reported by the agent.`));
+      sendRefusal(res, refusal('unknown_app', `No app or adopted stack named ${missing} has been reported by the agent.`));
       return;
     }
 
@@ -122,7 +143,9 @@ export function tokensRouter(deps: ServiceDeps): Router {
         label,
         tokenHash: hash,
         prefix,
+        canReadLogs,
         apps: { create: apps.map((a) => ({ appId: a.id })) },
+        ...(stacks.length === 0 ? {} : { stacks: { create: stacks.map((s) => ({ stackId: s.id })) } }),
       },
       select: { id: true },
     });
@@ -130,7 +153,7 @@ export function tokensRouter(deps: ServiceDeps): Router {
       action: 'token.created',
       entityType: 'api_token',
       entityId: row.id,
-      after: { label, prefix, apps: names },
+      after: { label, prefix, apps: names, ...(canReadLogs ? { canReadLogs } : {}) },
     });
     const body: TokenCreated = { id: row.id, label, prefix, apps: names, token };
     res.status(201).json(body);

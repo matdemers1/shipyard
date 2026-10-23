@@ -1,0 +1,8 @@
+{
+  "target": {
+    "kind": "stack",
+    "name": "jellyfin"
+  },
+  "verb": "restart",
+  "command": "docker restart"
+}

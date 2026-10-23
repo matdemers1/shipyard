@@ -6,6 +6,8 @@ import { Refusal } from './errors.js';
 import { BuildJob } from './build.js';
 import { BuildSettings } from './settings.js';
 import { HostInventory } from './host.js';
+import { AgentStack } from './stack.js';
+import { ActionJob, LogsJob } from './actions.js';
 
 /**
  * The agent protocol (SHP-REQ-004): what the portless agent reports and what it
@@ -126,6 +128,11 @@ export const AgentReport = z
      * always upgraded before the agent.
      */
     host: HostInventory.optional(),
+    /**
+     * Stacks adopted under `<data root>/stacks/` (SHP-ADR-010). Absent from older agents. Their
+     * compose projects are what the inventory tiers Operated.
+     */
+    stacks: z.array(AgentStack).max(500).optional(),
   })
   .meta({ id: 'AgentReport', description: 'What the agent reports about itself and the apps it manages' });
 export type AgentReport = z.infer<typeof AgentReport>;
@@ -134,7 +141,7 @@ export const PollRequest = z
   .strictObject({
     waitSeconds: z.int().min(0).max(25),
     /** An agent that sends `['build']` can receive a build job; older agents omit it and never are sent one. */
-    capabilities: z.array(z.enum(['build'])).max(10).optional(),
+    capabilities: z.array(z.enum(['build', 'actions', 'logs'])).max(10).optional(),
   })
   .meta({ id: 'PollRequest', description: 'The agent long-poll request body' });
 export type PollRequest = z.infer<typeof PollRequest>;
@@ -176,8 +183,12 @@ export const PollResponse = z
     z.strictObject({ target: z.null(), ...buildSettingsField }),
     z.strictObject({ target: PollTarget, ...buildSettingsField }),
     z.strictObject({ target: z.null(), build: BuildJob, ...buildSettingsField }),
+    // SHP-ADR-010/011: only for an agent that advertised `actions` / `logs`, so an older agent is
+    // never handed work it cannot parse.
+    z.strictObject({ target: z.null(), action: ActionJob, ...buildSettingsField }),
+    z.strictObject({ target: z.null(), logs: LogsJob, ...buildSettingsField }),
   ])
-  .meta({ id: 'PollResponse', description: 'Either no work, one target to execute, or one build to run' });
+  .meta({ id: 'PollResponse', description: 'No work, one target, one build, one lifecycle action or one log read' });
 export type PollResponse = z.infer<typeof PollResponse>;
 
 export const StepJournal = z

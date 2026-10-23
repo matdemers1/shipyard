@@ -4,6 +4,7 @@ import { Journal, type Clock, type DeployResult, type FsPort, type Log, type Mac
 import { AgentRequestError, type AgentClient } from '../src/client.js';
 import { AgentConfigError, loadAgentConfig } from '../src/config.js';
 import {
+  EXTENDED_CAPABILITIES_RETRY_MS,
   POLL_PATH,
   PROGRESS_PATH,
   RESULT_PATH,
@@ -11,6 +12,8 @@ import {
   createTargetRunner,
   fileTargetStore,
   memoryTargetStore,
+  parsePollResponse,
+  pollBody,
   reportLeftovers,
   runLoop,
   toTargetResult,
@@ -228,6 +231,175 @@ describe('runLoop: builds (SHP-T-7.9)', () => {
     release();
     await running;
     expect(tracked.inFlight()).toBe(false);
+  });
+});
+
+describe('runLoop: lifecycle actions and logs (SHP-T-15.3)', () => {
+  const ACTION = { actionId: '44444444-4444-4444-8444-444444444444', target: { kind: 'app' as const, name: 'web' }, verb: 'restart' as const, service: 'web' };
+  const LOGS = { logsId: '66666666-6666-4666-8666-666666666666', containerId: 'c'.repeat(64), tail: 200, follow: true, followSeconds: 300 };
+
+  it('parsePollResponse keeps action and logs, and still drops what it does not know', () => {
+    const unknown: string[][] = [];
+    expect(parsePollResponse({ target: null, action: ACTION }, (k) => unknown.push(k))).toEqual({ target: null, action: ACTION });
+    expect(parsePollResponse({ target: null, logs: LOGS, later: 1 }, (k) => unknown.push(k))).toEqual({ target: null, logs: LOGS });
+    expect(unknown).toEqual([['later']]);
+    expect(() => parsePollResponse({ target: null, action: { ...ACTION, verb: 'rm -rf' } })).toThrow();
+  });
+
+  it('pollBody advertises actions and logs whenever their runners are wired, beside build while one can be taken', () => {
+    expect(pollBody({ actions: true, logs: true })).toEqual({ waitSeconds: 25, capabilities: ['actions', 'logs'] });
+    expect(pollBody({ builds: { canTake: () => true, offer: () => undefined }, actions: true, logs: true })).toEqual({
+      waitSeconds: 25,
+      capabilities: ['build', 'actions', 'logs'],
+    });
+    expect(pollBody({ builds: { canTake: () => false, offer: () => undefined }, actions: true, logs: true })).toEqual({ waitSeconds: 25, capabilities: ['actions', 'logs'] });
+    expect(pollBody(undefined)).toEqual({ waitSeconds: 25 });
+  });
+
+  it('hands actions and log reads to their runners and keeps polling (they run in the background)', async () => {
+    const stop = new AbortController();
+    const actions: unknown[] = [];
+    const logs: unknown[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, action: ACTION };
+      if (i === 1) return { target: null, logs: LOGS };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      actions: { offer: (job) => void actions.push(job) },
+      logs: { offer: (job) => void logs.push(job) },
+      log: quiet,
+      signal: stop.signal,
+      sleep: noSleep,
+    });
+    expect(actions).toEqual([ACTION]);
+    expect(logs).toEqual([LOGS]);
+    expect(client.calls).toHaveLength(3);
+    expect(client.calls[0]?.body).toEqual({ waitSeconds: 25, capabilities: ['actions', 'logs'] });
+  });
+
+  it('ignores an action or log read sent to an agent without the runner, and survives a runner that throws', async () => {
+    const stop = new AbortController();
+    const warnings: object[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, action: ACTION };
+      if (i === 1) return { target: null, logs: LOGS };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      logs: {
+        offer: () => {
+          throw new Error('boom');
+        },
+      },
+      log: { ...quiet, warn: (obj: object) => void warnings.push(obj) },
+      signal: stop.signal,
+      sleep: noSleep,
+    });
+    expect(warnings).toEqual([{ actionId: ACTION.actionId }]);
+    expect(client.calls).toHaveLength(3);
+  });
+
+  it('keeps polling a server that refuses the actions/logs capabilities: drops them at once, offers them again after 10 minutes, warns once', async () => {
+    const stop = new AbortController();
+    let clockMs = 0;
+    const delays: number[] = [];
+    const warnings: object[] = [];
+    // A server from before SHP-T-15.2: `capabilities` may only hold 'build'.
+    const client = fakeClient((call, i) => {
+      if (i === 5) stop.abort();
+      const caps = (call.body as { capabilities?: string[] }).capabilities ?? [];
+      if (caps.some((c) => c !== 'build')) {
+        // What that server's body validation answers: the Zod issue path names the field.
+        throw new AgentRequestError(
+          400,
+          refusal('invalid_request', 'The agent request failed validation.', 'capabilities.1: Invalid option: expected "build"'),
+          'POST',
+          POLL_PATH,
+        );
+      }
+      // Each good poll takes four minutes of the clock.
+      clockMs += 4 * 60_000;
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      builds: { canTake: () => true, offer: () => undefined },
+      actions: { offer: () => undefined },
+      logs: { offer: () => undefined },
+      log: { ...quiet, warn: (obj: object) => void warnings.push(obj) },
+      signal: stop.signal,
+      sleep: (ms) => (delays.push(ms), Promise.resolve()),
+      now: () => clockMs,
+    });
+    const all = ['build', 'actions', 'logs'];
+    expect(client.calls.map((c) => (c.body as { capabilities?: string[] }).capabilities)).toEqual([
+      all, // refused at t=0
+      ['build'], // at once, no back-off; t=4 min after
+      ['build'], // t=8 min
+      ['build'], // still inside the 10 minutes; t=12 min after
+      all, // offered again, refused again
+      ['build'],
+    ]);
+    expect(delays).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(EXTENDED_CAPABILITIES_RETRY_MS).toBe(10 * 60_000);
+  });
+
+  it('keeps actions/logs on and backs off normally on a 400 that does not name capabilities', async () => {
+    const stop = new AbortController();
+    const delays: number[] = [];
+    const warnings: object[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 2) stop.abort();
+      throw new AgentRequestError(400, refusal('invalid_request', 'The agent request failed validation.', 'waitSeconds: Too big'), 'POST', POLL_PATH);
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      actions: { offer: () => undefined },
+      logs: { offer: () => undefined },
+      log: { ...quiet, warn: (obj: object) => void warnings.push(obj) },
+      signal: stop.signal,
+      sleep: (ms) => (delays.push(ms), Promise.resolve()),
+      now: () => 0,
+    });
+    expect(client.calls.map((c) => (c.body as { capabilities?: string[] }).capabilities)).toEqual([
+      ['actions', 'logs'],
+      ['actions', 'logs'],
+      ['actions', 'logs'],
+    ]);
+    expect(delays).toEqual([1_000, 2_000]);
+    expect(warnings.every((w) => 'retryInMs' in w && (w as { retryInMs: number }).retryInMs !== 10 * 60_000)).toBe(true);
+  });
+
+  it('still backs off on a 400 that is not about the capabilities', async () => {
+    const stop = new AbortController();
+    const delays: number[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 2) stop.abort();
+      throw new AgentRequestError(400, refusal('invalid_request', 'bad body'), 'POST', POLL_PATH);
+    });
+    await runLoop({ client, runTarget: () => Promise.resolve(), log: quiet, signal: stop.signal, sleep: (ms) => (delays.push(ms), Promise.resolve()) });
+    expect(delays).toEqual([1_000, 2_000]);
+  });
+
+  it('trackInFlight knows which app a running target is for', async () => {
+    let release: () => void = () => undefined;
+    const tracked = trackInFlight(() => new Promise<void>((r) => (release = r)));
+    const running = tracked.run(target({ app: 'web' }));
+    expect(tracked.inFlightFor('web')).toBe(true);
+    expect(tracked.inFlightFor('api')).toBe(false);
+    release();
+    await running;
+    expect(tracked.inFlightFor('web')).toBe(false);
   });
 });
 

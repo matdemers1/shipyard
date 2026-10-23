@@ -77,8 +77,55 @@ function sendInternalError(res: Response): void {
 }
 
 /**
- * Express error handler: a ZodError becomes `invalid_request`; anything else is logged (never
- * the stack in the response) and answered with a generic 500.
+ * A body-parser error (http-errors with a `type` such as `entity.parse.failed` and a 4xx status).
+ * body-parser attaches the raw request body to a parse failure as `err.body`: it must never reach
+ * a log (SHP-REQ-191 — an agent's log chunk is someone's log lines).
+ */
+export function bodyParserError(err: unknown): { type: string; status: number } | null {
+  if (typeof err !== 'object' || err === null) return null;
+  const e = err as { type?: unknown; status?: unknown; statusCode?: unknown };
+  const status = typeof e.status === 'number' ? e.status : e.statusCode;
+  if (typeof e.type !== 'string' || typeof status !== 'number' || status < 400 || status > 499) return null;
+  return { type: e.type, status };
+}
+
+/**
+ * What of an error may be logged: everything but a `body` (a request body some library hung on
+ * it), with name, message and stack kept so pino's error serializer still renders it.
+ */
+export function loggableError(err: unknown): unknown {
+  if (typeof err !== 'object' || err === null) return err;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(err)) {
+    if (k !== 'body') out[k] = v;
+  }
+  if (err instanceof Error) {
+    out['name'] = err.name;
+    out['message'] = err.message;
+    out['stack'] = err.stack;
+  }
+  return out;
+}
+
+/** A body that could not be read, as a refusal with the parser's own status (400, 413, 415). */
+export function sendUnreadableBody(res: Response, status: number, type: string): void {
+  const r =
+    type === 'entity.too.large'
+      ? refusal('invalid_request', 'The request body is too large.', 'Send a smaller body.')
+      : refusal('invalid_request', 'The request body could not be read as JSON.', 'Send a well-formed JSON body with content-type application/json.');
+  const req = res.req as Request | undefined;
+  if (req !== undefined && wantsProblems(req)) {
+    sendProblem(res, status, r);
+    return;
+  }
+  res.status(status).json({ error: r });
+}
+
+/**
+ * Express error handler: a ZodError becomes `invalid_request`; a body the JSON parser could not
+ * read becomes `invalid_request` with the parser's status, logged as its type and status only;
+ * anything else is logged without any `body` it carries (never the stack in the response) and
+ * answered with a generic 500.
  */
 export function errorHandler(logger: Logger) {
   return (err: unknown, _req: Request, res: Response, next: NextFunction): void => {
@@ -93,7 +140,13 @@ export function errorHandler(logger: Logger) {
       );
       return;
     }
-    logger.error({ err }, 'unhandled error');
+    const unreadable = bodyParserError(err);
+    if (unreadable !== null) {
+      logger.warn({ type: unreadable.type, status: unreadable.status }, 'request body refused by the JSON parser');
+      sendUnreadableBody(res, unreadable.status, unreadable.type);
+      return;
+    }
+    logger.error({ err: loggableError(err) }, 'unhandled error');
     sendInternalError(res);
   };
 }

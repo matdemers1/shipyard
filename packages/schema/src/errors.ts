@@ -75,6 +75,10 @@ export const ErrorCode = z
     'group_stopped',
     'rollout_stopped',
     'step_up_required',
+    'not_adopted',
+    'agent_too_old',
+    'unknown_container',
+    'action_failed',
   ])
   .meta({ id: 'ErrorCode', description: 'Machine-readable refusal reason' });
 export type ErrorCode = z.infer<typeof ErrorCode>;
@@ -131,6 +135,15 @@ export const CATALOGUE: Record<ErrorCode, CatalogueEntry> = {
     httpStatus: 403,
     defaultFix: 'Confirm it is you with a code from your authenticator (POST /api/auth/step-up), then retry within ten minutes.',
   },
+  // SHP-ADR-010/011: lifecycle actions and logs.
+  not_adopted: {
+    gate: 'none',
+    httpStatus: 409,
+    defaultFix: 'Shipyard only observes this container. Adopt its stack with a manifest under <data root>/stacks/ (docs/runbooks/adopt-stack.md) to act on it.',
+  },
+  agent_too_old: { gate: 'none', httpStatus: 409, defaultFix: "Upgrade the agent (docs/runbooks/upgrade-agent.md); this version can't do that yet." },
+  unknown_container: { gate: 'none', httpStatus: 404, defaultFix: 'The agent no longer reports that container; reload the Host view.' },
+  action_failed: { gate: 'none', httpStatus: 502, defaultFix: "Read compose's output on the action, then the container's logs." },
   group_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the failed member, then deploy the group again; members after it were not touched.' },
   rollout_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the member that stopped the rollout, then roll again; the apps after it were not touched.' },
 };

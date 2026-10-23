@@ -14,12 +14,14 @@ import { buildMcpServer } from '../../src/mcp/tools.js';
 const deps = { config: { SHIPYARD_VERSION: 'test' } } as unknown as ServiceDeps;
 
 const EXPECTED_TOOLS = [
+  'shipyard_action',
   'shipyard_build',
   'shipyard_build_status',
   'shipyard_deploy',
   'shipyard_deploy_status',
   'shipyard_dry_run',
   'shipyard_host',
+  'shipyard_logs',
   'shipyard_rollback',
   'shipyard_status',
 ];
@@ -40,7 +42,7 @@ afterEach(async () => {
 });
 
 describe('MCP tool descriptions (SHP-REQ-165)', () => {
-  it('keeps the eight tool names, which connected sessions depend on', async () => {
+  it('keeps the ten tool names, which connected sessions depend on', async () => {
     const tools = await listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(EXPECTED_TOOLS);
   });
@@ -71,5 +73,10 @@ describe('MCP tool descriptions (SHP-REQ-165)', () => {
     expect(byName.get('shipyard_rollback')).toMatch(/^Rolls `app` back/);
     // The Host destination's tier words (SHP-REQ-179).
     expect(byName.get('shipyard_host')).toMatch(/Shipped \(.*Operated \(.*or Observed \(/);
+    // Lifecycle and logs speak the console's words (SHP-REQ-184, SHP-REQ-188, SHP-REQ-193).
+    expect(byName.get('shipyard_action')).toMatch(/Restart, recreate or start a Deployed app or an Operated stack/);
+    expect(byName.get('shipyard_action')).toMatch(/Stop is console-only/);
+    expect(byName.get('shipyard_action')).toMatch(/Observed containers can't be acted on/);
+    expect(byName.get('shipyard_logs')).toMatch(/redacted on the host/);
   });
 });

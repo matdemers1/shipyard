@@ -322,10 +322,121 @@ function buildPathsForRollouts(): Record<string, unknown> {
   };
 }
 
+/**
+ * Lifecycle actions and container logs (SHP-T-15.4; SHP-ADR-010, SHP-ADR-011): the console/token
+ * routes, and the agent's signed routes that feed them.
+ */
+export function buildPathsForActionsAndLogs(): Record<string, unknown> {
+  const uuidParam = (description: string) => ({ name: 'id', in: 'path', required: true, description, schema: { type: 'string', format: 'uuid' } });
+  const body = (ref: string) => ({ required: true, content: { 'application/json': { schema: { $ref: `#/components/schemas/${ref}` } } } });
+  // The agent signs every request (SHP-D-064): these headers, not a session or bearer token.
+  const signed = {
+    security: [],
+    parameters: ['x-shipyard-key', 'x-shipyard-timestamp', 'x-shipyard-nonce', 'x-shipyard-signature'].map((name) => ({
+      name,
+      in: 'header',
+      required: true,
+      schema: { type: 'string' },
+    })),
+  };
+  return {
+    '/actions': {
+      get: {
+        summary: 'Lifecycle actions, newest first (any signed-in role; a token sees only its apps) — an Activity source',
+        operationId: 'listActions',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100 } },
+          { name: 'cursor', in: 'query', required: false, schema: { type: 'string' } },
+        ],
+        responses: { '200': jsonResponse('One page of actions.', 'ActionPage'), '4XX': ERROR_RESPONSE },
+      },
+      post: {
+        summary:
+          'Start, stop, restart or recreate a Deployed app or Operated stack, or one service (deployer and up; a token may not stop). Refused for an Observed container, an unknown target, an app whose deploy holds the lock, or an agent that cannot',
+        operationId: 'postAction',
+        security: [{ session: [] }, { bearer: [] }],
+        requestBody: body('ActionRequest'),
+        responses: { '202': jsonResponse('Queued for the agent.', 'ActionStatus'), '4XX': ERROR_RESPONSE, '5XX': ERROR_RESPONSE },
+      },
+    },
+    '/actions/{id}': {
+      get: {
+        summary: 'One lifecycle action and its outcome',
+        operationId: 'getAction',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [uuidParam('The action ID')],
+        responses: { '200': jsonResponse('The action.', 'ActionStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/logs': {
+      post: {
+        summary: "Open a bounded read of one container's logs: a tail of at most 2000 lines, following for at most five minutes (admin or operator; a token with can_read_logs). Audited; never stored",
+        operationId: 'postLogs',
+        security: [{ session: [] }, { bearer: [] }],
+        requestBody: body('LogsRequest'),
+        responses: { '201': jsonResponse('The session; attach to its stream.', 'LogsSession'), '4XX': ERROR_RESPONSE, '5XX': ERROR_RESPONSE },
+      },
+    },
+    '/logs/{id}/stream': {
+      get: {
+        summary: 'The session\'s lines as Server-Sent Events: `lines` ({ seq, lines }) in order, then `end` ({ reason, error? }). Only the viewer who opened it; leaving ends it',
+        operationId: 'getLogsStream',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [uuidParam('The log session ID')],
+        responses: {
+          '200': { description: 'An event stream; closes after `end`.', content: { 'text/event-stream': { schema: { type: 'string' } } } },
+          '4XX': ERROR_RESPONSE,
+        },
+      },
+    },
+    '/logs/{id}': {
+      delete: {
+        summary: 'Stop a log session; the agent is told to stop on its next chunk',
+        operationId: 'deleteLogs',
+        security: [{ session: [] }, { bearer: [] }],
+        parameters: [uuidParam('The log session ID')],
+        responses: { '204': { description: 'Stopped.' }, '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/agent/actions/{id}/progress': {
+      post: {
+        summary: 'Agent: a dispatched lifecycle action has started on the host',
+        operationId: 'postAgentActionProgress',
+        ...signed,
+        parameters: [...signed.parameters, uuidParam('The action ID')],
+        requestBody: body('ActionProgress'),
+        responses: { '200': jsonResponse('The action, now running.', 'ActionStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/agent/actions/{id}/result': {
+      post: {
+        summary: "Agent: a lifecycle action's terminal result, once, for an action dispatched to this agent",
+        operationId: 'postAgentActionResult',
+        ...signed,
+        parameters: [...signed.parameters, uuidParam('The action ID')],
+        requestBody: body('ActionResult'),
+        responses: { '200': jsonResponse('The action, ended.', 'ActionStatus'), '4XX': ERROR_RESPONSE },
+      },
+    },
+    '/agent/logs/{id}/chunks': {
+      post: {
+        summary: 'Agent: one ordered batch of redacted log lines (body up to 2 MB), relayed to the viewer and dropped; continue is false once the viewer has gone',
+        operationId: 'postAgentLogsChunk',
+        ...signed,
+        parameters: [...signed.parameters, uuidParam('The log session ID')],
+        requestBody: body('LogsChunk'),
+        responses: { '200': jsonResponse('Whether to keep streaming.', 'LogsChunkAck'), '413': ERROR_RESPONSE, '4XX': ERROR_RESPONSE },
+      },
+    },
+  };
+}
+
 function buildPaths(): Record<string, unknown> {
   return {
     ...buildPathsForBuilds(),
     ...buildPathsForRollouts(),
+    ...buildPathsForActionsAndLogs(),
     '/host': {
       get: {
         summary: "Every agent's latest host inventory with recent container samples (any signed-in role, any token); read-only",

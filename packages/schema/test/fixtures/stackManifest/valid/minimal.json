@@ -1,0 +1,10 @@
+{
+  "kind": "stack",
+  "name": "plex",
+  "compose": {
+    "files": [
+      "/x/docker-compose.yml"
+    ],
+    "project": "plex"
+  }
+}

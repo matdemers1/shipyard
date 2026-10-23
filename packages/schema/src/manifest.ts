@@ -10,7 +10,7 @@ import { BuildConfig } from './build.js';
  * `command` or `shell` on a step is rejected, not ignored.
  */
 
-const ComposeConfig = z
+export const ComposeConfig = z
   .strictObject({
     files: z.array(z.string().regex(/^\//, 'compose file paths must be absolute')).min(1),
     project: z.string().min(1),

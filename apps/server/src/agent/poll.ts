@@ -9,8 +9,10 @@ import {
   TargetProgress,
   TargetResult,
   refusal,
+  type ActionJob,
   type BuildJob,
   type DeployTargetState,
+  type LogsJob,
   type PollResponse,
 } from '@shipyard/schema';
 import type { Prisma } from '../db.js';
@@ -34,6 +36,9 @@ import {
   sweepStaleBuilds,
 } from './dispatch.js';
 import { verifyAgentRequest } from './verify.js';
+import { recordCapabilities } from './capabilities.js';
+import { claimAction, releaseAction, sweepStaleActions } from '../actions/service.js';
+import { logsHubFor } from '../logs/hub.js';
 
 /**
  * The agent's work channel (SHP-T-2.4; SHP-REQ-040, SHP-REQ-033, SHP-D-041, SHP-D-081).
@@ -49,6 +54,12 @@ import { verifyAgentRequest } from './verify.js';
  *   (SHP-REQ-129, SHP-REQ-130). `POST /build-progress` records a stage (or a heartbeat) and answers
  *   `{ cancel }`; `POST /build-result` records the end once. Every poll first fails any running
  *   build silent for `BUILD_STALE_MINUTES` with `interrupted`.
+ * - Actions and logs (SHP-T-15.4; SHP-ADR-010, SHP-ADR-011): when no target was claimed, a poll
+ *   that advertises `logs` is handed a pending log read first — a person is waiting on it — and
+ *   one that advertises `actions` the oldest queued lifecycle action for its targets. An agent that
+ *   advertises neither is never sent either: it could not parse them. What each poll advertised is
+ *   recorded (`capabilities.ts`) so a request the agent cannot serve is refused at once. Every poll
+ *   also fails any action dispatched with no result for two minutes (`sweepStaleActions`).
  *
  * The server only records what the agent reports: the agent re-verifies every target itself and
  * alone decides a health-failure rollback (SHP-D-002, SHP-D-081).
@@ -138,7 +149,16 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
     } catch (err) {
       logger.error({ err }, 'stale build sweep failed');
     }
+    try {
+      await sweepStaleActions(deps);
+    } catch (err) {
+      logger.error({ err }, 'stale action sweep failed');
+    }
+    recordCapabilities(bus, agentId, body.capabilities);
     const wantsBuild = body.capabilities?.includes('build') === true;
+    const wantsLogs = body.capabilities?.includes('logs') === true;
+    const wantsActions = body.capabilities?.includes('actions') === true;
+    const logsHub = logsHubFor(bus);
     // Settings → Builds (SHP-T-7.11): on every poll answer, whatever else it carries, so the agent
     // learns a saved limit or cache cap change the moment it next polls.
     const buildSettings = await loadBuildSettings(db);
@@ -179,6 +199,50 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
           });
           logger.info({ deployId: target.deployId, targetId: target.targetId, app: target.app }, 'target dispatched to agent');
           const response: PollResponse = { target, buildSettings };
+          res.json(response);
+          return;
+        }
+        // Then a log read (in memory, nothing to undo but a flag), then a lifecycle action.
+        const logs: LogsJob | null = wantsLogs ? logsHub.claim(agentId) : null;
+        if (logs !== null) {
+          stop.abort();
+          if (gone.signal.aborted) {
+            logsHub.release(logs.logsId);
+            bus.publish('work');
+            return;
+          }
+          // The view was audited when it was opened (SHP-REQ-192); handing it over changes nothing stored.
+          req.noAuditNeeded('log read handed to the agent');
+          logger.info({ logsId: logs.logsId, tail: logs.tail, followSeconds: logs.followSeconds }, 'log read dispatched to agent');
+          const response: PollResponse = { target: null, logs, buildSettings };
+          res.json(response);
+          return;
+        }
+        let action: ActionJob | null = null;
+        if (wantsActions) {
+          try {
+            action = await claimAction(db, agentId);
+          } catch (err) {
+            stop.abort();
+            throw err;
+          }
+        }
+        if (action !== null) {
+          stop.abort();
+          if (gone.signal.aborted) {
+            await releaseAction(db, action.actionId);
+            bus.publish('work');
+            return;
+          }
+          await req.audit({
+            action: 'action.dispatched',
+            entityType: 'action',
+            entityId: action.actionId,
+            after: { target: action.target, verb: action.verb, service: action.service ?? null },
+          });
+          bus.publish(`action:${action.actionId}`);
+          logger.info({ actionId: action.actionId, target: action.target, verb: action.verb }, 'lifecycle action dispatched to agent');
+          const response: PollResponse = { target: null, action, buildSettings };
           res.json(response);
           return;
         }

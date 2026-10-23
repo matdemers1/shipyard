@@ -6,7 +6,7 @@ import type { Logger } from 'pino';
 import type { Config } from './config.js';
 import { auditContext, type AuditContextOptions } from './audit.js';
 import type { Db } from './db.js';
-import { errorHandler, sendRefusal } from './errors.js';
+import { bodyParserError, errorHandler, sendRefusal } from './errors.js';
 import { authenticate, authRouter, OidcSettings, type OidcClient } from './auth/index.js';
 import { agentRouter } from './agent/index.js';
 import { appsRouter } from './apps/index.js';
@@ -30,6 +30,8 @@ import { schedulesRouter } from './schedules/index.js';
 import { restoreRouter } from './restore/index.js';
 import { systemRouter } from './system/index.js';
 import { hostRouter } from './host/index.js';
+import { actionsRouter } from './actions/index.js';
+import { logsRouter } from './logs/index.js';
 import { setupRouter, type SetupDeps } from './setup/index.js';
 import { settingsRouter } from './settings/index.js';
 import { githubWebhookBody, githubWebhookRouter } from './webhooks/index.js';
@@ -85,6 +87,11 @@ export function createApp(deps: AppDeps): Express {
   // pass 256 kB: that one path gets 2 MB, still signed byte for byte. Every other route keeps 256 kB.
   const AGENT_REPORT_PATH = '/api/agent/report';
   const reportJson = express.json({ limit: '2mb', verify: keepRawBody });
+  // A log chunk (SHP-ADR-011) may carry up to 1000 lines: its path gets 2 MB too, still signed byte
+  // for byte, and a larger one is a 413 refusal rather than a generic error. Its body is never
+  // logged, here or anywhere (SHP-REQ-191).
+  const AGENT_LOGS_CHUNK_PATH = /^\/api\/agent\/logs\/[^/]+\/chunks$/;
+  const chunkJson = express.json({ limit: '2mb', verify: keepRawBody });
   app.use((req, res, next) => {
     if (req.path === GITHUB_WEBHOOK_PATH || Buffer.isBuffer(req.body)) {
       next();
@@ -92,6 +99,23 @@ export function createApp(deps: AppDeps): Express {
     }
     if (req.path === AGENT_REPORT_PATH) {
       reportJson(req, res, next);
+      return;
+    }
+    if (AGENT_LOGS_CHUNK_PATH.test(req.path)) {
+      chunkJson(req, res, (err?: unknown) => {
+        if (err === undefined || err === null) {
+          next();
+          return;
+        }
+        // Every parser failure is answered here and never logged: body-parser hangs the raw body on
+        // a parse error (`err.body`), and this body is someone's log lines (SHP-REQ-191).
+        const unreadable = bodyParserError(err);
+        if (unreadable?.type === 'entity.too.large') {
+          res.status(413).json({ error: refusal('invalid_request', 'The log chunk is larger than 2 MB.', 'Send fewer lines per chunk.') });
+          return;
+        }
+        res.status(400).json({ error: refusal('invalid_request', 'The log chunk could not be read as JSON.', 'Send one well-formed LogsChunk per request.') });
+      });
       return;
     }
     json(req, res, next);
@@ -136,6 +160,9 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/system', systemRouter(serviceDeps));
   // Read-only: the host inventory the agent last reported (SHP-T-14.5, SHP-REQ-181).
   app.use('/api/host', hostRouter(serviceDeps));
+  // Lifecycle actions and container logs (SHP-T-15.4; SHP-ADR-010, SHP-ADR-011).
+  app.use('/api/actions', actionsRouter(serviceDeps));
+  app.use('/api/logs', logsRouter(serviceDeps));
   app.use('/api/apps', appsRouter(serviceDeps));
   app.use('/api/deploys', deployEventsRouter(serviceDeps));
   app.use('/api/deploys', approvalsRouter(serviceDeps));

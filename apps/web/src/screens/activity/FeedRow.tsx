@@ -1,13 +1,16 @@
-import { Link } from '@d3cloud/ui';
+import { Badge, Link } from '@d3cloud/ui';
+import type { ActionStatus } from '@shipyard/schema';
 import { ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { PipeNode } from '../../components/pipeline';
+import { actionBadgeWords, actionDuration, actionScope, actionStateWords } from '../../lib/actions';
 import { sha7 } from '../../lib/appdetail';
 import { TRIGGER_LABEL } from '../../lib/builds';
 import { formatDuration, formatFeedTime } from '../../lib/timeline';
 import { DEPLOY_ALL_READY } from '../../lib/words';
 import {
+  actionNode,
   buildHeadline,
   buildNode,
   deployHeadline,
@@ -80,6 +83,61 @@ function DeployRow({ item, now, nested = false, detail }: { item: TimelineItem; 
   );
 }
 
+/** Where an action's row goes: the app's page, or Host's Operated stacks. */
+function actionHref(action: ActionStatus): string {
+  return action.target.kind === 'app' ? `/apps/${encodeURIComponent(action.target.name)}` : '/host?tier=operated';
+}
+
+/** "worker · done in 8s", "the whole stack · Agent too old", "worker · Queued". */
+export function actionDetail(action: ActionStatus): string {
+  const scope = actionScope(action);
+  switch (action.state) {
+    case 'succeeded': {
+      const duration = actionDuration(action);
+      return duration === null ? `${scope} · done` : `${scope} · done in ${duration}`;
+    }
+    case 'refused':
+      return `${scope} · ${action.refusal?.message ?? actionStateWords('refused')}`;
+    case 'failed':
+      return `${scope} · ${action.refusal?.message ?? 'failed'}`;
+    default:
+      return `${scope} · ${actionStateWords(action.state)}`;
+  }
+}
+
+/**
+ * A lifecycle action (SHP-T-15.7, SHP-ADR-010): the app or stack, a badge with what was done —
+ * "Restarted" — the service and how it went, who asked and when. On a desktop the requester sits
+ * beside the time; on a phone, under the name.
+ */
+function ActionRow({ action, at, now }: { action: ActionStatus; at: string; now: Date }) {
+  const who = requesterWords(action.requesterLabel);
+  const tone = action.state === 'failed' || action.state === 'refused' ? 'danger' : 'neutral';
+  return (
+    <li className="shp-feed-row">
+      <PipeNode state={actionNode(action.state)} size="sm" />
+      <Link asChild>
+        <RouterLink to={actionHref(action)} className="shp-feed-row__link">
+          <span className="shp-feed-row__line">
+            <strong>{action.target.name}</strong>
+            <Badge size="sm" tone={tone}>
+              {actionBadgeWords(action)}
+            </Badge>
+          </span>
+          <span className="shp-feed-row__sub">
+            {actionDetail(action)}
+            <span className="shp-feed-row__who-inline"> · {who}</span>
+          </span>
+        </RouterLink>
+      </Link>
+      <span className="shp-feed-row__who">{who}</span>
+      <time className="shp-feed-row__time" dateTime={at} title={new Date(at).toLocaleString()}>
+        {formatFeedTime(at, now)}
+      </time>
+    </li>
+  );
+}
+
 function RolloutRow({ entry, now }: { entry: Extract<FeedEntry, { type: 'rollout' }>; now: Date }) {
   const [open, setOpen] = useState(false);
   const { members, total } = entry;
@@ -144,6 +202,8 @@ export function FeedRow({ entry, now }: { entry: FeedEntry; now: Date }) {
           now={now}
         />
       );
+    case 'action':
+      return <ActionRow action={entry.action} at={entry.at} now={now} />;
     case 'schedule':
       return (
         <Row

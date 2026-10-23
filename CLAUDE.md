@@ -31,7 +31,10 @@ decisions SHP-D-001…087, risks SHP-R-001…010.
 
 1. **No endpoint, tool or manifest field accepts a command string.** Steps are argv arrays in a
    named compose service (SHP-D-055, SHP-D-044).
-2. The only request data that reaches the host is an **app name and a 40-hex SHA**.
+2. The only request data that reaches the host is an **app or stack name a host-local manifest
+   defines, a verb from a fixed enum, a compose service name, a 40-hex SHA and, for logs, a
+   container ID** (SHP-ADR-008; a registry digest joins them with SHP-P-16). The agent re-checks
+   each against its manifests and the Engine.
 3. The agent opens no port; the server never calls the agent.
 4. A step is **journaled locally before it runs** (SHP-D-029, SHP-D-081).
 5. Success = running digest **and** `org.opencontainers.image.revision` **and** `/health` schema
@@ -43,6 +46,13 @@ decisions SHP-D-001…087, risks SHP-R-001…010.
    a data root".
 9. Forward gates **fail closed** when GitHub/GHCR is unreachable; there is no override.
 10. No telemetry; no stored app secrets; step output redacted, backup/restore output never stored.
+
+## Tiers (SHP-ADR-008)
+
+Every container on the host is **Deployed** (a D3 app, `apps/*.yml`; the API value is `shipped`),
+**Operated** (a third-party stack adopted with `stacks/*.yml`, `docs/runbooks/adopt-stack.md`) or
+**Observed** (seen only). The console never says "Ship" (SHP-REQ-165). Lifecycle verbs need Deployed
+or Operated; logs work for any container and are redacted on the host and never stored (SHP-ADR-011).
 
 ## Conventions
 
@@ -92,15 +102,18 @@ never over SSH: no `sed` on a compose file, no `docker compose pull/up` on the h
 hand is drift, and Shipyard refuses the next one until someone resolves it.
 
 - **Connect once:** remote MCP server `https://shipyard.d3cloud.io/mcp`, header
-  `Authorization: Bearer <token>`. A token is scoped to the apps it names; make one on the console's
-  **Connect Claude** page (`https://shipyard.d3cloud.io/connect`), which also gives the exact
+  `Authorization: Bearer <token>`. A token is scoped to the apps and adopted stacks it names; make one on the
+  console's **Connect Claude** page (`https://shipyard.d3cloud.io/connect`), which also gives the exact
   `claude mcp add` command and confirms the connection. Never paste a token into a file in this repo.
 - **What exists:** `shipyard_status` (live release, commits waiting, CI) · `shipyard_dry_run` ·
   `shipyard_deploy` (an `app`, or a `group`, and a 40-hex `sha`) · `shipyard_deploy_status` ·
   `shipyard_rollback` (to an earlier successful deploy, from the agent's own ledger) ·
   `shipyard_build` (queue a build for a `build: shipyard` app and SHA) · `shipyard_build_status`
   (poll it; see `docs/runbooks/build.md`) · `shipyard_host` (read-only inventory of everything on the
-  host: containers with their tier, volumes, images, disk; takes no input and works for any token).
+  host: containers with their tier, volumes, images, disk; takes no input and works for any token) ·
+  `shipyard_action` (start, restart or recreate an app or adopted stack; stop is console-only) ·
+  `shipyard_logs` (a redacted tail; the token needs logs allowed and reads only containers of the apps
+  and stacks it is scoped to, never Observed ones).
 - **What you can deploy:** only a SHA on the default branch that is ahead of what is live and whose
   images are proven: the image workflow is green, or, for a `build: shipyard` app, Shipyard's own
   build of that SHA succeeded and its digests still match GHCR (`build_not_green` /

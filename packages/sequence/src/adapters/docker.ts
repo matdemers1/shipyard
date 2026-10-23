@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 
 import Dockerode from 'dockerode';
 
 import type {
   BuildNetworkInfo,
   ComposeTarget,
+  ContainerLogLine,
+  ContainerRedactionFacts,
   DockerPort,
   DockerRootSpace,
   ExecResult,
@@ -228,6 +231,97 @@ export function demuxDockerStream(buf: Buffer): { stdout: string; stderr: string
   return { stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') };
 }
 
+/**
+ * A line with no newline is cut here, so one endless line cannot hold the agent's memory. Large on
+ * purpose: lines are redacted whole after this, and only a line longer than this is ever cut before
+ * redaction (the piece is then flagged `continues`, and the reader carries its end over).
+ */
+export const MAX_LOG_LINE_CHARS = 1024 * 1024;
+
+const LOG_TIMESTAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2}) /;
+
+/**
+ * Splits Docker's `timestamps: true` prefix (RFC 3339 with nanoseconds) off a log line. The time
+ * is kept to the millisecond, which is what an ISO date carries; a line without one keeps its text.
+ */
+export function splitLogTimestamp(line: string): { at: string | null; text: string } {
+  const m = LOG_TIMESTAMP.exec(line);
+  if (m === null) return { at: null, text: line };
+  const ms = Date.parse(`${m[1] ?? ''}${(m[2] ?? '').slice(0, 4)}${m[3] ?? ''}`);
+  if (Number.isNaN(ms)) return { at: null, text: line };
+  return { at: new Date(ms).toISOString(), text: line.slice(m[0].length) };
+}
+
+/**
+ * Turns the bytes of a container's log stream into lines as they arrive (SHP-T-15.3). A non-TTY
+ * container's stream is multiplexed — 8-byte frame headers naming stdout or stderr — and a frame,
+ * a UTF-8 character or a line may be split across any two chunks; a TTY container's is raw stdout.
+ */
+export class DockerLogDecoder {
+  private pending: Buffer = Buffer.alloc(0);
+  private readonly decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
+  private readonly partial = { stdout: '', stderr: '' };
+  /** The last piece of this stream was a forced cut: the next one has no timestamp of its own. */
+  private readonly continuing = { stdout: false, stderr: false };
+
+  constructor(private readonly tty: boolean) {}
+
+  push(chunk: Buffer): ContainerLogLine[] {
+    const out: ContainerLogLine[] = [];
+    if (this.tty) {
+      this.feed('stdout', chunk, out);
+      return out;
+    }
+    this.pending = this.pending.length === 0 ? chunk : Buffer.concat([this.pending, chunk]);
+    let offset = 0;
+    while (offset + 8 <= this.pending.length) {
+      const size = this.pending.readUInt32BE(offset + 4);
+      if (offset + 8 + size > this.pending.length) break;
+      const stream = this.pending.readUInt8(offset) === 2 ? 'stderr' : 'stdout';
+      this.feed(stream, this.pending.subarray(offset + 8, offset + 8 + size), out);
+      offset += 8 + size;
+    }
+    this.pending = this.pending.subarray(offset);
+    return out;
+  }
+
+  /** The stream ended: whatever is left of a line is a line. */
+  end(): ContainerLogLine[] {
+    const out: ContainerLogLine[] = [];
+    for (const stream of ['stdout', 'stderr'] as const) {
+      const rest = this.partial[stream] + this.decoders[stream].end();
+      this.partial[stream] = '';
+      if (rest.length > 0) out.push(this.line(stream, rest));
+    }
+    return out;
+  }
+
+  private feed(stream: 'stdout' | 'stderr', bytes: Buffer, out: ContainerLogLine[]): void {
+    let text = this.partial[stream] + this.decoders[stream].write(bytes);
+    for (let nl = text.indexOf('\n'); nl !== -1; nl = text.indexOf('\n')) {
+      out.push(this.line(stream, text.slice(0, nl)));
+      text = text.slice(nl + 1);
+    }
+    while (text.length > MAX_LOG_LINE_CHARS) {
+      out.push(this.line(stream, text.slice(0, MAX_LOG_LINE_CHARS), true));
+      text = text.slice(MAX_LOG_LINE_CHARS);
+    }
+    this.partial[stream] = text;
+  }
+
+  private line(stream: 'stdout' | 'stderr', raw: string, cut = false): ContainerLogLine {
+    const continuation = this.continuing[stream];
+    this.continuing[stream] = cut;
+    if (cut) {
+      const { at, text } = continuation ? { at: null, text: raw } : splitLogTimestamp(raw);
+      return { stream, at, text, continues: true };
+    }
+    const body = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const { at, text } = continuation ? { at: null, text: body } : splitLogTimestamp(body);
+    return { stream, at, text };
+  }
+}
+
 function parseBody(text: string): unknown {
   try {
     return JSON.parse(text) as unknown;
@@ -340,7 +434,8 @@ export function createDockerAdapter(
 ): DockerPort &
   Required<
     Pick<DockerPort, 'loadImage' | 'inspectNetwork' | 'hostContainers' | 'hostVolumes' | 'systemDf' | 'hostImages' | 'hostNetworks' | 'containerStats' | 'dockerRootSpace'>
-  > {
+  > &
+  Required<Pick<DockerPort, 'containerLogs' | 'inspectEnv'>> {
   const docker = options.docker ?? dockerodeFor(options.dockerHost);
   const composeBin = options.composeBin ?? 'docker';
   const probeImage = options.probeImage ?? 'busybox:1.37';
@@ -442,6 +537,8 @@ export function createDockerAdapter(
           const info = await docker.getContainer(c.Id).inspect();
           if (typeof info.State.StartedAt === 'string' && info.State.StartedAt !== '') found.startedAt = info.State.StartedAt;
           if (typeof info.RestartCount === 'number') found.restartCount = info.RestartCount;
+          // A lifecycle action waits for `healthy` where the container has a healthcheck (SHP-REQ-184).
+          found.health = healthFromInspect(info.State.Health?.Status) ?? 'none';
         } catch (err) {
           if (statusCodeOf(err) !== 404) throw err;
         }
@@ -727,6 +824,68 @@ export function createDockerAdapter(
       const { root, output } = await dfDockerRoot();
       const space = parseDfSpace(output);
       return { path: root, totalBytes: space.totalBytes, freeBytes: space.availableBytes };
+    },
+
+    // ─── Logs (SHP-T-15.3, SHP-ADR-011): read-only, like everything dockerode does here ─────────
+
+    async *containerLogs(id, opts): AsyncGenerator<ContainerLogLine> {
+      const container = docker.getContainer(id);
+      const info = await container.inspect();
+      const decoder = new DockerLogDecoder(info.Config.Tty);
+      const sinceMs = opts.since === undefined ? Number.NaN : Date.parse(opts.since);
+      const params = {
+        stdout: true,
+        stderr: true,
+        timestamps: true,
+        tail: opts.tail,
+        ...(Number.isNaN(sinceMs) ? {} : { since: Math.floor(sinceMs / 1000) }),
+      };
+      if (!opts.follow) {
+        const buf = await container.logs({ ...params, follow: false });
+        yield* decoder.push(Buffer.from(buf));
+        yield* decoder.end();
+        return;
+      }
+      // A function, not the property: the signal flips while the stream is read.
+      const aborted = (): boolean => opts.signal?.aborted === true;
+      if (aborted()) return;
+      const stream = await container.logs({ ...params, follow: true });
+      const destroy = (): void => {
+        (stream as { destroy?: () => void }).destroy?.();
+      };
+      opts.signal?.addEventListener('abort', destroy, { once: true });
+      try {
+        for await (const chunk of stream) {
+          yield* decoder.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+        }
+        yield* decoder.end();
+      } catch (err) {
+        // Destroying the stream on abort ends the iteration with a premature-close error.
+        if (!aborted()) throw err;
+      } finally {
+        opts.signal?.removeEventListener('abort', destroy);
+        destroy();
+      }
+    },
+
+    async inspectEnv(id): Promise<ContainerRedactionFacts | null> {
+      let info: Dockerode.ContainerInspectInfo;
+      try {
+        info = await docker.getContainer(id).inspect();
+      } catch (err) {
+        if (statusCodeOf(err) === 404) return null;
+        throw err;
+      }
+      const env = (info.Config.Env as string[] | null | undefined) ?? [];
+      const labels = (info.Config.Labels as Record<string, string> | null | undefined) ?? {};
+      return {
+        // Values only: everything after the first `=`. Names are never needed to redact.
+        envValues: env.flatMap((entry) => {
+          const eq = entry.indexOf('=');
+          return eq === -1 || eq === entry.length - 1 ? [] : [entry.slice(eq + 1)];
+        }),
+        composeProject: nonEmpty(labels[COMPOSE_PROJECT_LABEL]),
+      };
     },
   };
 }

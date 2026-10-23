@@ -345,6 +345,14 @@ describe('the volumes on Host, gated by role and tier (SHP-REQ-201..203)', () =>
     expect(buttonsOf(await volumeRow('portainer_data'))).toEqual([]);
   });
 
+  it('offers no action on any volume while the stack list has never answered', async () => {
+    hostRoutes('admin', { 'GET /api/stacks': { status: 500, body: { error: { code: 'internal', gate: 'none', message: 'down', fix: 'retry' } } } });
+    renderAt('/host');
+    // Without the stacks, an adopted stack's unmounted volume would pass for an orphan.
+    expect(buttonsOf(await volumeRow('kardashev_pgdata'))).toEqual([]);
+    expect(buttonsOf(await volumeRow('forgejo_data'))).toEqual([]);
+  });
+
   it('opens a volume’s archives newest first, linked by ?volume=', async () => {
     const user = userEvent.setup();
     hostRoutes('admin');

@@ -167,8 +167,8 @@ export function Host() {
   // Who owns a volume: the unretired apps and the adopted stacks, once both lists have answered.
   const ownerApps = useOwnerApps();
   const owners = useMemo(
-    () => (ownerApps === null || !stackData.loaded ? null : volumeOwners(ownerApps, [...stackData.byName.values()])),
-    [ownerApps, stackData.loaded, stackData.byName],
+    () => (ownerApps === null || !stackData.answered ? null : volumeOwners(ownerApps, [...stackData.byName.values()])),
+    [ownerApps, stackData.answered, stackData.byName],
   );
   const volumeRow = useMemo(() => {
     if (volumeName === null || owners === null) return null;

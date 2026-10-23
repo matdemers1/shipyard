@@ -1,0 +1,8 @@
+{
+  "waitSeconds": 10,
+  "capabilities": [
+    "build",
+    "actions",
+    "logs"
+  ]
+}

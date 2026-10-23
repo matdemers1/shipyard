@@ -33,6 +33,13 @@ import {
   BuildProgress,
   BuildResult,
   BuildSettingsUpdate,
+  ActionRequest,
+  LogsRequest,
+  ShipyardActionInput,
+  ShipyardLogsInput,
+  ActionResult,
+  ActionProgress,
+  LogsChunk,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -101,6 +108,13 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   BuildProgress,
   BuildResult,
   BuildSettingsUpdate,
+  ActionRequest,
+  LogsRequest,
+  ShipyardActionInput,
+  ShipyardLogsInput,
+  ActionResult,
+  ActionProgress,
+  LogsChunk,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -138,6 +152,13 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   BuildProgress: 'buildProgress',
   BuildResult: 'buildResult',
   BuildSettingsUpdate: 'buildSettingsUpdate',
+  ActionRequest: 'actionRequest',
+  LogsRequest: 'logsRequest',
+  ShipyardActionInput: 'mcpAction',
+  ShipyardLogsInput: 'mcpLogs',
+  ActionResult: 'actionResult',
+  ActionProgress: 'actionProgress',
+  LogsChunk: 'logsChunk',
 };
 
 describe('request schema coverage', () => {

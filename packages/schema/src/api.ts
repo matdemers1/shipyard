@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AppName, Digest, Sha40 } from './primitives.js';
 import { Refusal } from './errors.js';
 import { DeployTargetState } from './agent.js';
+import { ActionTarget, LifecycleVerb, ServiceName } from './actions.js';
 
 /**
  * REST API request/response shapes (SHP-REQ-004). Kept transform/refinement-free
@@ -100,6 +101,8 @@ export const TokenCreate = z
     label: z.string().min(1).max(100),
     /** The apps this token may act on (SHP-REQ-046); at least one. */
     apps: z.array(AppName).min(1),
+    /** May this token read container logs over MCP (SHP-ADR-011, SHP-REQ-193)? Off unless asked for. */
+    canReadLogs: z.boolean().optional(),
   })
   .meta({ id: 'TokenCreate', description: 'Issue an API token scoped to named apps' });
 export type TokenCreate = z.infer<typeof TokenCreate>;
@@ -157,3 +160,17 @@ export const DeployStatus = z
   })
   .meta({ id: 'DeployStatus', description: 'A deploy target and, when finished, what it shipped' });
 export type DeployStatus = z.infer<typeof DeployStatus>;
+
+/**
+ * `POST /api/actions` (SHP-ADR-010). Without `service` the verb applies to the whole compose
+ * project. Lives beside the other REST bodies; the agent protocol half is in actions.ts.
+ */
+export const ActionRequest = z
+  .strictObject({
+    target: ActionTarget,
+    verb: LifecycleVerb,
+    service: ServiceName.optional(),
+    requester: Requester.optional(),
+  })
+  .meta({ id: 'ActionRequest', description: 'Start, stop, restart or recreate an app or stack, or one of its services' });
+export type ActionRequest = z.infer<typeof ActionRequest>;

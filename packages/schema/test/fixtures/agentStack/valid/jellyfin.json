@@ -1,0 +1,17 @@
+{
+  "manifest": {
+    "kind": "stack",
+    "name": "jellyfin",
+    "compose": {
+      "files": [
+        "/DATA/AppData/jellyfin/docker-compose.yml"
+      ],
+      "project": "jellyfin"
+    },
+    "envFiles": [
+      "/DATA/AppData/jellyfin/.env"
+    ],
+    "updates": "none"
+  },
+  "manifestSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

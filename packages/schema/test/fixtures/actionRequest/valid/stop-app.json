@@ -1,0 +1,12 @@
+{
+  "target": {
+    "kind": "app",
+    "name": "bindery"
+  },
+  "verb": "stop",
+  "requester": {
+    "repo": "matdemers1/bindery",
+    "branch": "main",
+    "label": "claude: test"
+  }
+}

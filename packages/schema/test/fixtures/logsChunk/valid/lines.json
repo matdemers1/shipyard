@@ -1,0 +1,12 @@
+{
+  "logsId": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "seq": 0,
+  "lines": [
+    {
+      "at": "2026-10-22T12:00:00.000Z",
+      "stream": "stdout",
+      "text": "listening on :8096 token=[redacted]"
+    }
+  ],
+  "done": false
+}

@@ -40,6 +40,11 @@ import {
   ActionResult,
   ActionProgress,
   LogsChunk,
+  StackUpdateRequest,
+  StackRollbackRequest,
+  ShipyardStackUpdateInput,
+  StackUpdateResult,
+  StackUpdateProgress,
 } from '../src/index.js';
 import {
   ShipyardStatusInput,
@@ -115,6 +120,11 @@ const REQUEST_SCHEMAS: Record<string, ZodType> = {
   ActionResult,
   ActionProgress,
   LogsChunk,
+  StackUpdateRequest,
+  StackRollbackRequest,
+  ShipyardStackUpdateInput,
+  StackUpdateResult,
+  StackUpdateProgress,
 };
 
 const REQUEST_FIXTURE_DIR: Record<string, string> = {
@@ -159,6 +169,11 @@ const REQUEST_FIXTURE_DIR: Record<string, string> = {
   ActionResult: 'actionResult',
   ActionProgress: 'actionProgress',
   LogsChunk: 'logsChunk',
+  StackUpdateRequest: 'stackUpdateRequest',
+  StackRollbackRequest: 'stackRollbackRequest',
+  ShipyardStackUpdateInput: 'mcpStackUpdate',
+  StackUpdateResult: 'stackUpdateResult',
+  StackUpdateProgress: 'stackUpdateProgress',
 };
 
 describe('request schema coverage', () => {
@@ -226,6 +241,9 @@ const ALLOWED_COMMAND_LIKE_PATHS = new Set([
   // The manifest's build.integration argv (host-local, run in a named compose service; SHP-T-7.2).
   'Manifest.build.integration.argv',
   'BuildConfig.integration.argv',
+  // The backup step itself, and a digest-updated stack's backup (host-local, SHP-P-16).
+  'BackupStep.argv',
+  'StackManifest.steps.backup.argv',
 ]);
 
 /**

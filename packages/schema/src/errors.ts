@@ -79,6 +79,9 @@ export const ErrorCode = z
     'agent_too_old',
     'unknown_container',
     'action_failed',
+    'digest_not_tracked',
+    'registry_unreachable',
+    'updates_disabled',
   ])
   .meta({ id: 'ErrorCode', description: 'Machine-readable refusal reason' });
 export type ErrorCode = z.infer<typeof ErrorCode>;
@@ -144,6 +147,10 @@ export const CATALOGUE: Record<ErrorCode, CatalogueEntry> = {
   agent_too_old: { gate: 'none', httpStatus: 409, defaultFix: "Upgrade the agent (docs/runbooks/upgrade-agent.md); this version can't do that yet." },
   unknown_container: { gate: 'none', httpStatus: 404, defaultFix: 'The agent no longer reports that container; reload the Host view.' },
   action_failed: { gate: 'none', httpStatus: 502, defaultFix: "Read compose's output on the action, then the container's logs." },
+  // SHP-P-16: stack updates.
+  digest_not_tracked: { gate: 'none', httpStatus: 409, defaultFix: "That digest is not what the stack's track resolves to now; update to the current candidate instead." },
+  registry_unreachable: { gate: 'none', httpStatus: 503, defaultFix: 'The registry could not be reached, so nothing was changed; try again when it answers.' },
+  updates_disabled: { gate: 'none', httpStatus: 409, defaultFix: 'This stack is adopted with updates: none; set updates: digest and its services in its manifest to update it here.' },
   group_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the failed member, then deploy the group again; members after it were not touched.' },
   rollout_stopped: { gate: 'none', httpStatus: 409, defaultFix: 'Fix the member that stopped the rollout, then roll again; the apps after it were not touched.' },
 };

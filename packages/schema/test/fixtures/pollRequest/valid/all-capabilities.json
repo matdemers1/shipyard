@@ -3,6 +3,7 @@
   "capabilities": [
     "build",
     "actions",
-    "logs"
+    "logs",
+    "stack-updates"
   ]
 }

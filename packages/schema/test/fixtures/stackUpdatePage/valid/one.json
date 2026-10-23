@@ -1,0 +1,36 @@
+{
+  "items": [
+    {
+      "id": "01a1618d-cfae-7334-b900-4db7f8d33985",
+      "stack": "forgejo",
+      "kind": "update",
+      "state": "succeeded",
+      "step": null,
+      "digests": {
+        "server": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "images": [
+        {
+          "service": "server",
+          "tag": "17.1.2",
+          "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "previous": [
+        {
+          "service": "server",
+          "tag": "17.1.1",
+          "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "toUpdateId": null,
+      "requesterLabel": "matthew@demers.dev (console)",
+      "approvedBy": null,
+      "createdAt": "2026-10-22T12:00:00.000Z",
+      "startedAt": "2026-10-22T12:00:00.000Z",
+      "endedAt": "2026-10-22T12:00:00.000Z",
+      "refusal": null
+    }
+  ],
+  "nextCursor": null
+}

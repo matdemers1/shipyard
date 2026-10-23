@@ -4,6 +4,7 @@ import { AppName, Digest, Sha40 } from './primitives.js';
 import { Refusal } from './errors.js';
 import { DeployTargetState } from './agent.js';
 import { ActionTarget, LifecycleVerb, ServiceName } from './actions.js';
+import { Digest as DigestRef } from './primitives.js';
 
 /**
  * REST API request/response shapes (SHP-REQ-004). Kept transform/refinement-free
@@ -174,3 +175,25 @@ export const ActionRequest = z
   })
   .meta({ id: 'ActionRequest', description: 'Start, stop, restart or recreate an app or stack, or one of its services' });
 export type ActionRequest = z.infer<typeof ActionRequest>;
+
+/**
+ * `POST /api/stacks/:name/updates` (SHP-P-16). Without `digests` the server uses the candidates the
+ * agent last reported; with them, each must be what the stack's track resolves to when the agent
+ * runs it (`digest_not_tracked` otherwise).
+ */
+export const StackUpdateRequest = z
+  .strictObject({
+    digests: z.record(ServiceName, DigestRef).optional(),
+    requester: Requester.optional(),
+  })
+  .meta({ id: 'StackUpdateRequest', description: 'Update an adopted stack to its tracked digests' });
+export type StackUpdateRequest = z.infer<typeof StackUpdateRequest>;
+
+/** `POST /api/stacks/:name/rollback`: back to an earlier successful update, from the agent's ledger. */
+export const StackRollbackRequest = z
+  .strictObject({
+    toUpdateId: z.uuid(),
+    requester: Requester.optional(),
+  })
+  .meta({ id: 'StackRollbackRequest', description: 'Roll an adopted stack back to an earlier update' });
+export type StackRollbackRequest = z.infer<typeof StackRollbackRequest>;

@@ -1,0 +1,24 @@
+{
+  "updateId": "01a1618d-cfae-7334-b900-4db7f8d33985",
+  "state": "rolled_back",
+  "images": [
+    {
+      "service": "server",
+      "tag": "17.1.1",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "previous": [
+    {
+      "service": "server",
+      "tag": "17.1.1",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "refusal": {
+    "code": "health_failed",
+    "gate": "none",
+    "message": "17.1 no longer resolves to that digest.",
+    "fix": "Update to the current candidate."
+  }
+}

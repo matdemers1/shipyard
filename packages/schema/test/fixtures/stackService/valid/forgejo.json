@@ -1,0 +1,6 @@
+{
+  "image": "codeberg.org/forgejo/forgejo",
+  "track": {
+    "semver": "17.x"
+  }
+}

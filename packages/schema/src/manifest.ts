@@ -26,7 +26,7 @@ export const ComposeConfig = z
 const IMAGE_REPOSITORY_RE =
   /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?(?::[0-9]{1,5})?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$/;
 
-const ServiceConfig = z
+export const ServiceConfig = z
   .strictObject({
     image: z
       .string()
@@ -63,7 +63,7 @@ const ForemanConfig = z
  * The app's own backup command, exec'd in its running container (SHP-D-018). Success is exit 0 plus
  * a new non-empty file under `artifactsDir` created since the step began (SHP-D-054).
  */
-const BackupStep = z
+export const BackupStep = z
   .strictObject({
     service: z.string().min(1),
     argv: Step.shape.argv,

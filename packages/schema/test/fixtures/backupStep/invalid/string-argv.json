@@ -1,0 +1,5 @@
+{
+  "service": "api",
+  "argv": "dump all",
+  "artifactsDir": "/b"
+}

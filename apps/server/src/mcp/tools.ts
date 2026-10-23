@@ -10,6 +10,7 @@ import {
   ShipyardHostInput,
   ShipyardLogsInput,
   ShipyardRollbackInput,
+  ShipyardStackUpdateInput,
   ShipyardStatusInput,
   refusal,
   type ActionStatus,
@@ -33,16 +34,21 @@ import {
 import { getGroupDeployStatus, waitForGroupChange } from '../groups/service.js';
 import { readHostSnapshots, snapshotContainers } from '../host/index.js';
 import { logsViewerOf, readLogsTail } from '../logs/service.js';
+import { getStackUpdate, requestStackUpdate, waitForStackUpdate } from '../stack-updates/service.js';
 import { appStatuses } from './status.js';
 
 /**
- * The ten MCP tools (SHP-REQ-041, SHP-REQ-144, SHP-REQ-179, SHP-REQ-184, SHP-REQ-193). Every tool is a
+ * The twelve MCP tools (SHP-REQ-041, SHP-REQ-144, SHP-REQ-179, SHP-REQ-184, SHP-REQ-193, SHP-REQ-199, SHP-REQ-200). Every tool is a
  * thin shell over the deploy, build, host, action or logs service: no deploy or build logic lives here, and no tool accepts a command,
  * a path or an image reference (SHP-REQ-053) — only app names, 40-hex SHAs, deploy/build IDs and who
  * is asking. `shipyard_host` takes nothing at all and is not scoped to an app: the host inventory
  * is the same read-only snapshot for any token (SHP-ADR-009, SHP-REQ-181). `shipyard_action` offers
  * start, restart and recreate and never stop — an API token cannot stop (SHP-ADR-010, SHP-REQ-188);
  * `shipyard_logs` returns a bounded, redacted tail and never follows (SHP-ADR-011, SHP-REQ-193).
+ * `shipyard_stack_update` queues an update of an adopted, Operated stack to its reported candidates and
+ * `shipyard_stack_update_status` reads it; the update is held for a deployer's approval in the console
+ * when the stack's policy is `tokens` (the default) or `always` (SHP-ADR-010, SHP-REQ-199) and is kept
+ * with its requester, digests before and after, and outcome (SHP-REQ-200).
  * Freeze, schedule, restore and approval are console-only (SHP-D-072).
  */
 
@@ -112,6 +118,14 @@ const LOGS_NOT_ALLOWED = refusal(
   "This token can't read logs.",
   'Issue a token with logs allowed in Settings › Claude & tokens.',
 );
+
+/** A token's stack scope: only the adopted stacks it names. An app-scoped token reaches no stack (SHP-ADR-011). */
+function stackOutOfScope(caller: DeployCaller, stack: string): Refusal | null {
+  if (caller.tokenStacks?.has(stack) === true) return null;
+  return refusal('forbidden', `This token is not scoped to ${stack}.`, `Use a token issued for ${stack}, or issue a new one that names it.`);
+}
+
+const NO_SUCH_STACK_UPDATE = refusal('not_found', 'No such stack update.', 'Use the update id that shipyard_stack_update returned.');
 
 const NO_SUCH_DEPLOY = refusal('not_found', 'No such deploy.', 'Use the deployId that shipyard_deploy or shipyard_rollback returned.');
 
@@ -411,6 +425,66 @@ export function buildMcpServer(
           ? {}
           : { message: 'Still in flight after 60 s. Its final state is in Activity in the console; do not repeat the call.' }),
       });
+    },
+  );
+
+  server.registerTool(
+    'shipyard_stack_update',
+    {
+      title: 'Update a stack',
+      description:
+        'Requests an update of `stack`, an adopted Operated stack whose manifest says it is updated by digest, to ' +
+        'the newest images its track resolves to (the candidates the agent last reported); the agent re-checks each ' +
+        'one when it runs. Returns { update, message } at once without waiting: an update from a token is usually ' +
+        '`awaiting_approval` — a deployer must approve it in the console\'s Needs you, so do not poll for it; ' +
+        'it is `queued` only when the stack\'s approval policy is never. An approved update backs up, pulls, swaps one ' +
+        'service at a time, checks and soaks, and is rolled back to the previous images if it fails; the database ' +
+        'is not rolled back. Refused at once for a stack adopted with updates: none, an app, an Observed ' +
+        'project, a stack that is already being updated or has an action in flight, or an agent that cannot ' +
+        'update stacks. `requester` (repo, branch, label) is required and recorded. The token must be scoped to ' +
+        '`stack`. Follow it with shipyard_stack_update_status.',
+      inputSchema: toolInput(ShipyardStackUpdateInput),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ stack, requester }) => {
+      const denied = stackOutOfScope(caller, stack);
+      if (denied !== null) return refused(denied);
+      // No digests: the reported candidates (SHP-REQ-195). The service refuses what cannot be updated.
+      const result = await requestStackUpdate(deps, caller, stack, { requester });
+      if ('code' in result) return refused(result);
+      const message =
+        result.state === 'awaiting_approval'
+          ? 'Held for approval: a deployer must approve it in the console (Needs you). Do not poll for it; follow it with shipyard_stack_update_status later.'
+          : 'Queued for the agent. Follow it with shipyard_stack_update_status and wait.';
+      return ok({ update: result, message });
+    },
+  );
+
+  server.registerTool(
+    'shipyard_stack_update_status',
+    {
+      title: 'Stack update status',
+      description:
+        "Returns a stack update's status by `updateId`: state (awaiting approval, queued, running, succeeded, failed, " +
+        'rolled back, refused or denied), current step, requester, who approved it, the digests asked for, the ' +
+        'images before and after, and any refusal verbatim. With `wait` (seconds, at most 90) it returns once the ' +
+        'update has finished or the wait runs out, whichever is first; a finished update returns at once. An ' +
+        'update awaiting approval does not change until a deployer decides in the console. The token must be ' +
+        'scoped to the stack. Changes nothing.',
+      // Mirrors shipyard_build_status: an id and an optional wait (the schema package owns no input for it).
+      inputSchema: z.strictObject({ updateId: z.uuid(), wait: z.int().min(0).max(MAX_WAIT_SECONDS).optional() }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ updateId, wait }) => {
+      if (!UUID_RE.test(updateId)) return refused(NO_SUCH_STACK_UPDATE);
+      // Scope is checked before waiting, so an out-of-scope caller cannot hold a long poll open.
+      const first = await getStackUpdate(deps.db, updateId);
+      if (first === null) return refused(NO_SUCH_STACK_UPDATE);
+      const denied = stackOutOfScope(caller, first.stack);
+      if (denied !== null) return refused(denied);
+      const seconds = Math.min(wait ?? 0, MAX_WAIT_SECONDS);
+      const status = seconds === 0 ? first : await waitForStackUpdate(deps, updateId, seconds * 1000, signal);
+      return status === null ? refused(NO_SUCH_STACK_UPDATE) : ok(status);
     },
   );
 

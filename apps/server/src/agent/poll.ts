@@ -13,6 +13,7 @@ import {
   type BuildJob,
   type DeployTargetState,
   type LogsJob,
+  type MaintenanceJob,
   type PollResponse,
   type StackUpdateJob,
 } from '@shipyard/schema';
@@ -40,6 +41,7 @@ import { verifyAgentRequest } from './verify.js';
 import { recordCapabilities } from './capabilities.js';
 import { claimAction, releaseAction, sweepStaleActions } from '../actions/service.js';
 import { claimStackUpdate, releaseStackUpdate, sweepStaleStackUpdates } from '../stack-updates/service.js';
+import { claimMaintenance, releaseMaintenance, sweepStaleMaintenance } from '../maintenance/service.js';
 import { logsHubFor } from '../logs/hub.js';
 
 /**
@@ -65,6 +67,10 @@ import { logsHubFor } from '../logs/hub.js';
  * - Stack updates (SHP-T-16.3, SHP-ADR-010): after actions, a poll that advertises `stack-updates`
  *   is handed the oldest queued update or rollback of its stacks — never one that does not, which
  *   could not parse it. Every poll also fails one silent for thirty minutes past its soak.
+ * - Maintenance (SHP-T-17.3, SHP-ADR-012): after stack updates, a poll that advertises
+ *   `maintenance` is handed the oldest queued volume backup, restore or delete, or prune of this
+ *   agent — one at a time: none while another of its jobs is dispatched or running. Every poll
+ *   also fails one silent for fifteen minutes (`agent_offline`).
  *
  * The server only records what the agent reports: the agent re-verifies every target itself and
  * alone decides a health-failure rollback (SHP-D-002, SHP-D-081).
@@ -164,11 +170,17 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
     } catch (err) {
       logger.error({ err }, 'stale stack update sweep failed');
     }
+    try {
+      await sweepStaleMaintenance(deps);
+    } catch (err) {
+      logger.error({ err }, 'stale maintenance sweep failed');
+    }
     recordCapabilities(bus, agentId, body.capabilities);
     const wantsBuild = body.capabilities?.includes('build') === true;
     const wantsLogs = body.capabilities?.includes('logs') === true;
     const wantsActions = body.capabilities?.includes('actions') === true;
     const wantsStackUpdates = body.capabilities?.includes('stack-updates') === true;
+    const wantsMaintenance = body.capabilities?.includes('maintenance') === true;
     const logsHub = logsHubFor(bus);
     // Settings → Builds (SHP-T-7.11): on every poll answer, whatever else it carries, so the agent
     // learns a saved limit or cache cap change the moment it next polls.
@@ -286,6 +298,30 @@ export function mountPoll(router: Router, deps: ServiceDeps): void {
           bus.publish(`stack-update:${stackUpdate.updateId}`);
           logger.info({ stackUpdateId: stackUpdate.updateId, stack: stackUpdate.stack, kind: stackUpdate.kind }, 'stack update dispatched to agent');
           const response: PollResponse = { target: null, stackUpdate, buildSettings };
+          res.json(response);
+          return;
+        }
+        let maintenance: MaintenanceJob | null = null;
+        if (wantsMaintenance) {
+          try {
+            maintenance = await claimMaintenance(deps, agentId);
+          } catch (err) {
+            stop.abort();
+            throw err;
+          }
+        }
+        if (maintenance !== null) {
+          stop.abort();
+          if (gone.signal.aborted) {
+            await releaseMaintenance(db, maintenance.jobId);
+            bus.publish('work');
+            return;
+          }
+          const { jobId, kind, ...detail } = maintenance;
+          await req.audit({ action: 'maintenance.dispatched', entityType: 'maintenance_job', entityId: jobId, after: { kind, ...detail } });
+          bus.publish(`maintenance:${jobId}`);
+          logger.info({ maintenanceId: jobId, kind }, 'maintenance job dispatched to agent');
+          const response: PollResponse = { target: null, maintenance, buildSettings };
           res.json(response);
           return;
         }

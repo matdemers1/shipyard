@@ -5,6 +5,7 @@ import { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { storeHostInventory } from '../host/index.js';
+import { mirrorVolumeArchives, type ArchiveMirrorChanges } from '../maintenance/service.js';
 import { detectDrift } from './drift.js';
 
 /**
@@ -365,6 +366,19 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       }
     }
 
+    // The volume archives in the agent's ledger (SHP-T-17.3, SHP-REQ-201), likewise in their own
+    // transaction: absent (an older agent) leaves the mirror as it was; present, it is the whole
+    // ledger, and an archive it no longer lists is retired.
+    let archives: ArchiveMirrorChanges = { added: [], retired: [] };
+    if (report.volumeArchives !== undefined) {
+      try {
+        archives = await mirrorVolumeArchives(deps, agentId, report.volumeArchives, now);
+      } catch (err) {
+        logger.error({ err, agentId }, 'mirroring the volume archives failed; the previous mirror stands');
+      }
+    }
+    const archivesChanged = archives.added.length > 0 || archives.retired.length > 0;
+
     for (const d of drifted) {
       logger.warn({ app: d.app, services: d.services }, 'drift detected: running digests differ from the recorded release');
     }
@@ -398,7 +412,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     // A periodic report that changed nothing is a heartbeat, not an event.
     // A stack whose name an app holds is warned about on every report, not audited on every one.
     const stacksChanged = [stacks.created, stacks.changed, stacks.refused, stacks.retired, stacks.revived].some((list) => list.length > 0);
-    if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0 && redeployed.length === 0 && importClosed.length === 0 && !stacksChanged) {
+    if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0 && redeployed.length === 0 && importClosed.length === 0 && !stacksChanged && !archivesChanged) {
       if (imported.length === 0 && retired.length === 0 && revived.length === 0) req.noAuditNeeded('unchanged report');
     } else {
       await req.audit({
@@ -414,6 +428,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
           importClosed,
           refused: refusedApps,
           ...(stacksChanged ? { stacks } : {}),
+          ...(archivesChanged ? { volumeArchives: archives } : {}),
         },
       });
     }
@@ -430,6 +445,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       retired: retired.map((a) => a.name),
       revived: revived.map((a) => a.name),
       stacks,
+      volumeArchives: archives,
     });
   });
 }

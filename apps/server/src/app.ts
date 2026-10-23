@@ -33,6 +33,7 @@ import { hostRouter } from './host/index.js';
 import { actionsRouter } from './actions/index.js';
 import { logsRouter } from './logs/index.js';
 import { stackUpdatesRouter, stacksRouter } from './stack-updates/index.js';
+import { maintenanceRouter } from './maintenance/index.js';
 import { setupRouter, type SetupDeps } from './setup/index.js';
 import { settingsRouter } from './settings/index.js';
 import { githubWebhookBody, githubWebhookRouter } from './webhooks/index.js';
@@ -167,6 +168,8 @@ export function createApp(deps: AppDeps): Express {
   // Stack updates by digest (SHP-T-16.3; SHP-ADR-010, SHP-REQ-195, SHP-REQ-199, SHP-REQ-200).
   app.use('/api/stacks', stacksRouter(serviceDeps));
   app.use('/api/stack-updates', stackUpdatesRouter(serviceDeps));
+  // SHP-T-17.3: /volumes/*, /prune and /maintenance/* (SHP-ADR-012).
+  app.use('/api', maintenanceRouter(serviceDeps));
   app.use('/api/apps', appsRouter(serviceDeps));
   app.use('/api/deploys', deployEventsRouter(serviceDeps));
   app.use('/api/deploys', approvalsRouter(serviceDeps));

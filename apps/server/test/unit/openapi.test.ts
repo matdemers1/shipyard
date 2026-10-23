@@ -147,3 +147,30 @@ describe('GET /api/openapi.json', () => {
     expect(result.valid).toBe(true);
   });
 });
+
+describe('maintenance paths (SHP-T-17.3)', () => {
+  it('documents every volume, prune and maintenance endpoint with its request and response schemas', () => {
+    const doc = buildOpenApiDocument() as ValidatableDoc;
+    const paths = doc.paths ?? {};
+    const schemas = doc.components?.schemas ?? {};
+    type Op = { operationId?: string; requestBody?: unknown; responses?: Record<string, unknown>; security?: unknown };
+    const ops = (path: string): Record<string, Op> => (paths[path] ?? {}) as Record<string, Op>;
+    for (const id of ['VolumeArchiveList', 'MaintenanceNeedsYou', 'MaintenanceStatus', 'MaintenancePage', 'VolumeRestoreRequest', 'VolumeDeleteRequest', 'PruneRequest']) {
+      expect(schemas).toHaveProperty(id);
+    }
+    expect(JSON.stringify(ops('/volumes/{volume}/backup')['post']?.requestBody)).toContain('#/components/schemas/VolumeBackupRequest');
+    expect(JSON.stringify(ops('/volumes/{volume}/backup')['post']?.responses?.['202'])).toContain('#/components/schemas/MaintenanceStatus');
+    // Restore and delete: a session only, never a bearer token (SHP-REQ-204).
+    expect(ops('/volumes/{volume}/restore')['post']?.security).toEqual([{ session: [] }]);
+    expect(JSON.stringify(ops('/volumes/{volume}/restore')['post']?.requestBody)).toContain('#/components/schemas/VolumeRestoreRequest');
+    expect(ops('/volumes/{volume}/delete')['post']?.security).toEqual([{ session: [] }]);
+    expect(Object.keys(ops('/volumes/{volume}'))).toEqual(['delete']);
+    expect(JSON.stringify(ops('/volumes/{volume}/archives')['get']?.responses?.['200'])).toContain('#/components/schemas/VolumeArchiveList');
+    expect(JSON.stringify(ops('/prune')['post']?.requestBody)).toContain('#/components/schemas/PruneRequest');
+    expect(JSON.stringify(ops('/maintenance')['get']?.responses?.['200'])).toContain('#/components/schemas/MaintenancePage');
+    expect(JSON.stringify(ops('/maintenance/needs-you')['get']?.responses?.['200'])).toContain('#/components/schemas/MaintenanceNeedsYou');
+    expect(JSON.stringify(ops('/maintenance/{id}')['get']?.responses?.['200'])).toContain('#/components/schemas/MaintenanceStatus');
+    expect(JSON.stringify(ops('/agent/maintenance/{id}/progress')['post']?.requestBody)).toContain('#/components/schemas/MaintenanceProgress');
+    expect(JSON.stringify(ops('/agent/maintenance/{id}/result')['post']?.requestBody)).toContain('#/components/schemas/MaintenanceResult');
+  });
+});

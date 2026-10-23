@@ -27,6 +27,7 @@ import type { ServiceDeps } from '../deps.js';
 import { isUniqueViolation, type DeployCaller } from '../deploys/service.js';
 import { decodeCursor, encodeCursor } from '../deploys/timeline.js';
 import { snapshotContainers } from '../host/index.js';
+import { restoreLockRefusal } from '../maintenance/lock.js';
 import { notifyStackAwaitingApproval } from '../push/notify.js';
 
 /**
@@ -277,7 +278,8 @@ export async function stackLockRefusal(db: Db, stack: { id: string; name: string
   if (action !== null) {
     return refusal('locked', `${stack.name} has a ${action.verb} by ${action.requesterLabel} in progress.`, `Wait for action ${action.id} to finish, then request again.`);
   }
-  return null;
+  // SHP-T-17.3: a volume restore of the stack holds it too (SHP-REQ-202).
+  return restoreLockRefusal(db, { kind: 'stack', name: stack.name });
 }
 
 interface QueueInput {
@@ -767,6 +769,12 @@ export async function claimStackUpdate(deps: Pick<ServiceDeps, 'db' | 'logger'>,
               where a."target_kind" = 'stack'
                 and a."target_name" = u."stack_name"
                 and a."state" in ('dispatched', 'running'))
+        and not exists (
+              select 1 from "maintenance_job" m
+              where m."kind" = 'volume-restore'
+                and m."owner_kind" = 'stack'
+                and m."owner_name" = u."stack_name"
+                and m."state" in ('dispatched', 'running'))
       order by u."created_at", u."id"
       for update of u skip locked
       limit 1

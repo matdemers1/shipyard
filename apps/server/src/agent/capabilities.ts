@@ -61,3 +61,14 @@ export function capabilityRefusal(bus: Bus, agentId: string, capability: Capabil
   }
   return null;
 }
+
+/**
+ * Every agent that polled within `CAPABILITY_FRESH_MS` advertising `capability`, most recent poll
+ * first (SHP-T-17.3): a prune names no app, so the host it runs on is the one agent that can.
+ */
+export function agentsWithCapability(bus: Bus, capability: Capability, now: number = Date.now()): string[] {
+  return [...trackerFor(bus).entries()]
+    .filter(([, seen]) => now - seen.at <= CAPABILITY_FRESH_MS && seen.capabilities.has(capability))
+    .sort((a, b) => b[1].at - a[1].at)
+    .map(([agentId]) => agentId);
+}

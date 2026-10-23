@@ -2,7 +2,7 @@ import { Badge, Button, Link, StatusDot } from '@d3cloud/ui';
 import type { HostContainer, HostSnapshot } from '@shipyard/schema';
 import { ChevronRight } from 'lucide-react';
 import { useId, useMemo, useState } from 'react';
-import { Link as RouterLink, type To } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, type NavigateFunction, type To } from 'react-router-dom';
 import { canAct, isBusy, targetFor, useAction } from '../../lib/actions';
 import { useMe } from '../../lib/auth';
 import {
@@ -15,7 +15,8 @@ import {
   restartWords,
   type ContainerGroup,
 } from '../../lib/host';
-import { RESTART_STACK, TIER_WORDS } from '../../lib/words';
+import { candidates, checkError, runningTag, stackUpdateStateWords, stackUpdateStepWords, versionWords, type StackView } from '../../lib/stacks';
+import { RESTART_STACK, STACK_HISTORY, TIER_WORDS, UPDATE_STACK, checkFailedWords, updateAvailableWords } from '../../lib/words';
 import { ActionProgress } from './ActionProgress';
 import { Sparkline } from './Sparkline';
 
@@ -26,7 +27,14 @@ import { Sparkline } from './Sparkline';
  * A container's name opens its sheet (SHP-T-15.7) — logs, and lifecycle actions where its tier
  * allows them; a Deployed or Operated group's header offers "Restart stack" for the whole compose
  * project to a deployer and above (SHP-REQ-184), and an Observed group offers nothing (SHP-REQ-185).
+ *
+ * An Operated stack adopted with `updates: digest` (SHP-T-16.6, SHP-ADR-010) also says on its header
+ * what the agent found (SHP-REQ-194) — "Update available · 17.1.1 → 17.1.2", or that a check failed —
+ * and offers "Update…" to a deployer and above, and its history to anyone.
  */
+
+/** Where a stack's sheet is: its history, or with `update` its update sheet. */
+export type StackHref = (name: string, update: boolean) => To;
 
 /** Where a container's row goes: the same page with `?container=<id>`, so Back closes the sheet. */
 export type ContainerHref = (id: string) => To;
@@ -99,6 +107,56 @@ function RestartStack({ group, name }: { group: ContainerGroup; name: string }) 
   );
 }
 
+/** The badge a digest-updated stack's header carries: what runs now, or the candidate. */
+function updateBadge(stack: StackView, group: ContainerGroup): string | null {
+  const active = stack.activeUpdate;
+  if (active !== null) return active.step === null ? stackUpdateStateWords(active.state) : stackUpdateStepWords(active.step);
+  const first = candidates(stack)[0];
+  if (first === undefined || first.candidate === null) return null;
+  const known = stack.lastUpdate === null ? [] : [stack.lastUpdate];
+  const from = versionWords(runningTag(first, known, group.containers, stack.composeProject), first.running);
+  return updateAvailableWords(from, first.candidate.tag);
+}
+
+/** The Operated stack's own controls: the candidate badge, a failed check, History and "Update…". */
+function stackControls(stack: StackView, group: ContainerGroup, mayAct: boolean, stackHref: StackHref, navigate: NavigateFunction) {
+  const badge = updateBadge(stack, group);
+  const error = checkError(stack);
+  const offer = mayAct && stack.activeUpdate === null && candidates(stack).length > 0;
+  return {
+    badge:
+      badge === null ? null : (
+        <Badge size="sm" tone={stack.activeUpdate?.state === 'awaiting_approval' ? 'warning' : 'attention'}>
+          {badge}
+        </Badge>
+      ),
+    links: (
+      <span className="shp-hg__history">
+        <Link asChild>
+          <RouterLink to={stackHref(stack.name, false)} state={{ sheet: true }}>
+            {STACK_HISTORY} <span className="shp-visually-hidden">of {stack.name}</span>
+          </RouterLink>
+        </Link>
+      </span>
+    ),
+    update: offer ? (
+      <span className="shp-hg__update">
+        <Button
+          type="button"
+          size="sm"
+          variant="primary"
+          onClick={() => {
+            void navigate(stackHref(stack.name, true), { state: { sheet: true } });
+          }}
+        >
+          {UPDATE_STACK} <span className="shp-visually-hidden">{stack.name}</span>
+        </Button>
+      </span>
+    ) : null,
+    note: error === null ? null : <p className="shp-hg__note">{checkFailedWords(error)}</p>,
+  };
+}
+
 function Group({
   group,
   open,
@@ -106,6 +164,8 @@ function Group({
   samples,
   hrefFor,
   mayAct,
+  stack,
+  stackHref,
 }: {
   group: ContainerGroup;
   open: boolean;
@@ -113,10 +173,14 @@ function Group({
   samples: HostSnapshot['samples'];
   hrefFor: ContainerHref;
   mayAct: boolean;
+  stack: StackView | undefined;
+  stackHref: StackHref | undefined;
 }) {
   const listId = useId();
   const name = group.project ?? NO_COMPOSE_NAME;
   const linkToApp = isDeployedTier(group.tier) && group.app !== null;
+  const navigate = useNavigate();
+  const updates = stack !== undefined && stack.updates === 'digest' && stackHref !== undefined ? stackControls(stack, group, mayAct, stackHref, navigate) : null;
   return (
     <li className="shp-hg">
       <div className="shp-hg__head">
@@ -128,6 +192,8 @@ function Group({
           {TIER_WORDS[group.tier]}
         </Badge>
         <span className="shp-hg__count">{containerCount(group.containers.length)}</span>
+        {updates?.badge ?? null}
+        {updates?.links ?? null}
         {linkToApp && group.app !== null ? (
           <span className="shp-hg__link">
             <Link asChild>
@@ -139,6 +205,8 @@ function Group({
           </span>
         ) : null}
         {mayAct && group.project !== null ? <RestartStack group={group} name={name} /> : null}
+        {updates?.update ?? null}
+        {updates?.note ?? null}
       </div>
       {open ? (
         <ul id={listId} className="shp-hg__rows" aria-label={`${name} containers`}>
@@ -151,14 +219,26 @@ function Group({
   );
 }
 
+/** The adopted stack a group is, by the name its containers carry, else by its compose project. */
+export function stackForGroup(group: ContainerGroup, stacks: ReadonlyMap<string, StackView> | undefined): StackView | undefined {
+  if (stacks === undefined || group.tier !== 'operated') return undefined;
+  const named = group.app === null ? undefined : stacks.get(group.app);
+  return named ?? [...stacks.values()].find((s) => s.composeProject === group.project);
+}
+
 export function ContainerGroups({
   groups,
   samples,
   hrefFor,
+  stacks,
+  stackHref,
 }: {
   groups: readonly ContainerGroup[];
   samples: HostSnapshot['samples'];
   hrefFor: ContainerHref;
+  /** Adopted stacks by name (SHP-T-16.6); absent or empty on a server without stack updates. */
+  stacks?: ReadonlyMap<string, StackView>;
+  stackHref?: StackHref;
 }) {
   const mayAct = canAct(useMe()?.role);
   // The defaults follow the data; a person's own toggle wins for as long as the page is open.
@@ -176,6 +256,8 @@ export function ContainerGroups({
             samples={samples}
             hrefFor={hrefFor}
             mayAct={mayAct}
+            stack={stackForGroup(group, stacks)}
+            stackHref={stackHref}
             onToggle={() => {
               setToggled((prev) => ({ ...prev, [group.key]: !open }));
             }}

@@ -1,9 +1,10 @@
-import type { ActionStatus } from '@shipyard/schema';
+import type { ActionStatus, StackUpdateStatus } from '@shipyard/schema';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { actions } from '../../lib/actions';
 import { RefusalError, unreachableRefusal } from '../../lib/api';
 import { builds, type BuildSummary } from '../../lib/builds';
 import { schedules, type ScheduleList } from '../../lib/schedules';
+import { stacks } from '../../lib/stacks';
 import { fetchTimeline, type TimelineItem } from '../../lib/timeline';
 import {
   actionMatches,
@@ -13,6 +14,7 @@ import {
   scheduleAt,
   scheduleMatches,
   sourcesFor,
+  stackUpdateMatches,
   timelineFilters,
   type ActivityFilters,
   type FeedEntry,
@@ -20,7 +22,7 @@ import {
 
 /**
  * Activity's data (SHP-T-13.13): the stored sources — the deploy timeline, builds, schedules and,
- * since SHP-T-15.7, lifecycle actions — read through their own endpoints and merged into one feed.
+ * since SHP-T-15.7, lifecycle actions and, since SHP-T-16.6, stack updates — read through their own endpoints and merged into one feed.
  * The timeline, builds and actions page by cursor; schedules come whole (upcoming plus the fifty most recent past). A feed built
  * from pages must not show a row newer than a source's oldest loaded one when that source has more
  * to give, or "Load more" would insert rows above ones already read: so the feed is cut at the
@@ -61,6 +63,7 @@ export function useFeed(filters: ActivityFilters): Feed {
   const [timeline, setTimeline] = useState<Paged<TimelineItem>>({ items: [], nextCursor: null });
   const [buildPage, setBuildPage] = useState<Paged<BuildSummary>>({ items: [], nextCursor: null });
   const [actionPage, setActionPage] = useState<Paged<ActionStatus>>({ items: [], nextCursor: null });
+  const [stackPage, setStackPage] = useState<Paged<StackUpdateStatus>>({ items: [], nextCursor: null });
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<RefusalError | null>(null);
@@ -111,6 +114,7 @@ export function useFeed(filters: ActivityFilters): Feed {
     const wantDeploys = sources.deploys;
     const wantBuilds = sources.builds;
     const wantActions = sources.actions;
+    const wantStacks = sources.stackUpdates;
     setLoading(true);
     setError(null);
     const fromTimeline = wantDeploys ? fetchTimeline({ ...timelineFilters(filters), limit: PAGE_SIZE }) : Promise.resolve({ items: [], nextCursor: null });
@@ -128,12 +132,20 @@ export function useFeed(filters: ActivityFilters): Feed {
           return { items: [], nextCursor: null };
         })
       : Promise.resolve({ items: [], nextCursor: null });
-    Promise.all([fromTimeline, fromBuilds, fromActions])
-      .then(([t, b, a]) => {
+    // And for stack updates (SHP-T-16.6): the point of kind=stack-update, absent from an older server.
+    const fromStacks: Promise<Paged<StackUpdateStatus>> = wantStacks
+      ? stacks.all({ limit: PAGE_SIZE, signal: controller.signal }).catch((e: unknown) => {
+          if (filters.kind === 'stack-update') throw e;
+          return { items: [], nextCursor: null };
+        })
+      : Promise.resolve({ items: [], nextCursor: null });
+    Promise.all([fromTimeline, fromBuilds, fromActions, fromStacks])
+      .then(([t, b, a, su]) => {
         if (controller.signal.aborted) return;
         setTimeline(t);
         setBuildPage(b);
         setActionPage(a);
+        setStackPage(su);
         setLoading(false);
       })
       .catch((e: unknown) => {
@@ -152,7 +164,8 @@ export function useFeed(filters: ActivityFilters): Feed {
     const wantTimeline = timeline.nextCursor !== null;
     const wantBuilds = buildPage.nextCursor !== null;
     const wantActions = actionPage.nextCursor !== null;
-    if (!wantTimeline && !wantBuilds && !wantActions) return;
+    const wantStacks = stackPage.nextCursor !== null;
+    if (!wantTimeline && !wantBuilds && !wantActions && !wantStacks) return;
     setLoadingMore(true);
     const t =
       timeline.nextCursor !== null
@@ -163,17 +176,19 @@ export function useFeed(filters: ActivityFilters): Feed {
         ? builds.list({ ...(filters.app !== undefined ? { app: filters.app } : {}), limit: PAGE_SIZE, cursor: buildPage.nextCursor })
         : Promise.resolve(null);
     const a = actionPage.nextCursor !== null ? actions.list({ limit: PAGE_SIZE, cursor: actionPage.nextCursor }) : Promise.resolve(null);
-    Promise.all([t, b, a])
-      .then(([tp, bp, ap]) => {
+    const su = stackPage.nextCursor !== null ? stacks.all({ limit: PAGE_SIZE, cursor: stackPage.nextCursor }) : Promise.resolve(null);
+    Promise.all([t, b, a, su])
+      .then(([tp, bp, ap, sp]) => {
         if (tp !== null) setTimeline((prev) => ({ items: [...prev.items, ...tp.items], nextCursor: tp.nextCursor }));
         if (bp !== null) setBuildPage((prev) => ({ items: [...prev.items, ...bp.items], nextCursor: bp.nextCursor }));
         if (ap !== null) setActionPage((prev) => ({ items: [...prev.items, ...ap.items], nextCursor: ap.nextCursor }));
+        if (sp !== null) setStackPage((prev) => ({ items: [...prev.items, ...sp.items], nextCursor: sp.nextCursor }));
       })
       .catch(() => undefined)
       .finally(() => {
         setLoadingMore(false);
       });
-  }, [loadingMore, timeline.nextCursor, buildPage.nextCursor, actionPage.nextCursor, filterKey]);
+  }, [loadingMore, timeline.nextCursor, buildPage.nextCursor, actionPage.nextCursor, stackPage.nextCursor, filterKey]);
 
   const { entries, hasMore } = useMemo(() => {
     const dedupe = new Set<string>();
@@ -197,6 +212,9 @@ export function useFeed(filters: ActivityFilters): Feed {
       ...actionPage.items
         .filter((action) => actionMatches(action, filters))
         .map((action): FeedEntry => ({ type: 'action', key: `action:${action.id}`, at: action.createdAt, action })),
+      ...stackPage.items
+        .filter((update) => stackUpdateMatches(update, filters))
+        .map((update): FeedEntry => ({ type: 'stack-update', key: `stack-update:${update.id}`, at: update.createdAt, update })),
     ].sort(byTimeDesc);
 
     // The cut: the newest of the oldest loaded times among sources that still have more pages.
@@ -205,13 +223,14 @@ export function useFeed(filters: ActivityFilters): Feed {
     if (timeline.nextCursor !== null && timeline.items.length > 0) cuts.push(oldest(timeline.items.map((i) => i.createdAt)));
     if (buildPage.nextCursor !== null && buildPage.items.length > 0) cuts.push(oldest(buildPage.items.map((b) => b.createdAt)));
     if (actionPage.nextCursor !== null && actionPage.items.length > 0) cuts.push(oldest(actionPage.items.map((a) => a.createdAt)));
+    if (stackPage.nextCursor !== null && stackPage.items.length > 0) cuts.push(oldest(stackPage.items.map((u) => u.createdAt)));
     const cut = cuts.length === 0 ? -Infinity : Math.max(...cuts);
     const visible = rows.filter((r) => Date.parse(r.at) >= cut);
     return {
       entries: groupRollouts(visible),
-      hasMore: timeline.nextCursor !== null || buildPage.nextCursor !== null || actionPage.nextCursor !== null,
+      hasMore: timeline.nextCursor !== null || buildPage.nextCursor !== null || actionPage.nextCursor !== null || stackPage.nextCursor !== null,
     };
-  }, [timeline, buildPage, actionPage, scheduleList, filterKey]);
+  }, [timeline, buildPage, actionPage, stackPage, scheduleList, filterKey]);
 
   return { loading, error, entries, hasMore, loadingMore, loadMore, scheduleList, scheduleError, reloadSchedules, anyBuilds };
 }

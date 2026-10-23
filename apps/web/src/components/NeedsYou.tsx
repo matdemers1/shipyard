@@ -1,13 +1,15 @@
 import { Alert, Button, Card, FormActions, Link, Modal, ModalClose, Section } from '@d3cloud/ui';
 import type { SystemStatus } from '@shipyard/schema';
-import { CircleX, GitCompareArrows, KeyRound, ServerCrash, UserCheck } from 'lucide-react';
+import type { StackUpdateStatus } from '@shipyard/schema';
+import { CircleX, GitCompareArrows, KeyRound, Layers, ServerCrash, UserCheck } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { RefusalError, request } from '../lib/api';
 import { newestWithRun, sha7 } from '../lib/appstatus';
 import type { HomeApp, PendingApproval } from '../lib/home';
 import type { NeedsYouItem } from '../lib/needsyou';
-import { STATUS_WORDS, VERBS, approveVerb } from '../lib/words';
+import { requestedChange, stackUpdateStateWords, stacks as stackApi, type StackNeeds, type StackView } from '../lib/stacks';
+import { APPROVE_AND_UPDATE, STATUS_WORDS, VERBS, approveVerb } from '../lib/words';
 import { AdoptLiveButton, RedeployButton } from './DriftBanner';
 import type { SheetAction } from './DryRunSheet';
 import { agoShort } from './pipeline/stages';
@@ -18,7 +20,25 @@ import { agoShort } from './pipeline/stages';
  * run that failed, renew the token in Settings. The rows are `needsYouItems` itself, the function
  * the nav's Apps badge counts, over the same snapshot, so the badge and this list always agree.
  * A viewer sees every row and no state-changing action (SHP-REQ-105).
+ *
+ * A stack update held for approval (SHP-T-16.6, SHP-REQ-199) gets Deny and "Approve and update" in
+ * the same style as a deploy's; a stack whose newest update failed or was rolled back is a warning
+ * row that opens the stack's sheet on Host.
  */
+
+/** "update 17.1.1 → 17.1.2", "update to 17.1.2", "rollback": what a held stack request would do. */
+export function heldStackWords(update: Pick<StackUpdateStatus, 'kind' | 'digests'>, stack: StackView | undefined): string {
+  if (update.kind === 'rollback') return 'rollback';
+  const { from, to } = requestedChange(update, stack);
+  if (to === null) return 'update';
+  return from === null ? `update to ${to}` : `update ${from} → ${to}`;
+}
+
+/** "update rolled back — <message>": a failed or rolled-back stack update, in one line. */
+export function failedStackWords(update: Pick<StackUpdateStatus, 'kind' | 'state' | 'refusal'>): string {
+  const what = `${update.kind === 'rollback' ? 'rollback' : 'update'} ${stackUpdateStateWords(update.state).toLowerCase()}`;
+  return update.refusal === null ? what : `${what} — ${update.refusal.message}`;
+}
 
 type Tone = 'attention' | 'warning' | 'danger';
 
@@ -38,6 +58,10 @@ export interface NeedsYouProps {
   apps: readonly HomeApp[];
   approvals: readonly PendingApproval[];
   system: SystemStatus | null;
+  /** Held and failed stack updates (SHP-T-16.6); absent or null from a server without them. */
+  stackNeeds?: StackNeeds | null;
+  /** The adopted stacks, for the tags a held request moves between. */
+  stacks?: readonly StackView[] | null;
   canAct: boolean;
   /** Opens the dry-run sheet: "Approve and deploy" reviews the approval there. */
   onReview: (action: SheetAction) => void;
@@ -65,6 +89,8 @@ export function NeedsYou({
   apps,
   approvals,
   system,
+  stackNeeds = null,
+  stacks = null,
   canAct,
   onReview,
   onChanged,
@@ -76,6 +102,9 @@ export function NeedsYou({
   const [denying, setDenying] = useState<PendingApproval | null>(null);
   const [busy, setBusy] = useState(false);
   const [denyError, setDenyError] = useState<RefusalError | null>(null);
+  const [denyingStack, setDenyingStack] = useState<StackUpdateStatus | null>(null);
+  const [stackBusy, setStackBusy] = useState<string | null>(null);
+  const [stackError, setStackError] = useState<RefusalError | null>(null);
 
   if (items.length === 0) {
     return (
@@ -96,6 +125,23 @@ export function NeedsYou({
       setDenyError(err instanceof RefusalError ? err : null);
     } finally {
       setBusy(false);
+    }
+  };
+
+  /** Approve or deny a held stack update; a refusal is shown above the list, verbatim. */
+  const decideStack = async (update: StackUpdateStatus, decision: 'approve' | 'deny'): Promise<void> => {
+    setStackBusy(update.id);
+    setStackError(null);
+    try {
+      await (decision === 'approve' ? stackApi.approve(update.id) : stackApi.deny(update.id));
+      setDenyingStack(null);
+      onChanged();
+    } catch (err) {
+      const error = err instanceof RefusalError ? err : null;
+      setStackError(error);
+      if (decision === 'deny') setDenyError(error);
+    } finally {
+      setStackBusy(null);
     }
   };
 
@@ -138,6 +184,65 @@ export function NeedsYou({
                 </Button>
               </>
             ) : null,
+        };
+      }
+      case 'stack-approval': {
+        const held = stackNeeds?.approvals.find((u) => u.id === item.updateId);
+        const stack = stacks?.find((st) => st.name === item.stack);
+        return {
+          key: `stack-approval-${item.updateId}`,
+          tone: 'warning',
+          icon: <UserCheck />,
+          app: item.stack,
+          what: held === undefined ? 'update waiting for approval' : `${heldStackWords(held, stack)} · asked by ${held.requesterLabel}`,
+          at: held?.createdAt ?? null,
+          actions:
+            canAct && held !== undefined ? (
+              <>
+                <Button
+                  type="button"
+                  variant="danger-ghost"
+                  size="sm"
+                  disabled={stackBusy !== null}
+                  onClick={() => {
+                    setDenyError(null);
+                    setDenyingStack(held);
+                  }}
+                >
+                  {VERBS.deny} <span className="shp-visually-hidden">the {item.stack} update</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  loading={stackBusy === held.id}
+                  disabled={stackBusy !== null && stackBusy !== held.id}
+                  onClick={() => {
+                    void decideStack(held, 'approve');
+                  }}
+                >
+                  {APPROVE_AND_UPDATE} <span className="shp-visually-hidden">{item.stack}</span>
+                </Button>
+              </>
+            ) : null,
+        };
+      }
+      case 'stack-failed': {
+        const failed = stackNeeds?.failed.find((u) => u.id === item.updateId);
+        return {
+          key: `stack-failed-${item.updateId}`,
+          tone: failed?.state === 'failed' ? 'danger' : 'warning',
+          icon: <Layers />,
+          app: item.stack,
+          what: failed === undefined ? 'update did not finish' : failedStackWords(failed),
+          at: failed?.endedAt ?? failed?.createdAt ?? null,
+          actions: (
+            <Link asChild className="shp-row-link">
+              <RouterLink to={`/host?stack=${encodeURIComponent(item.stack)}`} aria-label={`Open ${item.stack} on Host`}>
+                Open stack
+              </RouterLink>
+            </Link>
+          ),
         };
       }
       case 'drift': {
@@ -214,6 +319,11 @@ export function NeedsYou({
 
   return (
     <Section title={`Needs you (${String(items.length)})`} surface="plain">
+      {stackError !== null && denyingStack === null ? (
+        <Alert tone="danger" title={stackError.message} dynamic>
+          {stackError.fix}
+        </Alert>
+      ) : null}
       <Card padding="sm">
         <ul className="shp-needs" aria-label="Needs you">
           {rows.map((row) => (
@@ -260,6 +370,40 @@ export function NeedsYou({
         }
       >
         {denyError !== null ? (
+          <Alert tone="danger" title={denyError.message} dynamic>
+            {denyError.fix}
+          </Alert>
+        ) : null}
+      </Modal>
+      <Modal
+        open={denyingStack !== null}
+        onOpenChange={(open) => {
+          if (!open) setDenyingStack(null);
+        }}
+        title={denyingStack === null ? `${VERBS.deny} update` : `${VERBS.deny} the ${denyingStack.stack} ${denyingStack.kind === 'rollback' ? 'rollback' : 'update'}`}
+        description="It will not run. It can be requested again later."
+        destructive
+        footer={
+          <FormActions>
+            <ModalClose>
+              <Button type="button" variant="secondary">
+                Cancel
+              </Button>
+            </ModalClose>
+            <Button
+              type="button"
+              variant="danger"
+              loading={stackBusy !== null}
+              onClick={() => {
+                if (denyingStack !== null) void decideStack(denyingStack, 'deny');
+              }}
+            >
+              {VERBS.deny}
+            </Button>
+          </FormActions>
+        }
+      >
+        {denyError !== null && denyingStack !== null ? (
           <Alert tone="danger" title={denyError.message} dynamic>
             {denyError.fix}
           </Alert>

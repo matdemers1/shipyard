@@ -12,7 +12,7 @@ import { useFeed } from './activity/useFeed';
 /**
  * Activity (SHP-T-13.13, SHP-REQ-164, SHP-ADR-006): the one place for what has happened and what is
  * coming — deploys, rollbacks, refusals, schedules, Shipyard builds and (SHP-T-15.7) lifecycle
- * actions on an app or stack as a single feed grouped by
+ * actions on an app or stack and (SHP-T-16.6) stack updates as a single feed grouped by
  * day, upcoming schedules pinned on top, a "Deploy all ready" rollout as one expandable row. Every
  * filter lives in the address (`?app=&kind=&outcome=&requester=`), so a view can be linked, and the
  * old Timeline, Builds and Schedules routes land here with their kind already set.
@@ -94,7 +94,7 @@ export function Activity() {
       <Stack gap="24">
         <PageHeader
           title="Activity"
-          description="Every deploy, rollback, refusal, schedule, Shipyard build and container action, newest first."
+          description="Every deploy, rollback, refusal, schedule, Shipyard build, container action and stack update, newest first."
           {...(can ? { actions: <ScheduleSheet apps={appNames} onScheduled={feed.reloadSchedules} /> } : {})}
         />
 
@@ -188,7 +188,7 @@ export function Activity() {
             </EmptyState>
           ) : (
             <EmptyState kind="empty" heading="No activity yet" headingLevel={2}>
-              A deploy, rollback, refusal, schedule, build or container action will show up here.
+              A deploy, rollback, refusal, schedule, build, container action or stack update will show up here.
             </EmptyState>
           )
         ) : (

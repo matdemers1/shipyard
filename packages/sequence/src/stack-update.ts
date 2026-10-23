@@ -76,6 +76,13 @@ export interface StackUpdateContext {
    * running). A held deploy lock is seen through the lock itself; this is the in-process extra.
    */
   busy?: (stack: string) => boolean | Promise<boolean>;
+  /**
+   * Backs up the stack's volumes inside the update, after its own backup step and before the pull,
+   * when its manifest says `volumeBackups.beforeUpdate` (SHP-ADR-012, SHP-REQ-201). Returns a
+   * refusal when a backup failed, which fails the update before anything changed. The agent wires
+   * it to `backupVolumesBeforeUpdate`; absent, such a stack's update fails closed.
+   */
+  backupVolumes?: (stack: string, updateId: string) => Promise<Refusal | null>;
   /** How long `check` (and a rollback's confirmation) may wait. Default 120 s. */
   healthTimeoutMs?: number;
   /** Poll interval during `check`. Default 2 s. */
@@ -533,6 +540,23 @@ async function updateLocked(
       await journal.end(entry('backup', { detail: { refused: why.code } }));
       return failed(why);
     }
+  }
+
+  // ─── volume backups (SHP-ADR-012: volumeBackups.beforeUpdate) ─────────────
+  if (job.kind === 'update' && stack.volumeBackups?.beforeUpdate === true) {
+    await enter('backing_up', 'volume backup');
+    await journal.begin(entry('volume-backup'));
+    let why: Refusal | null;
+    try {
+      why =
+        ctx.backupVolumes === undefined
+          ? refusal('backup_failed', 'This stack backs its volumes up before an update, and this agent cannot take volume backups; nothing was changed.')
+          : await ctx.backupVolumes(job.stack, job.updateId);
+    } catch (err) {
+      why = refusal('backup_failed', `The volume backup failed: ${message(err)}`);
+    }
+    await journal.end(entry('volume-backup', { detail: why === null ? { ok: true } : { refused: why.code } }));
+    if (why !== null) return failed(why.code === 'backup_failed' ? why : refusal('backup_failed', `The volume backup before the update failed: ${why.message}`));
   }
 
   // ─── pull ──────────────────────────────────────────────────────────────────

@@ -589,3 +589,41 @@ describe('parsers', () => {
     expect(demuxDockerStream(buf)).toEqual({ stdout: 'ab', stderr: 'x' });
   });
 });
+
+describe('maintenance reads and the CLI seam (SHP-T-17.2)', () => {
+  it('dockerCli runs `docker <argv>` with no shell, DOCKER_HOST and the timeout', async () => {
+    const { calls, execFile } = recordingExec();
+    const adapter = createDockerAdapter({ docker: fakeDocker().docker, execFile, dockerHost: 'tcp://127.0.0.1:2375', env: { PATH: '/usr/bin' } });
+    await adapter.dockerCli(['volume', 'rm', 'orphan'], { timeoutMs: 1000 });
+    expect(calls[0]?.file).toBe('docker');
+    expect(calls[0]?.args).toEqual(['volume', 'rm', 'orphan']);
+    expect(calls[0]?.options.env.DOCKER_HOST).toBe('tcp://127.0.0.1:2375');
+    expect(calls[0]?.options.timeoutMs).toBe(1000);
+  });
+
+  it("containerImageId reads the container's Image, null on a 404", async () => {
+    const make = (inspect: () => Promise<unknown>) => ({ getContainer: () => ({ inspect }) }) as unknown as Dockerode;
+    await expect(createDockerAdapter({ docker: make(() => Promise.resolve({ Image: `sha256:${'a'.repeat(64)}` })) }).containerImageId('self')).resolves.toBe(`sha256:${'a'.repeat(64)}`);
+    await expect(createDockerAdapter({ docker: make(() => Promise.reject(Object.assign(new Error('gone'), { statusCode: 404 }))) }).containerImageId('self')).resolves.toBeNull();
+    await expect(createDockerAdapter({ docker: make(() => Promise.reject(Object.assign(new Error('x'), { statusCode: 500 }))) }).containerImageId('self')).rejects.toThrow();
+  });
+
+  it('buildCacheRecords maps /system/df BuildCache, never its description', async () => {
+    const docker = {
+      df: () =>
+        Promise.resolve({
+          BuildCache: [
+            { ID: 'abc123', Size: 42, CreatedAt: '2026-10-01T00:00:00Z', LastUsedAt: null, InUse: false, Description: 'RUN echo secret' },
+            { ID: 'def456', Size: -1, CreatedAt: '0001-01-01T00:00:00Z', LastUsedAt: '2026-10-02T00:00:00Z', InUse: true },
+            { Size: 1 },
+          ],
+        }),
+    } as unknown as Dockerode;
+    const records = await createDockerAdapter({ docker }).buildCacheRecords();
+    expect(records).toEqual([
+      { id: 'abc123', sizeBytes: 42, createdAt: '2026-10-01T00:00:00.000Z', lastUsedAt: null, inUse: false },
+      { id: 'def456', sizeBytes: 0, createdAt: null, lastUsedAt: '2026-10-02T00:00:00.000Z', inUse: true },
+    ]);
+    expect(JSON.stringify(records)).not.toContain('secret');
+  });
+});

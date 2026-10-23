@@ -104,6 +104,7 @@ model User {
   auditEvents      AuditEvent[] @relation("AuditActorUser")
   invitesSent      Invite[]     @relation("InviteBy")
   buildsRequested  Build[]      @relation("BuildRequesterUser")
+  actionsRequested Action[]     @relation("ActionRequesterUser")
 
   @@map("user")
 }
@@ -177,6 +178,8 @@ model ApiToken {
   lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(3)
   lastUsedIp String?   @map("last_used_ip")
   revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(3)
+  /// May this token read container logs (SHP-ADR-011, SHP-REQ-193)? Off unless asked for at creation.
+  canReadLogs Boolean  @default(false) @map("can_read_logs")
 
   user User          @relation(fields: [userId], references: [id])
   apps ApiTokenApp[]
@@ -184,6 +187,7 @@ model ApiToken {
   deploysRequested Deploy[]     @relation("DeployRequesterToken")
   auditEvents      AuditEvent[] @relation("AuditActorToken")
   buildsRequested  Build[]      @relation("BuildRequesterToken")
+  actionsRequested Action[]     @relation("ActionRequesterToken")
 
   @@map("api_token")
 }
@@ -221,6 +225,8 @@ model Agent {
   auditEvents     AuditEvent[]  @relation("AuditActorAgent")
   hostSnapshot    HostSnapshot?
   hostSamples     HostSample[]
+  stacks          Stack[]
+  actions         Action[]
 
   @@map("agent")
 }
@@ -296,6 +302,86 @@ model App {
   builds          Build[]
 
   @@map("app")
+}
+
+// ─── Stacks (read-only mirror written only by agent reports) ──────────────
+
+/// A third-party compose stack adopted under `<data root>/stacks/` (SHP-ADR-010), as the agent last
+/// reported it. Like `app`, written only by the report handler (`src/apps/report.ts`) and never
+/// deleted: a stack the agent stops naming is retired. Only lifecycle actions apply to a stack.
+model Stack {
+  id             String    @id @default(uuid()) @db.Uuid
+  name           String    @unique
+  agentId        String    @map("agent_id") @db.Uuid
+  /// The `StackManifest` as canonical JSON (sorted keys), like `app.manifest_yaml`.
+  manifestJson   String    @map("manifest_json")
+  manifestSha256 String    @map("manifest_sha256")
+  composeProject String    @map("compose_project")
+  reportedAt     DateTime  @map("reported_at") @db.Timestamptz(3)
+  retiredAt      DateTime? @map("retired_at") @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@map("stack")
+}
+
+// ─── Lifecycle actions (SHP-ADR-010) ───────────────────────────────────────
+
+enum ActionTargetKind {
+  app
+  stack
+}
+
+enum LifecycleVerb {
+  start
+  stop
+  restart
+  recreate
+}
+
+/// Mirrors `@shipyard/schema`'s ActionState value for value.
+enum ActionState {
+  queued
+  dispatched
+  running
+  succeeded
+  failed
+  refused
+  cancelled
+}
+
+/// A start, stop, restart or recreate of a Deployed app or an Operated stack, or one of its
+/// services (SHP-REQ-184). Queued by POST /api/actions, handed to the owning agent's poll when it
+/// advertises `actions`, and finished by the agent's result. Shown in Activity.
+model Action {
+  id               String           @id @default(uuid()) @db.Uuid
+  targetKind       ActionTargetKind @map("target_kind")
+  targetName       String           @map("target_name")
+  /// The agent that owns the target when the action was requested: only its poll is handed it.
+  agentId          String           @map("agent_id") @db.Uuid
+  service          String?
+  verb             LifecycleVerb
+  state            ActionState      @default(queued)
+  requesterUserId  String?          @map("requester_user_id") @db.Uuid
+  requesterTokenId String?          @map("requester_token_id") @db.Uuid
+  requesterLabel   String           @map("requester_label")
+  /// Compose's output, redacted on the agent and capped at 16 KiB.
+  output           String?
+  refusal          Json?
+  dispatchedAt     DateTime?        @map("dispatched_at") @db.Timestamptz(3)
+  startedAt        DateTime?        @map("started_at") @db.Timestamptz(3)
+  endedAt          DateTime?        @map("ended_at") @db.Timestamptz(3)
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  agent          Agent     @relation(fields: [agentId], references: [id])
+  requesterUser  User?     @relation("ActionRequesterUser", fields: [requesterUserId], references: [id])
+  requesterToken ApiToken? @relation("ActionRequesterToken", fields: [requesterTokenId], references: [id])
+
+  @@index([agentId, state, createdAt])
+  @@index([createdAt, id])
+  @@map("action")
 }
 
 // ─── Deploys, targets, images, steps ───────────────────────────────────────

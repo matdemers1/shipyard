@@ -20,6 +20,8 @@ interface TokenSummary {
   label: string;
   prefix: string;
   apps: string[];
+  /** May it read container logs (SHP-ADR-011)? */
+  canReadLogs: boolean;
   createdAt: string;
   lastUsedAt: string | null;
   lastUsedIp: string | null;
@@ -31,6 +33,7 @@ const SUMMARY_SELECT = {
   userId: true,
   label: true,
   prefix: true,
+  canReadLogs: true,
   createdAt: true,
   lastUsedAt: true,
   lastUsedIp: true,
@@ -43,6 +46,7 @@ function summarise(row: {
   userId: string;
   label: string;
   prefix: string;
+  canReadLogs: boolean;
   createdAt: Date;
   lastUsedAt: Date | null;
   lastUsedIp: string | null;
@@ -55,6 +59,7 @@ function summarise(row: {
     label: row.label,
     prefix: row.prefix,
     apps: row.apps.map((a) => a.app.name).sort(),
+    canReadLogs: row.canReadLogs,
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     lastUsedIp: row.lastUsedIp,
@@ -106,6 +111,12 @@ export function tokensRouter(deps: ServiceDeps): Router {
       return;
     }
     const label = parsed.data.label;
+    const canReadLogs = parsed.data.canReadLogs === true;
+    // A token never reads more than its owner could: only an admin or operator reads logs (SHP-ADR-011).
+    if (canReadLogs && req.role !== 'admin' && req.role !== 'operator') {
+      sendRefusal(res, refusal('forbidden', 'Only an admin or operator can issue a token that reads container logs.', 'Leave "can read logs" off, or ask an admin.'));
+      return;
+    }
     const names = [...new Set(parsed.data.apps)].sort();
     const apps = await db.app.findMany({ where: { name: { in: names }, retiredAt: null }, select: { id: true, name: true } });
     const known = new Set(apps.map((a) => a.name));
@@ -122,6 +133,7 @@ export function tokensRouter(deps: ServiceDeps): Router {
         label,
         tokenHash: hash,
         prefix,
+        canReadLogs,
         apps: { create: apps.map((a) => ({ appId: a.id })) },
       },
       select: { id: true },
@@ -130,7 +142,7 @@ export function tokensRouter(deps: ServiceDeps): Router {
       action: 'token.created',
       entityType: 'api_token',
       entityId: row.id,
-      after: { label, prefix, apps: names },
+      after: { label, prefix, apps: names, ...(canReadLogs ? { canReadLogs } : {}) },
     });
     const body: TokenCreated = { id: row.id, label, prefix, apps: names, token };
     res.status(201).json(body);

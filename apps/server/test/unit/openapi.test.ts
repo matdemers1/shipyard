@@ -57,6 +57,27 @@ describe('buildOpenApiDocument', () => {
     expect(JSON.stringify(host?.['get']?.responses?.['200'])).toContain('#/components/schemas/HostResponse');
   });
 
+  it('documents every lifecycle action and logs endpoint (SHP-T-15.4)', () => {
+    const doc = buildOpenApiDocument() as ValidatableDoc;
+    const paths = doc.paths ?? {};
+    const ops = (path: string): Record<string, { operationId?: string; requestBody?: unknown; responses?: Record<string, unknown> }> =>
+      (paths[path] ?? {}) as Record<string, { operationId?: string; requestBody?: unknown; responses?: Record<string, unknown> }>;
+    expect(Object.keys(ops('/actions')).sort()).toEqual(['get', 'post']);
+    expect(ops('/actions')['post']?.operationId).toBe('postAction');
+    expect(JSON.stringify(ops('/actions')['post']?.requestBody)).toContain('#/components/schemas/ActionRequest');
+    expect(JSON.stringify(ops('/actions')['post']?.responses?.['202'])).toContain('#/components/schemas/ActionStatus');
+    expect(JSON.stringify(ops('/actions')['get']?.responses?.['200'])).toContain('#/components/schemas/ActionPage');
+    expect(Object.keys(ops('/actions/{id}'))).toEqual(['get']);
+    expect(JSON.stringify(ops('/logs')['post']?.requestBody)).toContain('#/components/schemas/LogsRequest');
+    expect(JSON.stringify(ops('/logs')['post']?.responses?.['201'])).toContain('#/components/schemas/LogsSession');
+    expect(JSON.stringify(ops('/logs/{id}/stream')['get']?.responses?.['200'])).toContain('text/event-stream');
+    expect(Object.keys(ops('/logs/{id}'))).toEqual(['delete']);
+    expect(JSON.stringify(ops('/agent/actions/{id}/progress')['post']?.requestBody)).toContain('#/components/schemas/ActionProgress');
+    expect(JSON.stringify(ops('/agent/actions/{id}/result')['post']?.requestBody)).toContain('#/components/schemas/ActionResult');
+    expect(JSON.stringify(ops('/agent/logs/{id}/chunks')['post']?.requestBody)).toContain('#/components/schemas/LogsChunk');
+    expect(JSON.stringify(ops('/agent/logs/{id}/chunks')['post']?.responses?.['200'])).toContain('#/components/schemas/LogsChunkAck');
+  });
+
   it('every $ref resolves to a component schema key', () => {
     const doc = buildOpenApiDocument() as ValidatableDoc;
     const schemas = doc.components?.schemas ?? {};

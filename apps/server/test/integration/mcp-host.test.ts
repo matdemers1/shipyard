@@ -12,6 +12,7 @@ import { loadConfig } from '../../src/config.js';
 import { createDb, type Db } from '../../src/db.js';
 import { Bus } from '../../src/events.js';
 import { storeHostInventory } from '../../src/host/index.js';
+import { MCP_HOST_SAMPLES_PER_CONTAINER } from '../../src/mcp/tools.js';
 import { generateToken } from '../../src/tokens/tokens.js';
 
 /**
@@ -207,6 +208,19 @@ describe('shipyard_host', () => {
     ]);
     // The text content is the same JSON the structured content carries.
     expect(JSON.parse(result.content[0]?.text ?? '')).toEqual(result.structuredContent);
+  });
+
+  it('sends only the newest MCP_HOST_SAMPLES_PER_CONTAINER samples per container, oldest first', async () => {
+    await storeHostInventory(db, agentId, INVENTORY);
+    const start = Date.now() - 30 * 60_000;
+    await db.hostSample.createMany({
+      data: Array.from({ length: 20 }, (_, i) => ({ agentId, containerName: 'busy', at: new Date(start + i * 60_000), cpuPercent: i, memoryBytes: BigInt(i) })),
+    });
+    const client = await connect(await tokenFor('a', ['other']));
+    const body = HostResponse.parse((await call(client, 'shipyard_host', {})).structuredContent);
+    const busy = body.hosts[0]?.samples['busy'] ?? [];
+    expect(busy).toHaveLength(MCP_HOST_SAMPLES_PER_CONTAINER);
+    expect(busy.map((s) => s.cpuPercent)).toEqual(Array.from({ length: MCP_HOST_SAMPLES_PER_CONTAINER }, (_, i) => 20 - MCP_HOST_SAMPLES_PER_CONTAINER + i));
   });
 
   it('also serves a token that is scoped to no app at all', async () => {

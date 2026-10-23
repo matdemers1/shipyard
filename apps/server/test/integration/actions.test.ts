@@ -167,6 +167,38 @@ describe('POST /api/actions', () => {
     expect(err(onStack).code).toBe('forbidden');
   });
 
+  it('a token scoped to an adopted stack acts on it, sees its actions, and nothing else (SHP-T-15.4)', async () => {
+    await poll(app, key, ['actions']);
+    const { cookie } = await signIn(db, 'deployer');
+    const created = await request(app).post('/api/tokens').set('Cookie', cookie).send({ label: 'stack', apps: ['pg-stack'] });
+    expect(created.status).toBe(201);
+    expect((created.body as { apps: string[] }).apps).toEqual(['pg-stack']);
+    const token = (created.body as { token: string }).token;
+    const listed = await request(app).get('/api/tokens').set('Cookie', cookie);
+    expect((listed.body as { apps: string[] }[])[0]?.apps).toEqual(['pg-stack']);
+
+    const onStack = await actWithToken(token, { target: { kind: 'stack', name: 'pg-stack' }, verb: 'restart' });
+    expect(onStack.status).toBe(202);
+    const onApp = await actWithToken(token, { target: { kind: 'app', name: 'web' }, verb: 'restart' });
+    expect(err(onApp).code).toBe('forbidden');
+    // The scope is read by kind: the stack's name as an app target is not covered.
+    const wrongKind = await actWithToken(token, { target: { kind: 'app', name: 'pg-stack' }, verb: 'restart' });
+    expect(err(wrongKind).code).toBe('forbidden');
+
+    const fromConsole = await act(cookie, { target: { kind: 'app', name: 'web' }, verb: 'restart' });
+    const list = await request(app).get('/api/actions').set('Authorization', `Bearer ${token}`);
+    expect((list.body as ActionPage).items.map((i) => i.id)).toEqual([(onStack.body as ActionStatus).id]);
+    const own = await request(app).get(`/api/actions/${(onStack.body as ActionStatus).id}`).set('Authorization', `Bearer ${token}`);
+    expect(own.status).toBe(200);
+    const other = await request(app).get(`/api/actions/${(fromConsole.body as ActionStatus).id}`).set('Authorization', `Bearer ${token}`);
+    expect(other.status).toBe(403);
+
+    // A token naming neither an app nor a stack is refused at creation.
+    const ghost = await request(app).post('/api/tokens').set('Cookie', cookie).send({ label: 'ghost', apps: ['ghost'] });
+    expect(ghost.status).toBe(404);
+    expect(err(ghost).code).toBe('unknown_app');
+  });
+
   it('refuses an unknown target (unknown_app), and names the right kind when it is the other one', async () => {
     await poll(app, key, ['actions']);
     const { cookie } = await signIn(db, 'deployer');

@@ -103,8 +103,22 @@ export function actionRequesterLabel(actor: { type: string; label: string }, req
   return label.slice(0, REQUESTER_LABEL_MAX);
 }
 
-/** Null when the caller may request a lifecycle action of `verb` on `name`; otherwise the refusal. */
-export function actionPermissionRefusal(caller: Pick<DeployCaller, 'actor' | 'role' | 'tokenApps'>, verb: ActionRequest['verb'], name: string): Refusal | null {
+/**
+ * Whether a token's scope names this target: an app through its apps, an adopted stack through its
+ * stacks. A stack never shares an app's name (the report refuses one that would), so a scope name
+ * is unambiguous; checking the kind as well keeps it so even if a name were reused later.
+ */
+export function tokenScopeCovers(caller: Pick<DeployCaller, 'tokenApps' | 'tokenStacks'>, target: ActionRequest['target']): boolean {
+  return target.kind === 'app' ? caller.tokenApps?.has(target.name) === true : caller.tokenStacks?.has(target.name) === true;
+}
+
+/** Null when the caller may request a lifecycle action of `verb` on `target`; otherwise the refusal. */
+export function actionPermissionRefusal(
+  caller: Pick<DeployCaller, 'actor' | 'role' | 'tokenApps' | 'tokenStacks'>,
+  verb: ActionRequest['verb'],
+  target: ActionRequest['target'],
+): Refusal | null {
+  const name = target.name;
   const actor = caller.actor;
   if (actor === undefined) return refusal('unauthenticated', 'You are not signed in.');
   if (actor.type !== 'user' && actor.type !== 'token') return refusal('forbidden', `A ${actor.type} actor cannot run lifecycle actions.`);
@@ -116,7 +130,7 @@ export function actionPermissionRefusal(caller: Pick<DeployCaller, 'actor' | 'ro
   if (actor.type === 'token' && verb === 'stop') {
     return refusal('forbidden', 'An API token cannot stop a service.', 'Stop it from the console.');
   }
-  if (actor.type === 'token' && caller.tokenApps?.has(name) !== true) {
+  if (actor.type === 'token' && !tokenScopeCovers(caller, target)) {
     return refusal('forbidden', `This token is not scoped to ${name}.`, `Use a token issued for ${name}, or issue a new one that names it.`);
   }
   return null;
@@ -158,7 +172,7 @@ async function resolveTarget(db: Db, target: ActionRequest['target']): Promise<R
  */
 export async function requestAction(deps: ServiceDeps, caller: DeployCaller, input: ActionRequest): Promise<ActionStatus | Refusal> {
   const { db, bus } = deps;
-  const denied = actionPermissionRefusal(caller, input.verb, input.target.name);
+  const denied = actionPermissionRefusal(caller, input.verb, input.target);
   if (denied !== null) return denied;
   const actor = caller.actor;
   if (actor === undefined) return refusal('unauthenticated', 'You are not signed in.');
@@ -242,15 +256,22 @@ export async function waitForAction(deps: ServiceDeps, id: string, timeoutMs: nu
 export interface ListActionsOptions {
   limit: number;
   cursor?: string;
-  /** A token's scope: only app targets it names. */
-  apps?: ReadonlySet<string>;
+  /** A token's scope: only the app targets and stack targets it names. Both or neither. */
+  scope?: { apps: ReadonlySet<string>; stacks: ReadonlySet<string> };
 }
 
 /** Actions newest first, a page at a time (Activity's source, `GET /api/actions`). */
 export async function listActions(db: Db, options: ListActionsOptions): Promise<ActionPage> {
   const where: Prisma.ActionWhereInput = {};
   const and: Prisma.ActionWhereInput[] = [];
-  if (options.apps !== undefined) and.push({ targetKind: 'app', targetName: { in: [...options.apps] } });
+  if (options.scope !== undefined) {
+    and.push({
+      OR: [
+        { targetKind: 'app', targetName: { in: [...options.scope.apps] } },
+        { targetKind: 'stack', targetName: { in: [...options.scope.stacks] } },
+      ],
+    });
+  }
   if (options.cursor !== undefined) {
     const cur = decodeCursor(options.cursor);
     if (cur !== null) and.push({ OR: [{ createdAt: { lt: cur.createdAt } }, { createdAt: cur.createdAt, id: { lt: cur.id } }] });

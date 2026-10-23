@@ -181,8 +181,10 @@ model ApiToken {
   /// May this token read container logs (SHP-ADR-011, SHP-REQ-193)? Off unless asked for at creation.
   canReadLogs Boolean  @default(false) @map("can_read_logs")
 
-  user User          @relation(fields: [userId], references: [id])
-  apps ApiTokenApp[]
+  user   User            @relation(fields: [userId], references: [id])
+  apps   ApiTokenApp[]
+  /// Adopted stacks in the token's scope (SHP-ADR-010): a scope names apps and stacks by name.
+  stacks ApiTokenStack[]
 
   deploysRequested Deploy[]     @relation("DeployRequesterToken")
   auditEvents      AuditEvent[] @relation("AuditActorToken")
@@ -201,6 +203,19 @@ model ApiTokenApp {
 
   @@id([tokenId, appId])
   @@map("api_token_app")
+}
+
+/// An adopted stack a token may act on and read logs of (SHP-T-15.4). A stack never shares an
+/// app's name (the report handler refuses one that would), so a scope name is unambiguous.
+model ApiTokenStack {
+  tokenId String @map("token_id") @db.Uuid
+  stackId String @map("stack_id") @db.Uuid
+
+  token ApiToken @relation(fields: [tokenId], references: [id])
+  stack Stack    @relation(fields: [stackId], references: [id])
+
+  @@id([tokenId, stackId])
+  @@map("api_token_stack")
 }
 
 // ─── Agents ─────────────────────────────────────────────────────────────
@@ -321,7 +336,8 @@ model Stack {
   retiredAt      DateTime? @map("retired_at") @db.Timestamptz(3)
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  agent Agent @relation(fields: [agentId], references: [id])
+  agent  Agent           @relation(fields: [agentId], references: [id])
+  tokens ApiTokenStack[]
 
   @@map("stack")
 }

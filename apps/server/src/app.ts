@@ -6,7 +6,7 @@ import type { Logger } from 'pino';
 import type { Config } from './config.js';
 import { auditContext, type AuditContextOptions } from './audit.js';
 import type { Db } from './db.js';
-import { errorHandler, sendRefusal } from './errors.js';
+import { bodyParserError, errorHandler, sendRefusal } from './errors.js';
 import { authenticate, authRouter, OidcSettings, type OidcClient } from './auth/index.js';
 import { agentRouter } from './agent/index.js';
 import { appsRouter } from './apps/index.js';
@@ -103,11 +103,18 @@ export function createApp(deps: AppDeps): Express {
     }
     if (AGENT_LOGS_CHUNK_PATH.test(req.path)) {
       chunkJson(req, res, (err?: unknown) => {
-        if ((err as { type?: unknown } | undefined)?.type === 'entity.too.large') {
+        if (err === undefined || err === null) {
+          next();
+          return;
+        }
+        // Every parser failure is answered here and never logged: body-parser hangs the raw body on
+        // a parse error (`err.body`), and this body is someone's log lines (SHP-REQ-191).
+        const unreadable = bodyParserError(err);
+        if (unreadable?.type === 'entity.too.large') {
           res.status(413).json({ error: refusal('invalid_request', 'The log chunk is larger than 2 MB.', 'Send fewer lines per chunk.') });
           return;
         }
-        next(err);
+        res.status(400).json({ error: refusal('invalid_request', 'The log chunk could not be read as JSON.', 'Send one well-formed LogsChunk per request.') });
       });
       return;
     }

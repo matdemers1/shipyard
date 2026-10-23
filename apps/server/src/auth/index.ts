@@ -195,6 +195,7 @@ export function authenticate(deps: AuthDeps): RequestHandler {
       req.actor = { type: 'token', id: resolved.id, label: `token ${resolved.label}` };
       req.role = resolved.role;
       req.tokenApps = resolved.apps;
+      req.tokenStacks = resolved.stacks;
       next();
       return;
     }

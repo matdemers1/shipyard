@@ -73,6 +73,37 @@ describe('errorHandler', () => {
     expect(body.error.message).not.toContain('sensitive');
   });
 
+  it('answers a body-parser failure with its 4xx and logs only its type and status, never the body (SHP-REQ-191)', () => {
+    const lines: string[] = [];
+    const captured = pino({ level: 'trace' }, { write: (s: string) => { lines.push(s); } });
+    const { res, status, json } = mockRes();
+    const parseError = Object.assign(new Error('Unexpected token S in JSON at position 1'), {
+      type: 'entity.parse.failed',
+      status: 400,
+      statusCode: 400,
+      expose: true,
+      body: '{SECRET_MARKER_PASSWORD',
+    });
+    errorHandler(captured)(parseError, fakeReq, res as unknown as Response, vi.fn());
+    expect(status).toHaveBeenCalledWith(400);
+    expect((json.mock.calls[0]?.[0] as { error: { code: string } }).error.code).toBe('invalid_request');
+    expect(lines.join('')).toContain('entity.parse.failed');
+    expect(lines.join('')).not.toContain('SECRET_MARKER_PASSWORD');
+  });
+
+  it('never logs a body hung on any other error', () => {
+    const lines: string[] = [];
+    const captured = pino({ level: 'trace' }, { write: (s: string) => { lines.push(s); } });
+    const { res, status } = mockRes();
+    const odd = Object.assign(new Error('odd failure'), { code: 'EODD', body: 'SECRET_MARKER_PASSWORD' });
+    errorHandler(captured)(odd, fakeReq, res as unknown as Response, vi.fn());
+    expect(status).toHaveBeenCalledWith(500);
+    const text = lines.join('');
+    expect(text).toContain('odd failure');
+    expect(text).toContain('EODD');
+    expect(text).not.toContain('SECRET_MARKER_PASSWORD');
+  });
+
   it('delegates to next when headers are already sent', () => {
     const { res, status } = mockRes();
     res.headersSent = true;

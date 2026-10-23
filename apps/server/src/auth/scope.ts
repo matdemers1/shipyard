@@ -16,6 +16,8 @@ declare global {
       role?: Role;
       /** For a bearer token, the app names it may act on (SHP-REQ-046). Absent for a user. */
       tokenApps?: ReadonlySet<string>;
+      /** For a bearer token, the adopted stacks it may act on (SHP-T-15.4). Absent for a user. */
+      tokenStacks?: ReadonlySet<string>;
     }
   }
 }

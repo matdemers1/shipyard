@@ -208,3 +208,46 @@ describe('LogsHub', () => {
     expect(logsHubFor(a)).not.toBe(logsHubFor(new Bus()));
   });
 });
+
+describe('LogsHub memory caps (tombstones)', () => {
+  it('counts an ended session still holding unread lines toward the caps until it is read or forgotten', () => {
+    const c = clock();
+    const hub = new LogsHub(c.now);
+    const ids: string[] = [];
+    for (let i = 0; i < LOGS_MAX_PER_VIEWER; i += 1) {
+      const s = openOk(hub);
+      ids.push(s.id);
+      hub.claim(AGENT);
+      // Finished before the viewer attached: its lines are held for them.
+      expect(hub.chunk(AGENT, chunk(s.id, 0, ['held'], true))).toEqual({ continue: false });
+      expect(hub.isLive(s.id)).toBe(false);
+    }
+    expect(hub.open(input())).toMatchObject({ code: 'too_many_attempts' });
+    // Reading one releases what it held.
+    hub.subscribe(ids[0] ?? '', () => undefined);
+    openOk(hub);
+    expect(hub.open(input())).toMatchObject({ code: 'too_many_attempts' });
+    // After the tombstone window the rest are forgotten.
+    c.advance(LOGS_TOMBSTONE_MS + 1);
+    expect(hub.size).toBeGreaterThan(0);
+    hub.sweep();
+    openOk(hub);
+  });
+
+  it('a session the viewer stopped before attaching drops what it held and frees its slot', () => {
+    const hub = new LogsHub();
+    const ids: string[] = [];
+    for (let i = 0; i < LOGS_MAX_PER_VIEWER; i += 1) {
+      const s = openOk(hub, { follow: true });
+      ids.push(s.id);
+      hub.claim(AGENT);
+      hub.chunk(AGENT, chunk(s.id, 0, ['held']));
+    }
+    expect(hub.open(input())).toMatchObject({ code: 'too_many_attempts' });
+    expect(hub.stop(ids[0] ?? '')).toBe(true);
+    const seen: LogsEvent[] = [];
+    hub.subscribe(ids[0] ?? '', (e) => seen.push(e));
+    expect(seen).toEqual([{ type: 'end', reason: 'stopped' }]);
+    openOk(hub);
+  });
+});

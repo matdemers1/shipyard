@@ -1,4 +1,4 @@
-import { LogsRequest, refusal, type LogLine, type LogsSession, type Refusal } from '@shipyard/schema';
+import { LogsRequest, refusal, type HostContainer, type LogLine, type LogsSession, type Refusal } from '@shipyard/schema';
 import { capabilityRefusal } from '../agent/capabilities.js';
 import type { ServiceDeps } from '../deps.js';
 import type { DeployCaller } from '../deploys/service.js';
@@ -11,8 +11,26 @@ import { logsHubFor, type LogsEvent, type LogsSessionInfo, type LogsViewer } fro
  * line of content.
  *
  * Who: an admin or operator signed in; or an API token created with `can_read_logs` whose owner is
- * still an admin or operator — a token never reads more than the person behind it could.
+ * still an admin or operator — a token never reads more than the person behind it could. A token
+ * reads only a Shipped or Operated container whose app or stack its scope names (SHP-ADR-011):
+ * never an Observed one, never another app's.
  */
+
+/** Null when a token's scope covers this container's logs; otherwise the refusal. */
+export function tokenLogsScopeRefusal(caller: Pick<DeployCaller, 'tokenApps' | 'tokenStacks'>, container: HostContainer): Refusal | null {
+  const owner = container.app;
+  const covered =
+    owner !== null &&
+    ((container.tier === 'shipped' && caller.tokenApps?.has(owner) === true) ||
+      (container.tier === 'operated' && caller.tokenStacks?.has(owner) === true));
+  if (covered) return null;
+  const name = owner ?? container.name;
+  return refusal(
+    'forbidden',
+    container.tier === 'observed' ? `A token cannot read the logs of ${container.name}: Shipyard only observes it.` : `This token is not scoped to ${name}.`,
+    `Use the console, or a token scoped to ${name}.`,
+  );
+}
 
 /** Roles that may read container logs in the console. */
 export const LOG_READER_ROLES = ['admin', 'operator'] as const;
@@ -69,6 +87,10 @@ export async function openLogs(deps: ServiceDeps, caller: DeployCaller, input: L
   const found = (await snapshotContainers(deps.db)).find((c) => c.container.id === input.container);
   if (found === undefined) {
     return refusal('unknown_container', 'The agent does not report a container with that ID.');
+  }
+  if (viewer.type === 'token') {
+    const outside = tokenLogsScopeRefusal(caller, found.container);
+    if (outside !== null) return outside;
   }
   const cannot = capabilityRefusal(deps.bus, found.agentId, 'logs');
   if (cannot !== null) return cannot;

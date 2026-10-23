@@ -50,6 +50,8 @@ export interface DeployCaller {
   actor: Actor | undefined;
   role: Role | undefined;
   tokenApps: ReadonlySet<string> | undefined;
+  /** A token's adopted stacks (SHP-T-15.4): lifecycle actions and logs read it; deploys never do. */
+  tokenStacks?: ReadonlySet<string> | undefined;
   audit: (event: AuditEventInput) => Promise<void>;
 }
 
@@ -58,6 +60,7 @@ export function callerFromRequest(req: Request): DeployCaller {
     actor: req.actor,
     role: req.role,
     tokenApps: req.tokenApps,
+    tokenStacks: req.tokenStacks,
     audit: (event) => req.audit(event),
   };
 }

@@ -97,7 +97,9 @@ export class LogsHub {
   /** Opens a session for `viewer`, or refuses when the viewer or the server has too many open. */
   open(input: OpenLogsInput): LogsSessionInfo | Refusal {
     this.sweep();
-    const live = [...this.sessions.values()].filter((s) => s.ended === null);
+    // A session holds memory while it is live, and after it ends for as long as it still holds
+    // lines no viewer has attached for: both count toward the caps.
+    const live = [...this.sessions.values()].filter(holdsMemory);
     if (live.length >= LOGS_MAX_TOTAL) {
       return refusal('too_many_attempts', 'Too many log streams are open on this server.', 'Close a log stream, or wait for one to end, then retry.');
     }
@@ -272,13 +274,19 @@ export class LogsHub {
     const listeners = [...s.listeners];
     s.listeners.clear();
     if (listeners.length === 0) {
-      if (!s.attached) return;
+      // Held lines are kept only for a viewer still to attach to a read that finished or ran out;
+      // one the viewer stopped has nobody to show them to.
+      if (!s.attached && reason !== 'stopped') return;
       // The viewer has gone: nothing is held for nobody.
       s.pending = [];
       return;
     }
     for (const listener of listeners) listener({ type: 'end', ...s.ended });
   }
+}
+
+function holdsMemory(s: Session): boolean {
+  return s.ended === null || s.pending.length > 0;
 }
 
 function sameViewer(a: LogsViewer, b: LogsViewer): boolean {

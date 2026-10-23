@@ -39,6 +39,7 @@ const SUMMARY_SELECT = {
   lastUsedIp: true,
   revokedAt: true,
   apps: { select: { app: { select: { name: true } } } },
+  stacks: { select: { stack: { select: { name: true } } } },
 } satisfies Prisma.ApiTokenSelect;
 
 function summarise(row: {
@@ -52,13 +53,15 @@ function summarise(row: {
   lastUsedIp: string | null;
   revokedAt: Date | null;
   apps: { app: { name: string } }[];
+  stacks: { stack: { name: string } }[];
 }): TokenSummary {
   return {
     id: row.id,
     userId: row.userId,
     label: row.label,
     prefix: row.prefix,
-    apps: row.apps.map((a) => a.app.name).sort(),
+    // A scope names apps and adopted stacks alike (SHP-T-15.4).
+    apps: [...row.apps.map((a) => a.app.name), ...row.stacks.map((s) => s.stack.name)].sort(),
     canReadLogs: row.canReadLogs,
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
@@ -118,11 +121,18 @@ export function tokensRouter(deps: ServiceDeps): Router {
       return;
     }
     const names = [...new Set(parsed.data.apps)].sort();
+    // A scope names apps and adopted stacks (SHP-T-15.4). A stack never shares an app's name (the
+    // report refuses one that would), so each name is one or the other.
     const apps = await db.app.findMany({ where: { name: { in: names }, retiredAt: null }, select: { id: true, name: true } });
-    const known = new Set(apps.map((a) => a.name));
+    const appNames = new Set(apps.map((a) => a.name));
+    const stacks = await db.stack.findMany({
+      where: { name: { in: names.filter((n) => !appNames.has(n)) }, retiredAt: null },
+      select: { id: true, name: true },
+    });
+    const known = new Set([...appNames, ...stacks.map((s) => s.name)]);
     const missing = names.find((n) => !known.has(n));
     if (missing !== undefined) {
-      sendRefusal(res, refusal('unknown_app', `No app named ${missing} has been reported by the agent.`));
+      sendRefusal(res, refusal('unknown_app', `No app or adopted stack named ${missing} has been reported by the agent.`));
       return;
     }
 
@@ -135,6 +145,7 @@ export function tokensRouter(deps: ServiceDeps): Router {
         prefix,
         canReadLogs,
         apps: { create: apps.map((a) => ({ appId: a.id })) },
+        ...(stacks.length === 0 ? {} : { stacks: { create: stacks.map((s) => ({ stackId: s.id })) } }),
       },
       select: { id: true },
     });

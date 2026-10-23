@@ -298,6 +298,25 @@ describe('the stack mirror (SHP-T-15.4, SHP-ADR-010)', () => {
     expect((await db.stack.findUniqueOrThrow({ where: { name: 'pg-stack' } })).retiredAt).toBeNull();
   });
 
+  it('never mirrors a stack named like an app, and retires one an app has since taken the name of (SHP-T-15.4)', async () => {
+    const res = await send({ ...report([web()]), stacks: [stack('web'), stack('pg-stack')] });
+    expect(res.status).toBe(200);
+    expect((res.body as { stacks: { nameTaken: string[]; created: string[] } }).stacks).toMatchObject({ nameTaken: ['web'], created: ['pg-stack'] });
+    expect(await db.stack.findUnique({ where: { name: 'web' } })).toBeNull();
+
+    // An app row that already exists (here retired) holds its name too.
+    const api = { manifest: manifest('api'), manifestSha256: 'c'.repeat(64), running: { web: DIGEST_A } };
+    await send({ ...report([web(), api]), stacks: [stack('pg-stack')] });
+    await send({ ...report([web()]), stacks: [stack('pg-stack'), stack('api')] });
+    expect(await db.stack.findUnique({ where: { name: 'api' } })).toBeNull();
+
+    // A mirrored stack whose name an app later takes stops being adopted.
+    const pg = { manifest: manifest('pg-stack'), manifestSha256: 'd'.repeat(64), running: { web: DIGEST_A } };
+    const taken = await send({ ...report([web(), pg]), stacks: [stack('pg-stack'), stack('immich')] });
+    expect((taken.body as { stacks: { nameTaken: string[]; retired: string[] } }).stacks).toMatchObject({ nameTaken: ['pg-stack'], retired: ['pg-stack'] });
+    expect((await db.stack.findUniqueOrThrow({ where: { name: 'pg-stack' } })).retiredAt).not.toBeNull();
+  });
+
   it('refuses a stack another agent owns, and a report naming one twice', async () => {
     await send({ ...report([web()]), stacks: [stack('pg-stack')] });
     const other = makeKey();

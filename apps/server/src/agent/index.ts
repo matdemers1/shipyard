@@ -3,6 +3,7 @@ import type { ServiceDeps } from '../deps.js';
 import { mountEnrol } from './enrol.js';
 import { mountPoll } from './poll.js';
 import { mountReport } from '../apps/report.js';
+import { mountWork } from './work.js';
 
 /**
  * The agent protocol under /api/agent (SHP-D-064). Every route here is called by the agent only,
@@ -14,5 +15,6 @@ export function agentRouter(deps: ServiceDeps): Router {
   mountEnrol(router, deps); // SHP-T-2.2 — POST /enrol, and the console's confirm/list
   mountReport(router, deps); // SHP-T-2.3 — POST /report
   mountPoll(router, deps); // SHP-T-2.4 — POST /poll, /steps, /targets/:id/result
+  mountWork(router, deps); // SHP-T-15.4 — POST /actions/:id/{progress,result}, /logs/:id/chunks
   return router;
 }

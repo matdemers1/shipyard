@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { HostResponse, HostSnapshot, refusal, type HostInventory, type HostSample } from '@shipyard/schema';
+import { HostInventory, HostResponse, HostSnapshot, refusal, type HostContainer, type HostSample } from '@shipyard/schema';
 import type { Logger } from 'pino';
 import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
@@ -108,6 +108,29 @@ export async function readHostSnapshots(db: Db, logger?: Logger, now: Date = new
     else logger?.warn({ agentId: row.agentId, issues: parsed.error.issues.length }, 'stored host snapshot no longer validates; left out');
   }
   return HostResponse.parse({ hosts });
+}
+
+/** One container in an agent's latest snapshot, with the agent that reported it. */
+export interface SnapshotContainer {
+  agentId: string;
+  container: HostContainer;
+}
+
+/**
+ * Every container in every agent's latest stored inventory (SHP-T-15.4): what `POST /api/logs`
+ * checks a container ID against, and what `POST /api/actions` reads to tell an Observed compose
+ * project (`not_adopted`) from a name nobody knows. Reads only; a snapshot that no longer
+ * validates is skipped, as `readHostSnapshots` does.
+ */
+export async function snapshotContainers(db: Db): Promise<SnapshotContainer[]> {
+  const rows = await db.hostSnapshot.findMany({ select: { agentId: true, inventory: true } });
+  const out: SnapshotContainer[] = [];
+  for (const row of rows) {
+    const parsed = HostInventory.safeParse(row.inventory);
+    if (!parsed.success) continue;
+    for (const container of parsed.data.containers) out.push({ agentId: row.agentId, container });
+  }
+  return out;
 }
 
 /**

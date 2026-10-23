@@ -1,5 +1,5 @@
 import type { Router } from 'express';
-import { AgentRelease, AgentReport, REPORTED_RELEASES_PER_APP, refusal, type AgentBuildCache } from '@shipyard/schema';
+import { AgentRelease, AgentReport, REPORTED_RELEASES_PER_APP, refusal, type AgentBuildCache, type AgentStack } from '@shipyard/schema';
 import { verifyAgentRequest } from '../agent/verify.js';
 import type { Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
@@ -24,8 +24,14 @@ export function lastReportedBuildCache(agentId: string): AgentBuildCache | null 
  * POST /api/agent/report (SHP-REQ-036, SHP-REQ-104; SHP-D-060). The agent reports its parsed
  * manifests with content hashes and the digests it sees running; the server mirrors them.
  *
- * **This module (with drift.ts beside it) is the only code that writes `app` rows.** A guard test
- * greps the server source and fails if anything else does. Nothing is ever deleted.
+ * **This module (with drift.ts beside it) is the only code that writes `app` rows**, and this module
+ * alone writes `stack` rows (SHP-ADR-010). A guard test greps the server source and fails if
+ * anything else does. Nothing is ever deleted.
+ *
+ * Stacks (SHP-T-15.4): `report.stacks` mirrors the adopted stacks under `<data root>/stacks/`. Absent
+ * (an older agent) leaves the mirror as it was; a stack the reporting agent owns but no longer names
+ * is retired, exactly like an app, and a report naming none retires none. Another agent naming a
+ * stack is refused the same way an app is.
  *
  * Retirement (SHP-REQ-174, SHP-T-3.14): an app the reporting agent owns but no longer names is
  * marked `retiredAt` — its manifest has left the host, so the agent could not deploy it anyway. The
@@ -138,6 +144,61 @@ export function canonicalJson(value: unknown): string {
   }, 2);
 }
 
+interface StackChanges {
+  created: string[];
+  changed: string[];
+  refused: string[];
+  retired: string[];
+  revived: string[];
+}
+
+/**
+ * Mirrors the reported stacks into `stack` inside the report's transaction (SHP-ADR-010): upserts
+ * each one this agent owns, refuses one another agent owns, and retires the agent's stacks it no
+ * longer names — unless it names none, which looks like a lost mount rather than every stack
+ * un-adopted at once (the same rule as apps).
+ */
+async function mirrorStacks(
+  tx: Prisma.TransactionClient,
+  agentId: string,
+  reported: AgentStack[],
+  now: Date,
+  out: StackChanges,
+  logger: ServiceDeps['logger'],
+): Promise<void> {
+  for (const entry of reported) {
+    const m = entry.manifest;
+    const fields = {
+      agentId,
+      manifestJson: canonicalJson(m),
+      manifestSha256: entry.manifestSha256,
+      composeProject: m.compose.project,
+      reportedAt: now,
+      retiredAt: null,
+    };
+    const before = await tx.stack.findUnique({ where: { name: m.name }, select: { agentId: true, manifestSha256: true, retiredAt: true } });
+    if (before !== null && before.agentId !== agentId) {
+      out.refused.push(m.name);
+      logger.error({ stack: m.name, owner: before.agentId, reporter: agentId }, 'stack reported by a different agent; ignored');
+      continue;
+    }
+    if (before === null) out.created.push(m.name);
+    else if (before.manifestSha256 !== entry.manifestSha256) out.changed.push(m.name);
+    if (before !== null && before.retiredAt !== null) out.revived.push(m.name);
+    await tx.stack.upsert({ where: { name: m.name }, create: { name: m.name, ...fields }, update: fields });
+  }
+  const named = reported.map((s) => s.manifest.name);
+  if (named.length === 0) return;
+  const gone = await tx.stack.findMany({
+    where: { agentId, retiredAt: null, name: { notIn: named } },
+    select: { id: true, name: true },
+    orderBy: { name: 'asc' },
+  });
+  if (gone.length === 0) return;
+  await tx.stack.updateMany({ where: { id: { in: gone.map((s) => s.id) } }, data: { retiredAt: now } });
+  out.retired.push(...gone.map((s) => s.name));
+}
+
 export function mountReport(router: Router, deps: ServiceDeps): void {
   const { db, logger, bus } = deps;
 
@@ -172,6 +233,11 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       sendRefusal(res, refusal('invalid_request', 'The agent report names an app more than once.'));
       return;
     }
+    const stackNames = report.stacks?.map((s) => s.manifest.name);
+    if (stackNames !== undefined && new Set(stackNames).size !== stackNames.length) {
+      sendRefusal(res, refusal('invalid_request', 'The agent report names a stack more than once.'));
+      return;
+    }
 
     const now = new Date();
     const changed: string[] = [];
@@ -186,6 +252,8 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     // Apps this report retired (owned by this agent, no longer named) or brought back.
     const retired: { id: string; name: string }[] = [];
     const revived: { id: string; name: string }[] = [];
+    // Stacks this report created, changed, refused, retired or brought back (SHP-ADR-010).
+    const stacks = { created: [] as string[], changed: [] as string[], refused: [] as string[], retired: [] as string[], revived: [] as string[] };
 
     await db.$transaction(async (tx) => {
       for (const entry of report.apps) {
@@ -245,6 +313,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       } else {
         logger.warn({ agentId }, 'agent report names no apps; retiring nothing');
       }
+      if (report.stacks !== undefined) await mirrorStacks(tx, agentId, report.stacks, now, stacks, logger);
       await tx.agent.update({
         where: { id: agentId },
         data: {
@@ -306,7 +375,8 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
     }
 
     // A periodic report that changed nothing is a heartbeat, not an event.
-    if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0 && redeployed.length === 0 && importClosed.length === 0) {
+    const stacksChanged = Object.values(stacks).some((list) => list.length > 0);
+    if (created.length === 0 && changed.length === 0 && drifted.length === 0 && refusedApps.length === 0 && redeployed.length === 0 && importClosed.length === 0 && !stacksChanged) {
       if (imported.length === 0 && retired.length === 0 && revived.length === 0) req.noAuditNeeded('unchanged report');
     } else {
       await req.audit({
@@ -321,6 +391,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
           redeployed,
           importClosed,
           refused: refusedApps,
+          ...(stacksChanged ? { stacks } : {}),
         },
       });
     }
@@ -336,6 +407,7 @@ export function mountReport(router: Router, deps: ServiceDeps): void {
       imported: imported.map((r) => r.deployId),
       retired: retired.map((a) => a.name),
       revived: revived.map((a) => a.name),
+      stacks,
     });
   });
 }

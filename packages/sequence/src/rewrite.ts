@@ -339,6 +339,14 @@ function historyCopyPath(dir: string, deployId: string, index: number, originalP
   return `${dir}/${deployId}/${String(index)}-${basename}`;
 }
 
+export interface ApplyRewriteOptions {
+  /**
+   * Re-read each file just before writing it and refuse (`conflict`) when it no longer holds the
+   * content the plan was made from — a hand edit since is never overwritten (SHP-REQ-197).
+   */
+  ifUnchanged?: boolean;
+}
+
 /**
  * Writes the planned files, keeping the previous content of each under `history.dir/history.deployId`
  * first, with a manifest mapping copies back to originals (SHP-REQ-013). If a write fails partway
@@ -348,6 +356,7 @@ export async function applyRewrite(
   fs: FsPort,
   plan: RewritePlanFile[],
   history: RewriteHistoryTarget,
+  options: ApplyRewriteOptions = {},
 ): Promise<{ historyFiles: HistoryManifestEntry[] }> {
   const historyDir = `${history.dir}/${history.deployId}`;
   await fs.mkdirp(historyDir);
@@ -365,6 +374,11 @@ export async function applyRewrite(
   const written: RewritePlanFile[] = [];
   try {
     for (const file of plan) {
+      if (options.ifUnchanged === true && (await fs.readFile(file.path)) !== file.before) {
+        throw new RefusalError(
+          refusal('conflict', `${file.path} changed after it was read; it was not overwritten.`, 'Someone edited the compose file while the update ran; check the edit, then update again.'),
+        );
+      }
       await fs.writeFileAtomic(file.path, file.after);
       written.push(file);
     }

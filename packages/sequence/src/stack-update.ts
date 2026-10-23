@@ -12,7 +12,7 @@ import type { Clock, ComposeTarget, DockerPort, FsPort, Log, RunningContainer, S
 import { loadSecrets, redact } from './redact.js';
 import { applyRewrite, currentImageValues, planRewrite, restoreFromHistory } from './rewrite.js';
 import type { RewritePlanFile } from './rewrite.js';
-import { pickSemverTag, SemverRangeError } from './semver.js';
+import { compareVersions, parseTagVersion, pickSemverTag, SemverRangeError } from './semver.js';
 import { runBackup } from './steps.js';
 
 /**
@@ -26,21 +26,28 @@ import { runBackup } from './steps.js';
  *
  * - **verify** re-resolves each requested service's track now and refuses `digest_not_tracked`
  *   unless it resolves to exactly the requested digest (SHP-REQ-195), and `registry_unreachable`
- *   when the registry cannot answer — fail closed, no override (SHP-REQ-196). It plans the
- *   image-line rewrite too, so a compose file Shipyard cannot safely rewrite refuses
- *   (`image_line_invalid`) before anything changes.
+ *   when the registry cannot answer — fail closed, no override (SHP-REQ-196). A semver track never
+ *   goes backwards: a resolved tag below the one the image line names refuses `digest_not_tracked`.
+ *   It reads the compose files once and plans the image-line rewrite from them, so a compose file
+ *   Shipyard cannot safely rewrite refuses (`image_line_invalid`) before anything changes.
  * - **backup** runs the stack's backup step in its named service; `backup_failed` stops here.
- * - **pull** is `docker pull repo@sha256:…`, never a tag, so what runs is what was verified.
+ * - **pull** re-resolves each track first (the tag may have moved during the backup:
+ *   `digest_not_tracked`), then is `docker pull repo@sha256:…`, never a tag, so what runs is what
+ *   was verified.
  * - **swap** rewrites only the service's `image:` line to `repo:tag@sha256:…` (`repo@sha256:…` for
- *   a pinned service), atomically, keeping the previous file under the update's ID, then
- *   `compose up -d --no-deps --no-build --pull never <services>`: only those services are recreated.
+ *   a pinned service), atomically, keeping the previous file under the update's ID — against the
+ *   content verify read: a file edited since is refused (`conflict`), never overwritten — then
+ *   `compose up -d --no-deps --no-build --pull never <services>` with a timeout: only those
+ *   services are recreated.
  * - **check** waits for each service to run the new digest and be healthy: `healthy` where its
  *   container has a healthcheck, and the stack's HTTP check (`health:`) when it names one.
  * - **soak** keeps checking for `soakSeconds`; a restart in between is a failure too.
  *
- * Success records a `stack-update` ledger entry (SHP-REQ-197). A failure after the swap rolls back
- * image-only: the previous compose file comes back from the agent's own history copy and the
- * services are recreated on the digests they ran before, which are confirmed (SHP-REQ-198). A
+ * Success records a `stack-update` ledger entry (SHP-REQ-197). Any failure after the swap — a check,
+ * the soak, or a throw from the journal, the lock, the Engine or the ledger — rolls back image-only:
+ * the previous image lines come back and the services are recreated on the digests they ran
+ * before, which are confirmed (SHP-REQ-198). When even the image lines cannot be put back, the
+ * update's bracket stays open and restart recovery restores the kept file. A
  * rollback job takes its digests from a `stack-update` ledger entry and from nowhere else
  * (`rollback_target_invalid` otherwise), and runs the same pull/swap/check/soak path without a backup.
  */
@@ -77,6 +84,8 @@ export interface StackUpdateContext {
   soakIntervalMs?: number;
   /** Per-probe timeout for the HTTP check. Default 5 s. */
   probeTimeoutMs?: number;
+  /** How long one `compose up` of the swap or the rollback may run before it is killed. Default 5 min. */
+  composeTimeoutMs?: number;
   lockHeartbeatMs?: number;
   lockStaleMs?: number;
 }
@@ -85,6 +94,7 @@ const DEFAULT_HEALTH_TIMEOUT_MS = 120_000;
 const DEFAULT_CHECK_INTERVAL_MS = 2_000;
 const DEFAULT_SOAK_INTERVAL_MS = 10_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
+export const STACK_COMPOSE_TIMEOUT_MS = 5 * 60_000;
 const JOURNAL_OUTPUT_LINES = 50;
 const TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
@@ -172,6 +182,28 @@ export function tagOfReference(value: string): string | null {
   if (colon <= lastSlash) return null;
   const tag = named.slice(colon + 1);
   return TAG_RE.test(tag) ? tag : null;
+}
+
+/**
+ * True when moving a semver-tracked service from the tag it runs to `toTag` would go backwards
+ * (SHP-REQ-195): both tags name versions and the running one is higher. A tag that names no
+ * version (`latest`) and a `{ tag }` track are never "backwards" — a moving tag's digest changes.
+ */
+export function wouldGoBackwards(track: StackTrack, fromTag: string | null, toTag: string): boolean {
+  if (track === 'pinned' || !('semver' in track) || fromTag === null) return false;
+  const from = parseTagVersion(fromTag);
+  const to = parseTagVersion(toTag);
+  return from !== null && to !== null && compareVersions(from, to) > 0;
+}
+
+/**
+ * service → the tag its literal compose image line names now (`postgres:16.4@sha256:…` → `16.4`),
+ * or null when the line has no tag or is not one literal line. Reads only the stack's own files.
+ */
+export async function stackImageTags(fs: Pick<FsPort, 'readFile'>, compose: ComposeTarget, services: string[]): Promise<Record<string, string | null>> {
+  const files = await Promise.all(compose.files.map(async (path) => ({ path, text: await fs.readFile(path) })));
+  const lines = currentImageValues(files, services);
+  return Object.fromEntries(services.map((service) => [service, lines[service] === null || lines[service] === undefined ? null : tagOfReference(lines[service])]));
 }
 
 function sameRepository(current: string, mapped: string): boolean {
@@ -324,6 +356,16 @@ export function stackUpArgs(services: string[]): string[] {
 }
 
 /**
+ * Where a run stands with the compose file, for its bracket: once the swap has written the file
+ * and until a rollback has put the previous image lines back, the bracket is left open on any
+ * failure, so restart recovery puts the previous file back (SHP-REQ-198, SHP-D-029).
+ */
+interface SwapState {
+  swapped: boolean;
+  restored: boolean;
+}
+
+/**
  * Runs one stack update or rollback job to its end and returns the result to report. Never throws:
  * an unexpected error is a `failed` result (or `refused`, before anything changed).
  */
@@ -359,32 +401,58 @@ export async function runStackUpdate(ports: StackUpdatePorts, ctx: StackUpdateCo
 
   const compose: ComposeTarget = { files: stack.compose.files, project: stack.compose.project };
   try {
-    await ctx.ledger.refresh();
     const services = job.kind === 'update' ? Object.keys(job.digests) : [];
-    // The bracket first: if it cannot be written, nothing runs (SHP-D-029).
-    await ctx.journal.begin({
-      deployId: job.updateId,
-      app: job.stack,
-      step: STACK_UPDATE_STEP,
-      detail: { kind: job.kind, composeFiles: compose.files, project: compose.project, services, ...(job.kind === 'rollback' ? { toUpdateId: job.toUpdateId } : {}) },
-    });
+    try {
+      // An earlier update left open with its compose file rewritten is restart recovery's to put
+      // back; a new one written over it would be clobbered when that happens (SHP-REQ-198).
+      const open = (await ctx.journal.unfinishedStackUpdates()).find((u) => u.stack === job.stack && u.updateId !== job.updateId);
+      if (open !== undefined) {
+        return refused(
+          refusal(
+            'conflict',
+            `An earlier update of ${job.stack} (${open.updateId}) did not finish, and its previous compose file has not been put back yet; the ${job.kind} was not started.`,
+            'Restart the agent: it puts the previous compose file back, then update again.',
+          ),
+        );
+      }
+      await ctx.ledger.refresh();
+      // The bracket first: if it cannot be written, nothing runs (SHP-D-029).
+      await ctx.journal.begin({
+        deployId: job.updateId,
+        app: job.stack,
+        step: STACK_UPDATE_STEP,
+        detail: { kind: job.kind, composeFiles: compose.files, project: compose.project, services, ...(job.kind === 'rollback' ? { toUpdateId: job.toUpdateId } : {}) },
+      });
+    } catch (err) {
+      return refused(refusal('step_failed', `The stack ${job.kind} could not be journaled, so it was not run: ${message(err)}`));
+    }
+
+    const swap: SwapState = { swapped: false, restored: false };
     let result: StackUpdateResult;
     try {
-      result = await updateLocked(ports, ctx, job, stack, compose, lock, log);
+      result = await updateLocked(ports, ctx, job, stack, compose, lock, log, swap);
     } catch (err) {
       log.error({ err: message(err) }, 'stack update crashed');
       result = { updateId: job.updateId, state: 'failed', images: [], previous: [], refusal: refusal('step_failed', `The stack ${job.kind} stopped: ${message(err)}`) };
     }
-    await ctx.journal.end({
-      deployId: job.updateId,
-      app: job.stack,
-      step: STACK_UPDATE_STEP,
-      detail: { kind: job.kind, state: result.state, ...(result.refusal === undefined ? {} : { code: result.refusal.code }) },
-    });
+    if (result.state !== 'succeeded' && swap.swapped && !swap.restored) {
+      // The compose file may still name the new image: the bracket stays open, and restart
+      // recovery puts the previous file back from the history copy (SHP-REQ-198).
+      log.error({ state: result.state }, 'stack update left its compose file rewritten; its bracket stays open for restart recovery');
+      return result;
+    }
+    try {
+      await ctx.journal.end({
+        deployId: job.updateId,
+        app: job.stack,
+        step: STACK_UPDATE_STEP,
+        detail: { kind: job.kind, state: result.state, ...(result.refusal === undefined ? {} : { code: result.refusal.code }) },
+      });
+    } catch (err) {
+      // What happened still happened; an open bracket is closed by restart recovery.
+      log.error({ err: message(err) }, 'could not close the stack update in the journal');
+    }
     return result;
-  } catch (err) {
-    // The bracket could not be journaled: nothing ran.
-    return refused(refusal('step_failed', `The stack ${job.kind} could not be journaled, so it was not run: ${message(err)}`));
   } finally {
     await lock.release();
   }
@@ -398,6 +466,7 @@ async function updateLocked(
   compose: ComposeTarget,
   lock: AppLock,
   log: Log,
+  swap: SwapState,
 ): Promise<StackUpdateResult> {
   const { docker, fs } = ports;
   const journal = ctx.journal;
@@ -407,6 +476,7 @@ async function updateLocked(
     soakIntervalMs: ctx.soakIntervalMs ?? DEFAULT_SOAK_INTERVAL_MS,
     probeTimeoutMs: ctx.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
   };
+  const composeTimeoutMs = ctx.composeTimeoutMs ?? STACK_COMPOSE_TIMEOUT_MS;
   const entry = (step: string, extra: { argv?: string[]; exitCode?: number; output?: string; detail?: Record<string, unknown> } = {}) => ({
     deployId: job.updateId,
     app: job.stack,
@@ -430,7 +500,7 @@ async function updateLocked(
     await journal.end(entry('verify', { detail: { refused: verified.refusal.code } }));
     return refusedResult(verified.refusal);
   }
-  const { targets, previous, plan } = verified;
+  const { targets, previous, plan, lines } = verified;
   await journal.end(
     entry('verify', {
       detail: {
@@ -467,6 +537,14 @@ async function updateLocked(
 
   // ─── pull ──────────────────────────────────────────────────────────────────
   await enter('pulling', 'pull');
+  if (job.kind === 'update') {
+    // Re-resolved right before the pull (SHP-REQ-195, SHP-REQ-196): a backup can take long enough
+    // for the tag to move, and what is pulled must still be what the track names now.
+    await journal.begin(entry('reverify'));
+    const moved = await reverify(ports.registry, stack, targets);
+    await journal.end(entry('reverify', { detail: moved === null ? { ok: true } : { refused: moved.code } }));
+    if (moved !== null) return backupArtifact === undefined ? refusedResult(moved) : failed(moved);
+  }
   for (const target of targets) {
     const ref = `${target.repo}@${target.digest}`;
     if (await isLocal(docker, target.repo, target.digest)) continue;
@@ -487,49 +565,88 @@ async function updateLocked(
   const upArgs = stackUpArgs(services);
   await journal.begin(entry('swap', { argv: upArgs, detail: { historyId: updateId } }));
   try {
-    await applyRewrite(fs, plan, { dir: ctx.historyDir, deployId: updateId });
+    // Written against the content verify planned from: a file edited since is refused, never
+    // overwritten (`conflict`).
+    await applyRewrite(fs, plan, { dir: ctx.historyDir, deployId: updateId }, { ifUnchanged: true });
   } catch (err) {
     // applyRewrite undoes a partial write before it throws: nothing changed.
-    await journal.end(entry('swap', { detail: { error: message(err) } }));
-    return failed(refusal('step_failed', `The compose file could not be rewritten: ${message(err)}`));
+    const why = err instanceof RefusalError ? err.refusal : refusal('step_failed', `The compose file could not be rewritten: ${message(err)}`);
+    await journal.end(entry('swap', { detail: { refused: why.code, error: why.message } }));
+    return failed(why);
   }
-  const up = await docker.compose(compose, upArgs);
-  const upOutput = lastLines(redact(`${up.stdout}\n${up.stderr}`.trim(), secrets), JOURNAL_OUTPUT_LINES);
-  await journal.end(entry('swap', { argv: upArgs, exitCode: up.exitCode, output: upOutput }));
+  swap.swapped = true;
 
-  const expected: Expectation[] = targets.map((x) => ({ service: x.service, repo: x.repo, digest: x.digest }));
   const rollBack = (why: Refusal): Promise<StackUpdateResult> =>
-    rollBackImages(ports, ctx, { job, stack, compose, services, previous, t, secrets, enter, entry, log, ...(backupArtifact === undefined ? {} : { backupArtifact }) }, why);
-  if (up.exitCode !== 0) return rollBack(refusal('step_failed', `compose up exited ${String(up.exitCode)}.\n${upOutput}`));
+    rollBackImages(ports, ctx, { job, stack, compose, services, targets, previous, plan, lines, t, composeTimeoutMs, secrets, enter, entry, log, swap, ...(backupArtifact === undefined ? {} : { backupArtifact }) }, why);
 
-  // ─── check ─────────────────────────────────────────────────────────────────
-  await enter('checking', 'check');
-  await journal.begin(entry('check'));
-  const checked = await waitHealthy(ports, compose, stack, expected, t);
-  await journal.end(entry('check', { detail: checked.ok ? { ok: true } : { ok: false, why: checked.why } }));
-  if (!checked.ok) return rollBack(refusal('health_failed', `The ${job.kind} did not become healthy: ${checked.why}.`));
+  // Everything from here runs with the compose file rewritten: any throw — a journal or lock write,
+  // the Engine, the ledger — rolls back image-only rather than leaving the new line in place
+  // (SHP-REQ-198).
+  const expected: Expectation[] = targets.map((x) => ({ service: x.service, repo: x.repo, digest: x.digest }));
+  const afterSwap = async (): Promise<{ ok: true; result: StackUpdateResult } | { ok: false; why: Refusal }> => {
+    const up = await docker.compose(compose, upArgs, { timeoutMs: composeTimeoutMs });
+    const upOutput = lastLines(redact(`${up.stdout}\n${up.stderr}`.trim(), secrets), JOURNAL_OUTPUT_LINES);
+    await journal.end(entry('swap', { argv: upArgs, exitCode: up.exitCode, output: upOutput }));
+    if (up.exitCode !== 0) return { ok: false, why: refusal('step_failed', `compose up exited ${String(up.exitCode)}.\n${upOutput}`) };
 
-  // ─── soak ──────────────────────────────────────────────────────────────────
-  await enter('soaking', 'soak');
-  await journal.begin(entry('soak', { detail: { seconds: stack.soakSeconds } }));
-  const soaked = await soak(ports, compose, stack, expected, t);
-  await journal.end(entry('soak', { detail: soaked.ok ? { ok: true } : { ok: false, why: soaked.why } }));
-  if (!soaked.ok) return rollBack(refusal('health_failed', `The ${job.kind} failed its soak: ${soaked.why}.`));
+    // ─── check ───────────────────────────────────────────────────────────────
+    await enter('checking', 'check');
+    await journal.begin(entry('check'));
+    const checked = await waitHealthy(ports, compose, stack, expected, t);
+    await journal.end(entry('check', { detail: checked.ok ? { ok: true } : { ok: false, why: checked.why } }));
+    if (!checked.ok) return { ok: false, why: refusal('health_failed', `The ${job.kind} did not become healthy: ${checked.why}.`) };
 
-  // ─── record ────────────────────────────────────────────────────────────────
-  const images = targets.map(({ service, repo, tag, digest }) => ({ service, repo, tag, digest }));
-  await ctx.ledger.append({
-    kind: 'stack-update',
-    app: job.stack,
-    deployId: updateId,
-    updateKind: job.kind,
-    images,
-    previous,
-    backupArtifact: backupArtifact?.path ?? null,
-    at: ports.clock.now().toISOString(),
-  });
-  log.info({ images }, `stack ${job.kind} succeeded`);
-  return { updateId, state: 'succeeded', images: asImages(images), previous: asImages(previous), ...(backupArtifact === undefined ? {} : { backupArtifact }) };
+    // ─── soak ────────────────────────────────────────────────────────────────
+    await enter('soaking', 'soak');
+    await journal.begin(entry('soak', { detail: { seconds: stack.soakSeconds } }));
+    const soaked = await soak(ports, compose, stack, expected, t);
+    await journal.end(entry('soak', { detail: soaked.ok ? { ok: true } : { ok: false, why: soaked.why } }));
+    if (!soaked.ok) return { ok: false, why: refusal('health_failed', `The ${job.kind} failed its soak: ${soaked.why}.`) };
+
+    // ─── record ──────────────────────────────────────────────────────────────
+    // An update the ledger cannot record is not a success (SHP-REQ-197): a throw here rolls back.
+    const images = targets.map(({ service, repo, tag, digest }) => ({ service, repo, tag, digest }));
+    await ctx.ledger.append({
+      kind: 'stack-update',
+      app: job.stack,
+      deployId: updateId,
+      updateKind: job.kind,
+      images,
+      previous,
+      backupArtifact: backupArtifact?.path ?? null,
+      at: ports.clock.now().toISOString(),
+    });
+    log.info({ images }, `stack ${job.kind} succeeded`);
+    return { ok: true, result: { updateId, state: 'succeeded', images: asImages(images), previous: asImages(previous), ...(backupArtifact === undefined ? {} : { backupArtifact }) } };
+  };
+
+  let outcome: Awaited<ReturnType<typeof afterSwap>>;
+  try {
+    outcome = await afterSwap();
+  } catch (err) {
+    outcome = { ok: false, why: refusal('step_failed', `The ${job.kind} stopped after the compose file was rewritten: ${message(err)}`) };
+  }
+  return outcome.ok ? outcome.result : rollBack(outcome.why);
+}
+
+/** Each update target's track, resolved again; a refusal when one moved or cannot be asked. */
+async function reverify(registry: StackRegistryPort, stack: DigestUpdatedStack, targets: Target[]): Promise<Refusal | null> {
+  for (const target of targets) {
+    const tracked = stack.services[target.service];
+    if (tracked === undefined) return refusal('digest_not_tracked', `${target.service} is no longer a tracked service of the stack ${stack.name}.`);
+    let resolved: TrackResolution;
+    try {
+      resolved = await resolveTrack(registry, tracked.image, tracked.track);
+    } catch (err) {
+      if (err instanceof RegistryError) return refusal('registry_unreachable', `Could not resolve ${target.service}'s track again before the pull: ${err.message}. Nothing was changed.`);
+      return refusal('registry_unreachable', `Could not resolve ${target.service}'s track again before the pull: ${message(err)}. Nothing was changed.`);
+    }
+    if (resolved.kind !== 'resolved' || resolved.digest !== target.digest) {
+      const now = resolved.kind === 'resolved' ? `${resolved.digest} (${tracked.image}:${resolved.tag})` : resolved.kind === 'missing' ? `nothing (${resolved.why})` : 'pinned';
+      return refusal('digest_not_tracked', `${target.service}'s track moved while the update ran: it resolves to ${now} now, not ${target.digest}. Nothing was changed.`);
+    }
+  }
+  return null;
 }
 
 async function isLocal(docker: DockerPort, repo: string, digest: string): Promise<boolean> {
@@ -542,12 +659,31 @@ async function isLocal(docker: DockerPort, repo: string, digest: string): Promis
   }
 }
 
-type Verified = { targets: Target[]; previous: StackImageRecord[]; plan: RewritePlanFile[] } | { refusal: Refusal };
+type Verified =
+  | {
+      targets: Target[];
+      previous: StackImageRecord[];
+      plan: RewritePlanFile[];
+      /** service → its image line's value before the swap, for an image-only rollback. */
+      lines: Record<string, string | null>;
+    }
+  | { refusal: Refusal };
 
-/** Re-resolves (or, for a rollback, reads from the ledger) what to run, and plans the rewrite. Changes nothing. */
+/**
+ * Re-resolves (or, for a rollback, reads from the ledger) what to run, and plans the rewrite. Reads
+ * the compose files once; the swap writes against exactly that content. Changes nothing.
+ */
 async function verify(ports: StackUpdatePorts, ctx: StackUpdateContext, job: StackUpdateJob, stack: DigestUpdatedStack, compose: ComposeTarget): Promise<Verified> {
+  let files: { path: string; text: string }[];
+  try {
+    files = await Promise.all(compose.files.map(async (path) => ({ path, text: await ports.fs.readFile(path) })));
+  } catch (err) {
+    return { refusal: refusal('image_line_invalid', `The stack's compose files could not be read: ${message(err)}`) };
+  }
+
   const targets: Target[] = [];
   if (job.kind === 'update') {
+    const linesNow = currentImageValues(files, Object.keys(job.digests));
     for (const [service, requested] of Object.entries(job.digests)) {
       const tracked = stack.services[service];
       if (tracked === undefined) {
@@ -570,6 +706,19 @@ async function verify(ports: StackUpdatePorts, ctx: StackUpdateContext, job: Sta
           refusal: refusal('digest_not_tracked', `${service}'s track (${tracked.image}:${resolved.tag}) resolves to ${resolved.digest} now, not the requested ${requested}.`),
         };
       }
+      // A semver track only moves forward (SHP-REQ-195): a range that now tops out below what runs
+      // (a tag withdrawn, the range edited) is not an update.
+      const line = linesNow[service];
+      const runningTag = line === null || line === undefined ? null : tagOfReference(line);
+      if (wouldGoBackwards(tracked.track, runningTag, resolved.tag)) {
+        return {
+          refusal: refusal(
+            'digest_not_tracked',
+            `${service} runs ${tracked.image}:${runningTag ?? ''}; its track resolves to ${resolved.tag}, which would go backwards. Nothing was changed.`,
+            "Roll back to an earlier update instead, or widen the track's range.",
+          ),
+        };
+      }
       targets.push({ service, repo: tracked.image, tag: resolved.tag, digest: resolved.digest, reference: stackImageReference(tracked.image, resolved.tag, resolved.digest) });
     }
   } else {
@@ -589,12 +738,6 @@ async function verify(ports: StackUpdatePorts, ctx: StackUpdateContext, job: Sta
     }
   }
 
-  let files: { path: string; text: string }[];
-  try {
-    files = await Promise.all(compose.files.map(async (path) => ({ path, text: await ports.fs.readFile(path) })));
-  } catch (err) {
-    return { refusal: refusal('image_line_invalid', `The stack's compose files could not be read: ${message(err)}`) };
-  }
   let plan: RewritePlanFile[];
   try {
     plan = planRewrite(
@@ -625,7 +768,7 @@ async function verify(ports: StackUpdatePorts, ctx: StackUpdateContext, job: Sta
     const line = lines[x.service];
     previous.push({ service: x.service, repo: x.repo, tag: line === null || line === undefined ? null : tagOfReference(line), digest });
   }
-  return { targets, previous, plan };
+  return { targets, previous, plan, lines };
 }
 
 interface RollBackArgs {
@@ -633,8 +776,12 @@ interface RollBackArgs {
   stack: DigestUpdatedStack;
   compose: ComposeTarget;
   services: string[];
+  targets: Target[];
   previous: StackImageRecord[];
+  plan: RewritePlanFile[];
+  lines: Record<string, string | null>;
   t: Timings;
+  composeTimeoutMs: number;
   secrets: Map<string, string>;
   enter: (step: StackUpdateStep, name: string) => Promise<void>;
   entry: (step: string, extra?: { argv?: string[]; exitCode?: number; output?: string; detail?: Record<string, unknown> }) => {
@@ -643,28 +790,66 @@ interface RollBackArgs {
     step: string;
   };
   log: Log;
+  swap: SwapState;
   backupArtifact?: NonNullable<StackUpdateResult['backupArtifact']>;
 }
 
 /**
- * Image-only rollback after the swap (SHP-REQ-198): the previous compose file comes back from the
- * history copy taken under this update's ID, the services are recreated from it, and the digests
- * they ran before are confirmed running and healthy again. Data is never touched; a backup taken
- * first is kept and reported.
+ * Puts each rewritten service's previous image line back, and nothing else (SHP-REQ-198). A file
+ * still holding exactly what the swap wrote gets the content verify read back (it differs only in
+ * those lines); a file edited since keeps the edit, and only the image lines are rewritten back.
+ */
+async function restoreImageLines(fs: FsPort, a: Pick<RollBackArgs, 'plan' | 'lines' | 'targets'>): Promise<string[]> {
+  const restored: string[] = [];
+  for (const file of a.plan) {
+    const current = await fs.readFile(file.path);
+    if (current === file.before) continue;
+    if (current === file.after) {
+      await fs.writeFileAtomic(file.path, file.before);
+    } else {
+      const mappings = file.changed.map((service) => {
+        const value = a.lines[service];
+        const repo = a.targets.find((x) => x.service === service)?.repo;
+        if (value === null || value === undefined || repo === undefined) throw new Error(`the previous image line of ${service} is not known`);
+        return { service, repo, reference: value };
+      });
+      const [back] = planRewrite([{ path: file.path, text: current }], mappings, { sameRepository });
+      if (back !== undefined) await fs.writeFileAtomic(file.path, back.after);
+    }
+    restored.push(file.path);
+  }
+  return restored;
+}
+
+/**
+ * Image-only rollback after the swap (SHP-REQ-198): each service's previous image line comes back,
+ * the services are recreated from it, and the digests they ran before are confirmed running and
+ * healthy again. Data is never touched; a backup taken first is kept and reported. Never throws: a
+ * journal or lock write that fails here is logged, and the restore still runs — the open bracket
+ * and the journaled swap are what restart recovery would act on anyway.
  */
 async function rollBackImages(ports: StackUpdatePorts, ctx: StackUpdateContext, a: RollBackArgs, failure: Refusal): Promise<StackUpdateResult> {
   const { job, compose, services, previous, t } = a;
   a.log.error({ why: failure.message }, 'stack update failed after the swap; rolling back');
-  await a.enter('rolling_back', 'rollback');
   const argv = stackUpArgs(services);
-  await ctx.journal.begin(a.entry('rollback', { argv, detail: { historyId: job.updateId } }));
+  try {
+    await a.enter('rolling_back', 'rollback');
+  } catch (err) {
+    a.log.warn({ err: message(err) }, 'could not mark the rollback step on the lock; rolling back anyway');
+  }
+  try {
+    await ctx.journal.begin(a.entry('rollback', { argv, detail: { historyId: job.updateId } }));
+  } catch (err) {
+    a.log.error({ err: message(err) }, 'could not journal the rollback; rolling back anyway');
+  }
   const base = { updateId: job.updateId, previous: asImages(previous), ...(a.backupArtifact === undefined ? {} : { backupArtifact: a.backupArtifact }) };
   let why: string | null = null;
   let exitCode: number | undefined;
   let output = '';
   try {
-    await restoreFromHistory(ports.fs, ctx.historyDir, job.updateId);
-    const up = await ports.docker.compose(compose, argv);
+    await restoreImageLines(ports.fs, a);
+    a.swap.restored = true;
+    const up = await ports.docker.compose(compose, argv, { timeoutMs: a.composeTimeoutMs });
     exitCode = up.exitCode;
     output = lastLines(redact(`${up.stdout}\n${up.stderr}`.trim(), a.secrets), JOURNAL_OUTPUT_LINES);
     if (up.exitCode !== 0) {
@@ -681,10 +866,27 @@ async function rollBackImages(ports: StackUpdatePorts, ctx: StackUpdateContext, 
   } catch (err) {
     why = message(err);
   }
-  await ctx.journal.end(a.entry('rollback', { argv, ...(exitCode === undefined ? {} : { exitCode }), ...(output === '' ? {} : { output }), detail: { confirmed: why === null, ...(why === null ? {} : { why }) } }));
+  try {
+    await ctx.journal.end(
+      a.entry('rollback', { argv, ...(exitCode === undefined ? {} : { exitCode }), ...(output === '' ? {} : { output }), detail: { confirmed: why === null, restored: a.swap.restored, ...(why === null ? {} : { why }) } }),
+    );
+  } catch (err) {
+    a.log.error({ err: message(err) }, 'could not journal the end of the rollback');
+  }
   if (why !== null) {
     a.log.error({ why }, 'stack rollback failed');
-    return { ...base, state: 'failed', images: [], refusal: { ...failure, message: `${failure.message} Rolling back failed too: ${why}.`, fix: 'Check the stack on the Host view; its previous compose file was put back.' } };
+    return {
+      ...base,
+      state: 'failed',
+      images: [],
+      refusal: {
+        ...failure,
+        message: `${failure.message} Rolling back failed too: ${why}.`,
+        fix: a.swap.restored
+          ? 'Check the stack on the Host view; its previous image line was put back.'
+          : `Check the stack on the Host view; its previous compose file could not be put back yet, and the agent puts it back when it next starts (a copy is kept under ${ctx.historyDir}/${job.updateId}).`,
+      },
+    };
   }
   return {
     ...base,
@@ -711,14 +913,16 @@ export interface StackRecoveryResult {
  * Never resumes a stack update forward (SHP-REQ-022's rule, applied to stacks): one the agent
  * stopped in the middle of has its previous compose file put back — when the swap had begun — and
  * its services recreated from it, and its bracket closed `failed`/interrupted. One the ledger shows
- * succeeded is only closed. One whose lock is still live is someone else's and left alone.
+ * succeeded is only closed. One whose lock is still live is someone else's and left alone. A
+ * `compose up` that exits non-zero (or runs past `composeTimeoutMs`) is the result's `error`.
  */
 export async function recoverInterruptedStackUpdates(
   ports: { fs: FsPort; docker: DockerPort; log: Log },
   journal: Journal,
-  opts: { historyDir: string; ledger?: Pick<Ledger, 'stackUpdate' | 'refresh'>; isLive?: (stack: string) => Promise<boolean> },
+  opts: { historyDir: string; ledger?: Pick<Ledger, 'stackUpdate' | 'refresh'>; isLive?: (stack: string) => Promise<boolean>; composeTimeoutMs?: number },
 ): Promise<StackRecoveryResult[]> {
   const results: StackRecoveryResult[] = [];
+  const composeTimeoutMs = opts.composeTimeoutMs ?? STACK_COMPOSE_TIMEOUT_MS;
   await opts.ledger?.refresh().catch(() => undefined);
   for (const u of await journal.unfinishedStackUpdates()) {
     if (opts.isLive !== undefined && (await opts.isLive(u.stack))) continue;
@@ -733,7 +937,8 @@ export async function recoverInterruptedStackUpdates(
         const services = u.detail?.['services'];
         if (Array.isArray(files) && files.every((f) => typeof f === 'string') && typeof project === 'string') {
           const list = Array.isArray(services) ? services.filter((s): s is string => typeof s === 'string' && !s.startsWith('-')) : [];
-          await ports.docker.compose({ files, project }, stackUpArgs(list));
+          const up = await ports.docker.compose({ files, project }, stackUpArgs(list), { timeoutMs: composeTimeoutMs });
+          if (up.exitCode !== 0) throw new Error(`compose up exited ${String(up.exitCode)} after the previous compose file was put back`);
         }
       }
     } catch (err) {
@@ -744,7 +949,7 @@ export async function recoverInterruptedStackUpdates(
       deployId: u.updateId,
       app: u.stack,
       step: STACK_UPDATE_STEP,
-      detail: { state: result.succeeded ? 'succeeded' : 'failed', interrupted: true, lastStep: u.lastStep },
+      detail: { state: result.succeeded ? 'succeeded' : 'failed', interrupted: true, lastStep: u.lastStep, ...(result.error === undefined ? {} : { error: result.error }) },
     });
     results.push(result);
   }

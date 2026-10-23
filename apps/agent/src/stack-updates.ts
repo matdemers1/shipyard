@@ -160,9 +160,11 @@ export async function reportInterruptedStackUpdates(opts: {
             previous: [],
             refusal: refusal(
               'interrupted',
-              r.restored.length > 0
+              // A recovery that failed — a compose up that exited non-zero — says so (SHP-REQ-198).
+              (r.restored.length > 0
                 ? `The agent restarted during this update of ${r.stack}; its previous compose file was put back.`
-                : `The agent restarted during this update of ${r.stack}, before anything changed.`,
+                : `The agent restarted during this update of ${r.stack}, before anything changed.`) +
+                (r.error === undefined ? '' : ` Recovering it failed: ${r.error}.`),
               `Check ${r.stack} on the Host view, then update again if it is still needed.`,
             ),
           };

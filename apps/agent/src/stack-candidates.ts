@@ -1,5 +1,5 @@
 import type { AgentStackService, Digest, StackManifest } from '@shipyard/schema';
-import { RegistryError, resolveTrack, stackRunningDigests, type DockerPort, type StackRegistryPort } from '@shipyard/sequence';
+import { RegistryError, resolveTrack, stackImageTags, stackRunningDigests, wouldGoBackwards, type DockerPort, type FsPort, type StackRegistryPort } from '@shipyard/sequence';
 
 /**
  * Update candidates for adopted stacks (SHP-ADR-010, SHP-REQ-194): on the report interval, each
@@ -15,7 +15,11 @@ import { RegistryError, resolveTrack, stackRunningDigests, type DockerPort, type
  * - a report waits at most `deadlineMs` for checks it started; one still running finishes in the
  *   background and the next report carries it, with the last known answer reported meanwhile.
  *
- * The running digest is read from the Engine on every report: it is local and cheap.
+ * The running digest is read from the Engine on every report: it is local and cheap. So is the tag
+ * each image line names, for a semver track: a candidate below the version that runs is never
+ * offered (SHP-REQ-195) — the range can top out under it when a tag is withdrawn or the range is
+ * edited. A tag that names no version (`latest`) offers as before, and so does any `{ tag }`
+ * track, whose digest moving is the update.
  */
 
 export const CANDIDATE_RECHECK_MS = 30 * 60_000;
@@ -39,6 +43,8 @@ interface Entry {
 export interface CandidateCheckerOptions {
   registry: StackRegistryPort;
   docker: DockerPort;
+  /** Reads the stack's compose files, for the tag each semver-tracked service runs. Without it, no downgrade check. */
+  fs?: Pick<FsPort, 'readFile'>;
   now?: () => number;
   recheckMs?: number;
   errorRetryMs?: number;
@@ -129,12 +135,27 @@ export function createCandidateChecker(opts: CandidateCheckerOptions): Candidate
         running = {};
       }
 
+      const semver = Object.entries(stack.services)
+        .filter(([, tracked]) => tracked.track !== 'pinned' && 'semver' in tracked.track)
+        .map(([service]) => service);
+      let tags: Record<string, string | null> = {};
+      if (opts.fs !== undefined && semver.length > 0) {
+        try {
+          tags = await stackImageTags(opts.fs, stack.compose, semver);
+        } catch (err) {
+          // Unreadable now: offer as before; an update re-checks the direction itself.
+          opts.log?.warn({ stack: stack.name, err: err instanceof Error ? err.message : String(err) }, 'could not read the stack’s compose files');
+        }
+      }
+
       const out: Record<string, AgentStackService> = {};
       for (const [service, entry] of entries) {
         const current = running[service] ?? null;
+        const track = stack.services[service]?.track ?? 'pinned';
+        const offered = entry.resolved !== null && entry.resolved.digest !== current && !wouldGoBackwards(track, tags[service] ?? null, entry.resolved.tag);
         out[service] = {
           running: current,
-          candidate: entry.resolved !== null && entry.resolved.digest !== current ? { ...entry.resolved } : null,
+          candidate: offered && entry.resolved !== null ? { ...entry.resolved } : null,
           checkedAt: entry.checkedAt,
           error: entry.error,
         };

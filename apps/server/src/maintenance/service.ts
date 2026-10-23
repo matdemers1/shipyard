@@ -33,6 +33,7 @@ import type { ServiceDeps } from '../deps.js';
 import { isUniqueViolation, lockRefusal, type DeployCaller } from '../deploys/service.js';
 import { decodeCursor, encodeCursor } from '../deploys/timeline.js';
 import { parseStackManifest, stackLockRefusal } from '../stack-updates/service.js';
+import { ownerLockKey, restoreLockRefusal } from './lock.js';
 
 /**
  * Volume backups, restores and deletes, and prunes, server side (SHP-T-17.3; SHP-ADR-012,
@@ -301,6 +302,23 @@ function notOwned(v: IndexedVolume): Refusal {
   return refusal('volume_not_owned', `${v.volume.name} belongs to no Deployed app or adopted stack: it is ${what}.`);
 }
 
+/**
+ * Under the owner lock, inside the restore's insert transaction: `locked` when a deploy of the app
+ * took its lock, or another restore of the owner was recorded, since `ownerBusyRefusal` looked.
+ */
+async function restoreRaceRefusal(tx: Prisma.TransactionClient, owner: VolumeOwner): Promise<Refusal | null> {
+  if (owner.kind === 'app') {
+    const holder = await tx.deployTarget.findFirst({
+      where: { app: { name: owner.name }, state: { in: [...ACTIVE_STATES] } },
+      select: { deployId: true, deploy: { select: { requesterLabel: true } } },
+    });
+    if (holder !== null) {
+      return refusal('locked', `${owner.name} is being deployed by ${holder.deploy.requesterLabel}.`, `Wait for deploy ${holder.deployId} to finish, then request again.`);
+    }
+  }
+  return restoreLockRefusal(tx, owner);
+}
+
 /** `locked` while the owner is being deployed, updated, acted on or restored (SHP-REQ-202). */
 export async function ownerBusyRefusal(db: Db, owner: VolumeOwner): Promise<Refusal | null> {
   if (owner.kind === 'app') {
@@ -354,16 +372,28 @@ interface QueueInput {
   body: JobBody;
   requester: RequesterInfo;
   audit: AuditWriter;
+  /**
+   * Advisory locks taken, in one transaction, before `guard` runs and the row is inserted: what
+   * makes a check-then-insert safe against another request or server process doing the same.
+   */
+  lockKeys?: readonly string[];
+  /** Checked under `lockKeys`, inside the insert's transaction; a refusal inserts nothing. */
+  guard?: (tx: Prisma.TransactionClient) => Promise<Refusal | null>;
+  /** The refusal when a partial unique index refuses the insert. */
+  onUnique?: Refusal;
+  /** The row's created_at; the database's clock when absent (the nightly scheduler passes its own). */
+  createdAt?: Date;
 }
 
 /** Records a checked job `queued`, audits `maintenance.request`, and wakes the agent's poll. */
-async function queueJob(deps: ServiceDeps, input: QueueInput): Promise<MaintenanceStatus> {
+async function queueJob(deps: ServiceDeps, input: QueueInput): Promise<MaintenanceStatus | Refusal> {
   const { db, bus, logger } = deps;
   const id = randomUUID();
   // Validated before it is stored: what the agent is handed is checked like everything it sends.
   const job = MaintenanceJob.parse({ jobId: id, ...input.body });
-  const row = await db.maintenanceJob.create({
+  const insert = (client: Prisma.TransactionClient) => client.maintenanceJob.create({
     data: {
+      ...(input.createdAt === undefined ? {} : { createdAt: input.createdAt }),
       id,
       agentId: input.agentId,
       kind: job.kind,
@@ -381,6 +411,25 @@ async function queueJob(deps: ServiceDeps, input: QueueInput): Promise<Maintenan
     },
     select: MAINTENANCE_SELECT,
   });
+  let row: MaintenanceRow;
+  try {
+    if (input.lockKeys === undefined && input.guard === undefined) {
+      row = await insert(db);
+    } else {
+      const out = await db.$transaction(async (tx) => {
+        for (const key of [...(input.lockKeys ?? [])].sort()) {
+          await tx.$executeRaw`select pg_advisory_xact_lock(hashtext(${key}))`;
+        }
+        const why = input.guard === undefined ? null : await input.guard(tx);
+        return why ?? (await insert(tx));
+      });
+      if ('code' in out) return out;
+      row = out;
+    }
+  } catch (err) {
+    if (input.onUnique !== undefined && isUniqueViolation(err)) return input.onUnique;
+    throw err;
+  }
   const kind = job.kind;
   const detail: Record<string, unknown> = { ...job };
   delete detail['jobId'];
@@ -470,6 +519,10 @@ export async function requestVolumeRestore(deps: ServiceDeps, caller: DeployCall
     body: { kind: 'volume-restore', volume, owner, archiveId: input.archiveId },
     requester: requesterOf(actor),
     audit: caller.audit,
+    // The deploy paths insert under the same lock (`assertNoRestore`): checked again under it, a
+    // deploy and a restore that raced cannot both be recorded (SHP-REQ-202).
+    lockKeys: [ownerLockKey(owner)],
+    guard: (tx) => restoreRaceRefusal(tx, owner),
   });
 }
 
@@ -487,6 +540,19 @@ export async function requestVolumeDelete(deps: ServiceDeps, caller: DeployCalle
   if (!found.volume.orphan) {
     const by = found.volume.mountedBy.length === 0 ? 'a container' : found.volume.mountedBy.join(', ');
     return refusal('volume_in_use', `${volume} is mounted by ${by}; only a volume nothing mounts can be deleted.`);
+  }
+  // A Shipped or Operated volume is never offered for deletion, even unmounted after a compose
+  // down (SHP-REQ-203, SHP-ADR-012): compose's project label still names its app or stack.
+  const project = found.volume.composeProject;
+  const owner =
+    project === null ? undefined : (await ownersByAgent(deps.db)).owners.find((o) => o.agentId === found.agentId && o.project === project);
+  if (owner !== undefined) {
+    const what = owner.owner.kind === 'app' ? 'Deployed app' : 'adopted stack';
+    return refusal(
+      'volume_not_owned',
+      `${volume} belongs to the ${what} ${owner.owner.name} (compose project ${project ?? ''}), though nothing mounts it now; Shipyard never deletes it.`,
+      `Remove the volume from ${owner.owner.name}'s compose file first, or retire ${owner.owner.name}; then delete it.`,
+    );
   }
   const cannot = capabilityRefusal(deps.bus, found.agentId, 'maintenance');
   if (cannot !== null) return cannot;
@@ -563,7 +629,13 @@ export async function requestPrune(deps: ServiceDeps, caller: DeployCaller, inpu
   if (from === null || job?.success !== true || job.data.kind !== 'prune' || !job.data.dryRun) return required;
   if (from.state !== 'succeeded' || from.agentId !== agentId || from.finishedAt === null) return required;
   if (Date.now() - from.finishedAt.getTime() > DRY_RUN_FRESH_MS) return required;
+  // One dry run, one prune (SHP-REQ-205): a second would remove what the first already judged.
+  const used = refusal('dry_run_required', 'That dry run was already used; run a new one.', 'Run a dry run (dryRun: true), then prune with fromDryRunId set to its ID.');
+  const earlier = await db.maintenanceJob.findFirst({ where: { dryRunOf: from.id, state: { not: 'refused' } }, select: { id: true } });
+  if (earlier !== null) return used;
   return queueJob(deps, {
+    // Two prunes racing past the check: `maintenance_job_one_prune_per_dry_run` lets one through.
+    onUnique: used,
     agentId,
     volume: null,
     owner: null,
@@ -857,7 +929,11 @@ export async function recordMaintenanceResult(deps: ServiceDeps, row: Maintenanc
       },
     });
     if (updated.count === 0) return false;
-    if (archive !== undefined) {
+    const held = archive === undefined ? null : await tx.volumeArchive.findUnique({ where: { archiveId: archive.archiveId }, select: { agentId: true } });
+    if (archive !== undefined && held !== null && held.agentId !== row.agentId) {
+      // An archive ID another agent already reported stays that agent's, as in the report mirror.
+      logger.error({ maintenanceId: row.id, archiveId: archive.archiveId, owner: held.agentId, reporter: row.agentId }, 'backup result names an archive of another agent; not mirrored');
+    } else if (archive !== undefined) {
       if (archive.volume === row.volume) {
         const data = archiveData(row.agentId, archive, now);
         await tx.volumeArchive.upsert({ where: { archiveId: archive.archiveId }, create: { archiveId: archive.archiveId, ...data }, update: data });
@@ -981,11 +1057,8 @@ export async function queueNightlyBackups(deps: ServiceDeps, now: Date = new Dat
       if (missing.length > 0) logger.warn({ owner: o.owner, missing }, 'nightly backup names volumes the owner does not mount; skipped');
     }
     for (const v of volumes) {
-      const busy = await db.maintenanceJob.findFirst({
-        where: { kind: 'volume-backup', volume: v.volume.name, agentId: v.agentId, state: { in: [...ACTIVE_MAINTENANCE_STATES] } },
-        select: { id: true },
-      });
-      if (busy !== null) continue;
+      const dayStart = new Date(now);
+      dayStart.setHours(0, 0, 0, 0);
       const status = await queueJob(deps, {
         agentId: v.agentId,
         volume: v.volume.name,
@@ -993,7 +1066,27 @@ export async function queueNightlyBackups(deps: ServiceDeps, now: Date = new Dat
         body: { kind: 'volume-backup', volume: v.volume.name, owner: o.owner, quiesce: settings.quiesce },
         requester: { kind: 'system', label: NIGHTLY_REQUESTER_LABEL },
         audit: directAudit(db, NIGHTLY_ACTOR),
+        createdAt: now,
+        // Idempotent per agent, volume and server-local day: two server processes ticking in the
+        // same hour serialise on this lock, and the second sees the first's row.
+        lockKeys: [`shipyard:nightly:${v.agentId}:${v.volume.name}`],
+        guard: async (tx) => {
+          const already = await tx.maintenanceJob.findFirst({
+            where: {
+              kind: 'volume-backup',
+              volume: v.volume.name,
+              agentId: v.agentId,
+              OR: [
+                { state: { in: [...ACTIVE_MAINTENANCE_STATES] } },
+                { requesterKind: 'system', requesterLabel: NIGHTLY_REQUESTER_LABEL, createdAt: { gte: dayStart } },
+              ],
+            },
+            select: { id: true },
+          });
+          return already === null ? null : refusal('conflict', `${v.volume.name} already has a backup queued, running or taken tonight.`);
+        },
       });
+      if ('code' in status) continue;
       queued.push(status.id);
     }
   }

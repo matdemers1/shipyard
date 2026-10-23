@@ -32,9 +32,13 @@ const NO_SUCH_JOB = refusal('not_found', 'No such maintenance job.', 'List maint
 
 /**
  * Null when the session making the request stepped up within the last ten minutes; otherwise
- * `step_up_required` (SHP-REQ-202, SHP-REQ-203). Unlike `staleStepUp`, which asks only native
- * sessions, a volume restore or delete asks it of console sessions too: the row's `step_up_at` is
- * read fresh for either kind, so a step-up taken a moment ago in another tab counts.
+ * `step_up_required` (SHP-REQ-202, SHP-REQ-203, SHP-ADR-012). Unlike `staleStepUp`, which asks it
+ * of native sessions only, a volume restore or delete asks it of every session: the console's
+ * cookie session and a native one (D3 Constellation) alike. A person on D3 Constellation with a
+ * fresh step-up counts as a person, the same as for approvals there (SHP-ADR-012), so a native
+ * session with a fresh step-up may restore and delete; an API token never can, whatever its
+ * owner's role (SHP-REQ-204, refused before this runs). The row's `step_up_at` is read fresh for
+ * either kind, so a step-up taken a moment ago in another tab counts.
  */
 export async function requireFreshStepUp(db: Db, req: Request, now: number = Date.now()): Promise<Refusal | null> {
   const sessionId = req.nativeSession?.id ?? req.consoleSessionId;

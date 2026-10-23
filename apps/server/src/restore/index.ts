@@ -14,6 +14,7 @@ import type { Db, Prisma } from '../db.js';
 import type { ServiceDeps } from '../deps.js';
 import { sendRefusal } from '../errors.js';
 import { isUniqueViolation, lockRefusal } from '../deploys/service.js';
+import { RestoreLockedError, assertNoRestore } from '../maintenance/lock.js';
 
 /**
  * Mounted at /api/apps · guided restore (SHP-T-5.6, SHP-REQ-083..085, SHP-D-038).
@@ -243,9 +244,17 @@ export function restoreRouter(deps: ServiceDeps): Router {
     let deployId: string | undefined;
     for (let attempt = 0; attempt < 2 && deployId === undefined; attempt += 1) {
       try {
-        const row = await db.deploy.create({ data, select: { id: true } });
+        // Not while a volume restore holds the app (SHP-T-17.3, SHP-REQ-202).
+        const row = await db.$transaction(async (tx) => {
+          await assertNoRestore(tx, [name]);
+          return tx.deploy.create({ data, select: { id: true } });
+        });
         deployId = row.id;
       } catch (err) {
+        if (err instanceof RestoreLockedError) {
+          sendRefusal(res, err.refusal);
+          return;
+        }
         if (!isUniqueViolation(err)) throw err;
         const locked = await lockRefusal(db, name, app.id);
         if (locked !== null) {

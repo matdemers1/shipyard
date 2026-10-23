@@ -14,6 +14,7 @@ import type { ServiceDeps } from '../deps.js';
 import { assertDeployable, retiredRefusal } from '../apps/drift.js';
 import { assertNotFrozen } from '../freeze/service.js';
 import { callerCanActOn, isUniqueViolation, lockRefusal, type DeployCaller } from '../deploys/service.js';
+import { RestoreLockedError, assertNoRestore } from '../maintenance/lock.js';
 
 /**
  * Scheduled deploys (SHP-T-5.4, SHP-REQ-080, SHP-REQ-081, SHP-D-039, SHP-D-051).
@@ -407,6 +408,8 @@ async function fireOne(deps: ServiceDeps, row: DueRow, now: Date): Promise<FireO
     const fired = await db.$transaction(async (tx) => {
       const taken = await tx.schedule.updateMany({ where: { id: row.id, firedAt: null, cancelledAt: null }, data: { firedAt: now } });
       if (taken.count === 0) return false;
+      // Not while a volume restore holds the app (SHP-T-17.3, SHP-REQ-202).
+      await assertNoRestore(tx, [row.appName]);
       // The unique index decides the lock (G4), exactly as for a deploy requested now.
       const moved = await tx.deployTarget.updateMany({ where: { id: row.targetId, state: 'queued' }, data: { state: 'locked' } });
       if (moved.count === 0) throw new RacedError();
@@ -424,6 +427,7 @@ async function fireOne(deps: ServiceDeps, row: DueRow, now: Date): Promise<FireO
     if (err instanceof RacedError) {
       return refused(refusal('conflict', 'The scheduled deploy was no longer waiting when it fired.', 'Schedule it again.'));
     }
+    if (err instanceof RestoreLockedError) return refused(err.refusal);
     if (!isUniqueViolation(err)) throw err;
     const locked =
       (await lockRefusal(db, row.appName, row.appId)) ??

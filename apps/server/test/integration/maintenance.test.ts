@@ -24,6 +24,7 @@ import { createDb, type Db, type Prisma } from '../../src/db.js';
 import type { ServiceDeps } from '../../src/deps.js';
 import { lockRefusal } from '../../src/deploys/service.js';
 import { Bus } from '../../src/events.js';
+import { fireDueSchedules } from '../../src/schedules/index.js';
 import {
   MAINTENANCE_STALE_MS,
   NIGHTLY_REQUESTER_LABEL,
@@ -106,8 +107,8 @@ async function seedOwners(webBackups?: Manifest['volumeBackups'], forgejoBackups
   });
 }
 
-function volume(name: string, mountedBy: string[]): HostVolume {
-  return { name, driver: 'local', sizeBytes: 1000, mountedBy, composeProject: null, orphan: mountedBy.length === 0, createdAt: null };
+function volume(name: string, mountedBy: string[], composeProject: string | null = null): HostVolume {
+  return { name, driver: 'local', sizeBytes: 1000, mountedBy, composeProject, orphan: mountedBy.length === 0, createdAt: null };
 }
 
 const CONTAINERS: HostContainer[] = [
@@ -121,7 +122,9 @@ const VOLUMES: HostVolume[] = [
   volume('web_cache', ['web-server-1']),
   volume('forgejo_data', ['forgejo-server-1']),
   volume('plex_config', ['plex-1']),
-  volume('old_stuff', []),
+  volume('old_stuff', [], 'plex'),
+  // Web's own volume, unmounted after a compose down: still web's, never deletable.
+  volume('web_old', [], 'web'),
 ];
 
 async function seedSnapshot(forAgent: string, disk: HostInventory['disk'] = { dataRoot: { path: '/DATA', freeBytes: 50, totalBytes: 100 }, dockerRoot: null }): Promise<void> {
@@ -216,8 +219,21 @@ async function runJob(state: 'succeeded' | 'failed' | 'refused', extra: Record<s
   return job;
 }
 
+const SHA = 'b'.repeat(40);
+
+/** A restore of web_data, queued by a stepped-up admin; returns its status and the admin. */
+async function queueWebRestore(): Promise<{ status: MaintenanceStatus; admin: { cookie: string; userId: string; email: string } }> {
+  const admin = await steppedUpAdmin();
+  const a = archive('web_data');
+  await seedArchive(a);
+  const res = await post({ cookie: admin.cookie }, '/api/volumes/web_data/restore', { archiveId: a.archiveId, confirmVolume: 'web_data' });
+  expect(res.status).toBe(202);
+  return { status: res.body as MaintenanceStatus, admin };
+}
+
+/** The audit actions on an entity, sorted: rows written in the same millisecond have no order. */
 async function auditActions(entityId: string): Promise<string[]> {
-  return (await db.auditEvent.findMany({ where: { entityId }, orderBy: { at: 'asc' } })).map((a) => a.action);
+  return (await db.auditEvent.findMany({ where: { entityId } })).map((a) => a.action).sort();
 }
 
 beforeEach(async () => {
@@ -280,7 +296,7 @@ describe('POST /api/volumes/:volume/backup (SHP-REQ-201)', () => {
     const listed = await get({ cookie }, '/api/volumes/web_data/archives');
     expect(listed.body).toEqual({ archives: [taken] });
 
-    expect(await auditActions(status.id)).toEqual(['maintenance.request', 'maintenance.dispatched', 'maintenance.progress', 'maintenance.result']);
+    expect(await auditActions(status.id)).toEqual(['maintenance.dispatched', 'maintenance.progress', 'maintenance.request', 'maintenance.result']);
     const progressAudit = await db.auditEvent.findFirstOrThrow({ where: { entityId: status.id, action: 'maintenance.progress' } });
     expect(progressAudit.after).toEqual({ state: 'running', step: 'archiving' });
 
@@ -361,15 +377,12 @@ describe('POST /api/volumes/:volume/restore (SHP-REQ-202, SHP-REQ-204)', () => {
     expect(err(await post({ cookie: admin.cookie }, '/api/volumes/web_data/restore', body)).code).toBe('step_up_required');
     expect(await db.maintenanceJob.count()).toBe(0);
 
-    const refusals = await db.auditEvent.findMany({ where: { action: 'maintenance.refused', entityId: 'web_data' }, orderBy: { at: 'asc' } });
-    expect(refusals.map((r) => [r.actorType, (r.after as { code: string }).code])).toEqual([
-      ['token', 'forbidden'],
-      ['user', 'forbidden'],
-      ['user', 'step_up_required'],
-      ['user', 'step_up_required'],
-    ]);
-    expect(refusals[0]?.actorTokenId).toBe(token.id);
-    expect(refusals[1]?.actorUserId).toBe(deployer.userId);
+    const refusals = await db.auditEvent.findMany({ where: { action: 'maintenance.refused', entityId: 'web_data' } });
+    const who = (r: (typeof refusals)[number]): string => `${r.actorTokenId ?? r.actorUserId ?? ''}:${(r.after as { code: string }).code}`;
+    expect(refusals.map(who).sort()).toEqual(
+      [`${token.id}:forbidden`, `${deployer.userId}:forbidden`, `${admin.userId}:step_up_required`, `${admin.userId}:step_up_required`].sort(),
+    );
+    expect(refusals.find((r) => r.actorTokenId === token.id)?.actorType).toBe('token');
   });
 
   it('asks a native session for a fresh step-up too', async () => {
@@ -465,7 +478,7 @@ describe('POST /api/volumes/:volume/restore (SHP-REQ-202, SHP-REQ-204)', () => {
 
     const job = jobOf(await poll(app, key, ['maintenance', 'actions']));
     expect(job).toEqual({ jobId: status.id, kind: 'volume-restore', volume: 'web_data', owner: { kind: 'app', name: 'web' }, archiveId: a.archiveId });
-    expect(await auditActions(status.id)).toEqual(['maintenance.request', 'maintenance.dispatched']);
+    expect(await auditActions(status.id)).toEqual(['maintenance.dispatched', 'maintenance.request']);
     // A second restore of the same owner is refused while this one holds it.
     expect(err(await post({ cookie: admin.cookie }, '/api/volumes/web_data/restore', { archiveId: a.archiveId, confirmVolume: 'web_data' })).code).toBe('locked');
   });
@@ -744,5 +757,146 @@ describe('GET /api/maintenance/needs-you', () => {
 
     const token = await issueToken(app, cookie, ['web']);
     expect((await get({ token: token.token }, '/api/maintenance/needs-you')).status).toBe(403);
+  });
+});
+
+describe('a restore holds its app against every deploy path (SHP-REQ-202)', () => {
+  it('refuses POST /api/deploys while a restore is queued and while it is dispatched; nothing is inserted', async () => {
+    await poll(app, key, ['maintenance']);
+    const { status, admin } = await queueWebRestore();
+    const queued = await post({ cookie: admin.cookie }, '/api/deploys', { kind: 'deploy', app: 'web', sha: SHA });
+    expect(queued.status).toBe(409);
+    expect(err(queued).code).toBe('locked');
+    expect(err(queued).message).toContain(status.id);
+    expect(jobOf(await poll(app, key, ['maintenance']))?.jobId).toBe(status.id);
+    const dispatched = await post({ cookie: admin.cookie }, '/api/deploys', { kind: 'deploy', app: 'web', sha: SHA });
+    expect(err(dispatched).code).toBe('locked');
+    expect(await db.deploy.count()).toBe(0);
+    // Nothing reaches the agent either.
+    expect((await poll(app, key, ['maintenance'])).target).toBeNull();
+  });
+
+  it('refuses a group deploy with a member under restore, all members or none', async () => {
+    await poll(app, key, ['maintenance']);
+    await db.app.update({ where: { name: 'web' }, data: { groupName: 'pair' } });
+    await db.app.create({ data: { name: 'api', agentId, manifestYaml: JSON.stringify(appManifest('api')), manifestSha256: '0'.repeat(64), reportedAt: new Date(), groupName: 'pair' } });
+    const { admin } = await queueWebRestore();
+    const res = await post({ cookie: admin.cookie }, '/api/deploys', { kind: 'deploy', group: 'pair', sha: SHA });
+    expect(res.status).toBe(409);
+    expect(err(res).code).toBe('locked');
+    expect(await db.deploy.count()).toBe(0);
+    expect(await db.deployTarget.count()).toBe(0);
+  });
+
+  it('refuses a schedule that fires during a restore, recording the refusal', async () => {
+    await poll(app, key, ['maintenance']);
+    const deployer = await signIn(db, 'deployer');
+    const scheduled = await post({ cookie: deployer.cookie }, '/api/schedules', { app: 'web', sha: SHA, fireAt: new Date(Date.now() + 60_000).toISOString() });
+    expect(scheduled.status).toBe(201);
+    const { status } = await queueWebRestore();
+    const [outcome] = await fireDueSchedules(deps, new Date(Date.now() + 2 * 60_000));
+    expect(outcome).toMatchObject({ result: 'refused', refusal: { code: 'locked' } });
+    expect(outcome !== undefined && outcome.result === 'refused' ? outcome.refusal.message : '').toContain(status.id);
+    expect(await db.deployTarget.count({ where: { state: 'locked' } })).toBe(0);
+    expect((await poll(app, key, ['maintenance'])).target).toBeNull();
+  });
+
+  it('never hands out a target queued before the restore while the restore runs, then does', async () => {
+    await poll(app, key, ['maintenance']);
+    const { status } = await queueWebRestore();
+    // A deploy that slipped in before the restore was claimed (as if by a race), and a dry run.
+    const deploy = await db.deploy.create({ data: { requestedSha: SHA, requesterLabel: 'earlier', createdAt: new Date(Date.now() - 60_000) } });
+    const target = await db.deployTarget.create({ data: { deployId: deploy.id, appId: webId, state: 'locked', createdAt: new Date(Date.now() - 60_000) } });
+    await db.maintenanceJob.update({ where: { id: status.id }, data: { state: 'dispatched', dispatchedAt: new Date() } });
+    const deployer = await signIn(db, 'deployer');
+    const dry = await post({ cookie: deployer.cookie }, '/api/deploys', { kind: 'deploy', app: 'web', sha: SHA, dryRun: true });
+    expect(dry.status).toBe(201);
+
+    const blocked = await poll(app, key, ['maintenance']);
+    expect(blocked.target).toBeNull();
+    expect(jobOf(blocked)).toBeUndefined();
+    expect((await db.deployTarget.findUniqueOrThrow({ where: { id: target.id } })).dispatchedAt).toBeNull();
+
+    await agentPost(app, key, `/api/agent/maintenance/${status.id}/result`, { jobId: status.id, state: 'succeeded' });
+    expect((await poll(app, key, ['maintenance'])).target?.targetId).toBe(target.id);
+  });
+
+  it('a deploy and a restore requested at once never both get in', async () => {
+    await poll(app, key, ['maintenance']);
+    const admin = await steppedUpAdmin();
+    for (let round = 0; round < 6; round += 1) {
+      await db.maintenanceJob.deleteMany();
+      await db.deployTarget.deleteMany();
+      await db.deploy.deleteMany();
+      const a = archive('web_data');
+      await seedArchive(a);
+      const [deploy, restore] = await Promise.all([
+        post({ cookie: admin.cookie }, '/api/deploys', { kind: 'deploy', app: 'web', sha: SHA }),
+        post({ cookie: admin.cookie }, '/api/volumes/web_data/restore', { archiveId: a.archiveId, confirmVolume: 'web_data' }),
+      ]);
+      const ok = [deploy.status === 201, restore.status === 202].filter(Boolean);
+      expect(ok).toHaveLength(1);
+      expect([deploy.status, restore.status]).toContain(409);
+    }
+  });
+});
+
+describe('the rework guards (SHP-T-17.3)', () => {
+  it("refuses to delete an unmounted volume compose labels as a Deployed app's (volume_not_owned)", async () => {
+    await poll(app, key, ['maintenance']);
+    const admin = await steppedUpAdmin();
+    const res = await post({ cookie: admin.cookie }, '/api/volumes/web_old/delete', { confirmVolume: 'web_old' });
+    expect(res.status).toBe(409);
+    expect(err(res).code).toBe('volume_not_owned');
+    expect(err(res).message).toContain('Deployed app web');
+    expect(err(res).fix).toContain("web's compose file");
+    expect(await db.maintenanceJob.count()).toBe(0);
+  });
+
+  it("never lets a backup result take over another agent's archive row", async () => {
+    await poll(app, key, ['maintenance']);
+    const stranger = makeKey();
+    const strangerId = await enrol(db, stranger);
+    const theirs = archive('web_data');
+    await seedArchive(theirs, strangerId);
+    const { cookie } = await signIn(db, 'deployer');
+    await post({ cookie }, '/api/volumes/web_data/backup');
+    await runJob('succeeded', { archive: { ...theirs, sizeBytes: 1 } });
+    const row = await db.volumeArchive.findUniqueOrThrow({ where: { archiveId: theirs.archiveId } });
+    expect(row.agentId).toBe(strangerId);
+    expect(row.sizeBytes).toBe(4096n);
+  });
+
+  it('two scheduler ticks at once queue the night once', async () => {
+    await db.app.deleteMany();
+    await db.stack.deleteMany();
+    await seedOwners({ volumes: ['web_data'], retain: 7, quiesce: false, nightly: true, beforeUpdate: false }, { retain: 3, quiesce: true, nightly: true, beforeUpdate: false });
+    const at = new Date(2026, 9, 25, 3, 2);
+    const [a, b] = await Promise.all([nightlyBackups(deps, 3).tick(at), nightlyBackups(deps, 3).tick(at)]);
+    expect((a?.length ?? 0) + (b?.length ?? 0)).toBe(2);
+    expect(await db.maintenanceJob.count()).toBe(2);
+    // Even once tonight's backups finished, the same night does not queue them again.
+    await db.maintenanceJob.updateMany({ data: { state: 'succeeded', finishedAt: new Date() } });
+    expect(await nightlyBackups(deps, 3).tick(new Date(2026, 9, 25, 3, 50))).toEqual([]);
+  });
+
+  it('one dry run authorises one prune; a refused prune does not use it up', async () => {
+    await poll(app, key, ['maintenance']);
+    const { cookie } = await signIn(db, 'deployer');
+    const dry = (await post({ cookie }, '/api/prune', {})).body as MaintenanceStatus;
+    await runJob('succeeded', { prune: { items: [], reclaimableBytes: 0, reclaimedBytes: null } });
+    const first = await post({ cookie }, '/api/prune', { dryRun: false, fromDryRunId: dry.id });
+    expect(first.status).toBe(202);
+    await runJob('refused');
+    const again = await post({ cookie }, '/api/prune', { dryRun: false, fromDryRunId: dry.id });
+    expect(again.status).toBe(202);
+    const used = await post({ cookie }, '/api/prune', { dryRun: false, fromDryRunId: dry.id });
+    expect(used.status).toBe(409);
+    expect(err(used)).toMatchObject({ code: 'dry_run_required', message: 'That dry run was already used; run a new one.' });
+
+    const dry2 = (await post({ cookie }, '/api/prune', {})).body as MaintenanceStatus;
+    await db.maintenanceJob.update({ where: { id: dry2.id }, data: { state: 'succeeded', finishedAt: new Date() } });
+    const racing = await Promise.all([1, 2, 3].map(() => post({ cookie }, '/api/prune', { dryRun: false, fromDryRunId: dry2.id })));
+    expect(racing.map((r) => r.status).sort()).toEqual([202, 409, 409]);
   });
 });

@@ -22,6 +22,7 @@ import {
   type CreateDeployOptions,
   type DeployCaller,
 } from '../deploys/service.js';
+import { RestoreLockedError, assertNoRestore } from '../maintenance/lock.js';
 
 /**
  * Rollouts — "Roll all" (SHP-T-12.1; SHP-REQ-151, SHP-REQ-152, SHP-REQ-153).
@@ -225,6 +226,8 @@ export async function createRollout(
   for (let attempt = 0; attempt < 2 && accepted === undefined; attempt += 1) {
     try {
       accepted = await db.$transaction(async (tx) => {
+        // Not while a volume restore holds a member (SHP-T-17.3, SHP-REQ-202).
+        await assertNoRestore(tx, members.map((m) => m.name));
         const rollout = await tx.rollout.create({ data: { requesterLabel: label }, select: { id: true } });
         const base = Date.now();
         const deployIds: string[] = [];
@@ -252,6 +255,7 @@ export async function createRollout(
         return { rolloutId: rollout.id, deployIds };
       });
     } catch (err) {
+      if (err instanceof RestoreLockedError) return err.refusal;
       if (!isUniqueViolation(err)) throw err;
       for (const member of members) {
         const locked = await lockRefusal(db, member.name, member.id);

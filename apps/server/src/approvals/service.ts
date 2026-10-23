@@ -6,6 +6,7 @@ import { callerCanActOn, isUniqueViolation, lockRefusal, type DeployCaller } fro
 import { assertDeployable } from '../apps/drift.js';
 import { assertNotFrozen } from '../freeze/service.js';
 import { expireHeldStackUpdates } from '../stack-updates/service.js';
+import { RestoreLockedError, assertNoRestore } from '../maintenance/lock.js';
 
 /**
  * Approvals (SHP-T-3.6). A token-requested deploy of an app whose manifest says
@@ -184,6 +185,8 @@ export async function approveDeploy(deps: ServiceDeps, decider: Decider, deployI
         data: { approvedAt: now, ...(userId !== undefined ? { decidedByUserId: userId } : {}) },
       });
       if (marked.count === 0) return 'raced';
+      // Not while a volume restore holds the app (SHP-T-17.3, SHP-REQ-202).
+      await assertNoRestore(tx, [pending.target.app.name]);
       const moved = await tx.deployTarget.updateMany({
         where: { id: pending.target.id, state: 'awaiting_approval' },
         data: { state: 'locked' },
@@ -192,7 +195,9 @@ export async function approveDeploy(deps: ServiceDeps, decider: Decider, deployI
       return 'ok';
     });
   } catch (err) {
-    if (err instanceof RacedError) {
+    if (err instanceof RestoreLockedError) {
+      return err.refusal;
+    } else if (err instanceof RacedError) {
       outcome = 'raced';
     } else if (isUniqueViolation(err)) {
       const locked = await lockRefusal(deps.db, pending.target.app.name, pending.target.app.id);

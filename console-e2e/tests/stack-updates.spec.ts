@@ -100,8 +100,8 @@ for (const width of ['desktop', 'phone'] as const satisfies readonly Width[]) {
         await expect(row.getByText(STACK_FIXTURE.running, { exact: true })).toBeVisible();
         await expect(row.getByText(STACK_FIXTURE.candidate, { exact: true })).toBeVisible();
         await expect(row.locator('code')).toHaveCount(2);
-        // GET /api/stacks does not carry the manifest's backup step today, so the chain leaves Back up out.
-        await expect(sheet.locator('.shp-stack-chain__chip')).toHaveText(['Re-check ^1.140', 'Pull by digest', 'Swap the image line', 'Health', 'Soak 2 min']);
+        // GET /api/stacks carries the backup step's service and first two argv words.
+        await expect(sheet.locator('.shp-stack-chain__chip')).toHaveText(['Re-check ^1.140', 'Back up (immich-admin backup)', 'Pull by digest', 'Swap the image line', 'Health', 'Soak 2 min']);
         await expect(sheet.getByText(new RegExp(`^If health or the soak fails, Shipyard puts ${STACK_FIXTURE.running.replaceAll('.', '\\.')} back by its digest — images only\\.`))).toBeVisible();
         await expect(sheet.getByRole('button', { name: `Update to ${STACK_FIXTURE.candidate}` })).toBeVisible();
         await expectClean(page, `Update sheet (${theme}, ${width})`, width);

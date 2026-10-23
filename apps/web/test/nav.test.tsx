@@ -6,7 +6,7 @@ import { RETIRED_ROUTES } from '../src/routes';
 import { meReply, mockFetch, type Reply } from './fetch';
 import { viewport } from './setup';
 
-/** Three destinations (SHP-REQ-159) and a redirect for every retired route (SHP-REQ-169). */
+/** Four destinations (SHP-REQ-159, SHP-ADR-009) and a redirect for every retired route (SHP-REQ-169). */
 
 function renderAt(path: string) {
   window.history.replaceState(null, '', path);
@@ -45,13 +45,13 @@ function systemReply(agent: Record<string, unknown> | null): Reply {
 }
 
 describe('the sidebar', () => {
-  it('lists exactly Apps, Activity and Settings, with the current one marked', async () => {
+  it('lists exactly Apps, Activity, Host and Settings, with the current one marked', async () => {
     mockFetch({ 'GET /api/auth/me': meReply('admin') });
     renderAt('/activity');
     const nav = await screen.findByRole('navigation', { name: 'Main' });
     const links = within(nav).getAllByRole('link');
-    expect(links.map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Settings']);
-    expect(links.map((l) => l.getAttribute('href'))).toEqual(['/', '/activity', '/settings']);
+    expect(links.map((l) => l.textContent)).toEqual(['Apps', 'Activity', 'Host', 'Settings']);
+    expect(links.map((l) => l.getAttribute('href'))).toEqual(['/', '/activity', '/host', '/settings']);
     expect(within(nav).getByRole('link', { name: 'Activity' })).toHaveAttribute('aria-current', 'page');
     expect(within(nav).getByRole('link', { name: 'Apps' })).not.toHaveAttribute('aria-current');
   });
@@ -106,7 +106,7 @@ describe('the sidebar', () => {
 });
 
 describe('the phone tab bar', () => {
-  it('carries the same three destinations and the Needs-you count, and navigates without a reload', async () => {
+  it('carries the same four destinations and the Needs-you count, and navigates without a reload', async () => {
     viewport.desktop = false;
     mockFetch({
       'GET /api/auth/me': meReply('viewer'),
@@ -116,7 +116,7 @@ describe('the phone tab bar', () => {
     const user = userEvent.setup();
     renderAt('/settings/tokens');
     const bar = await screen.findByRole('navigation', { name: 'Primary' });
-    expect(within(bar).getAllByRole('link').map((l) => l.getAttribute('href'))).toEqual(['/', '/activity', '/settings']);
+    expect(within(bar).getAllByRole('link').map((l) => l.getAttribute('href'))).toEqual(['/', '/activity', '/host', '/settings']);
     expect(await within(bar).findByRole('link', { name: 'Apps, 1 need you' })).toBeInTheDocument();
     expect(within(bar).getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page');
 

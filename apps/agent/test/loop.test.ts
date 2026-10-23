@@ -11,6 +11,8 @@ import {
   createTargetRunner,
   fileTargetStore,
   memoryTargetStore,
+  parsePollResponse,
+  pollBody,
   reportLeftovers,
   runLoop,
   toTargetResult,
@@ -228,6 +230,90 @@ describe('runLoop: builds (SHP-T-7.9)', () => {
     release();
     await running;
     expect(tracked.inFlight()).toBe(false);
+  });
+});
+
+describe('runLoop: lifecycle actions and logs (SHP-T-15.3)', () => {
+  const ACTION = { actionId: '44444444-4444-4444-8444-444444444444', target: { kind: 'app' as const, name: 'web' }, verb: 'restart' as const, service: 'web' };
+  const LOGS = { logsId: '66666666-6666-4666-8666-666666666666', containerId: 'c'.repeat(64), tail: 200, follow: true, followSeconds: 300 };
+
+  it('parsePollResponse keeps action and logs, and still drops what it does not know', () => {
+    const unknown: string[][] = [];
+    expect(parsePollResponse({ target: null, action: ACTION }, (k) => unknown.push(k))).toEqual({ target: null, action: ACTION });
+    expect(parsePollResponse({ target: null, logs: LOGS, later: 1 }, (k) => unknown.push(k))).toEqual({ target: null, logs: LOGS });
+    expect(unknown).toEqual([['later']]);
+    expect(() => parsePollResponse({ target: null, action: { ...ACTION, verb: 'rm -rf' } })).toThrow();
+  });
+
+  it('pollBody advertises actions and logs whenever their runners are wired, beside build while one can be taken', () => {
+    expect(pollBody({ actions: true, logs: true })).toEqual({ waitSeconds: 25, capabilities: ['actions', 'logs'] });
+    expect(pollBody({ builds: { canTake: () => true, offer: () => undefined }, actions: true, logs: true })).toEqual({
+      waitSeconds: 25,
+      capabilities: ['build', 'actions', 'logs'],
+    });
+    expect(pollBody({ builds: { canTake: () => false, offer: () => undefined }, actions: true, logs: true })).toEqual({ waitSeconds: 25, capabilities: ['actions', 'logs'] });
+    expect(pollBody(undefined)).toEqual({ waitSeconds: 25 });
+  });
+
+  it('hands actions and log reads to their runners and keeps polling (they run in the background)', async () => {
+    const stop = new AbortController();
+    const actions: unknown[] = [];
+    const logs: unknown[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, action: ACTION };
+      if (i === 1) return { target: null, logs: LOGS };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      actions: { offer: (job) => void actions.push(job) },
+      logs: { offer: (job) => void logs.push(job) },
+      log: quiet,
+      signal: stop.signal,
+      sleep: noSleep,
+    });
+    expect(actions).toEqual([ACTION]);
+    expect(logs).toEqual([LOGS]);
+    expect(client.calls).toHaveLength(3);
+    expect(client.calls[0]?.body).toEqual({ waitSeconds: 25, capabilities: ['actions', 'logs'] });
+  });
+
+  it('ignores an action or log read sent to an agent without the runner, and survives a runner that throws', async () => {
+    const stop = new AbortController();
+    const warnings: object[] = [];
+    const client = fakeClient((_call, i) => {
+      if (i === 0) return { target: null, action: ACTION };
+      if (i === 1) return { target: null, logs: LOGS };
+      stop.abort();
+      return { target: null };
+    });
+    await runLoop({
+      client,
+      runTarget: () => Promise.resolve(),
+      logs: {
+        offer: () => {
+          throw new Error('boom');
+        },
+      },
+      log: { ...quiet, warn: (obj: object) => void warnings.push(obj) },
+      signal: stop.signal,
+      sleep: noSleep,
+    });
+    expect(warnings).toEqual([{ actionId: ACTION.actionId }]);
+    expect(client.calls).toHaveLength(3);
+  });
+
+  it('trackInFlight knows which app a running target is for', async () => {
+    let release: () => void = () => undefined;
+    const tracked = trackInFlight(() => new Promise<void>((r) => (release = r)));
+    const running = tracked.run(target({ app: 'web' }));
+    expect(tracked.inFlightFor('web')).toBe(true);
+    expect(tracked.inFlightFor('api')).toBe(false);
+    release();
+    await running;
+    expect(tracked.inFlightFor('web')).toBe(false);
   });
 });
 

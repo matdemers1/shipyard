@@ -28,6 +28,23 @@ export interface UnfinishedDeploy {
   lastStep: string | undefined;
 }
 
+/**
+ * The journal step naming a lifecycle action (SHP-REQ-187, SHP-ADR-010). An action is one
+ * `start`/`end` pair under its action ID (in `deployId`) and the app or stack name (in `app`):
+ * written before compose runs, ended after it, so a crash in between is visible on restart. These
+ * lines are not a deploy: `unfinished()` ignores them, so restart recovery never rolls an app back
+ * because an action on it was interrupted.
+ */
+export const ACTION_STEP = 'action';
+
+/** A lifecycle action whose `start` line has no `end` line: the agent stopped mid-action. */
+export interface UnfinishedAction {
+  actionId: string;
+  /** The app or stack name. */
+  name: string;
+  detail: Record<string, unknown> | undefined;
+}
+
 export class Journal {
   constructor(
     private readonly fs: FsPort,
@@ -110,6 +127,7 @@ export class Journal {
     const order: string[] = [];
 
     for (const entry of entries) {
+      if (entry.step === ACTION_STEP) continue;
       let state = deploys.get(entry.deployId);
       if (!state) {
         state = { app: entry.app, detail: undefined, ended: false, openSteps: [] };
@@ -150,6 +168,17 @@ export class Journal {
       });
     }
     return unfinished;
+  }
+
+  /** Lifecycle actions started and never ended, in the order they started (SHP-REQ-187). */
+  async unfinishedActions(): Promise<UnfinishedAction[]> {
+    const open = new Map<string, UnfinishedAction>();
+    for (const entry of await this.readAll()) {
+      if (entry.step !== ACTION_STEP) continue;
+      if (entry.phase === 'start') open.set(entry.deployId, { actionId: entry.deployId, name: entry.app, detail: entry.detail });
+      else open.delete(entry.deployId);
+    }
+    return [...open.values()];
   }
 }
 

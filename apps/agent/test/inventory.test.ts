@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AgentReport, HostInventory, type Manifest } from '@shipyard/schema';
+import { AgentReport, HostInventory, type Manifest, type StackManifest } from '@shipyard/schema';
 import type {
   DockerPort,
   FsPort,
@@ -123,6 +123,14 @@ describe('deriveTier (SHP-REQ-175)', () => {
     expect(deriveTier(null, manifests)).toEqual({ tier: 'observed', app: null });
     expect(deriveTier('somebody-elses', manifests)).toEqual({ tier: 'observed', app: null });
     expect(deriveTier('toy-x1', [])).toEqual({ tier: 'observed', app: null });
+  });
+
+  it('is operated, with the stack, for a project an adopted stack names (SHP-REQ-183); an app manifest still wins', () => {
+    const stacks = [{ name: 'immich', compose: { files: ['/DATA/AppData/immich/docker-compose.yml'], project: 'immich' } }] as StackManifest[];
+    expect(deriveTier('immich', manifests, stacks)).toEqual({ tier: 'operated', app: 'immich' });
+    const shadow = [{ name: 'shadow', compose: { files: ['/srv/web/compose.yml'], project: 'web' } }] as StackManifest[];
+    expect(deriveTier('web', manifests, shadow)).toEqual({ tier: 'shipped', app: 'web' });
+    expect(deriveTier('other', manifests, stacks)).toEqual({ tier: 'observed', app: null });
   });
 });
 
@@ -430,5 +438,30 @@ describe('buildReport with an inventory (SHP-REQ-175)', () => {
     );
     expect(seen).toEqual([['toy']]);
     expect(report.host?.containers[0]).toMatchObject({ tier: 'shipped', app: 'toy' });
+  });
+
+  it("reports adopted stacks and tiers their compose project's containers operated (SHP-REQ-183)", async () => {
+    const stackYaml = ['kind: stack', 'name: immich', 'compose:', '  files: [/DATA/AppData/immich/docker-compose.yml]', '  project: immich', ''].join('\n');
+    const files = new Map([[`${ROOT}/stacks/immich.yml`, stackYaml]]);
+    const fs: FsPort = {
+      ...emptyFs,
+      readFile: (path) => (files.has(path) ? Promise.resolve(files.get(path) ?? '') : Promise.reject(new Error('ENOENT'))),
+      exists: (path) => Promise.resolve(path === `${ROOT}/apps` || path === `${ROOT}/stacks`),
+      list: (dir) => Promise.resolve([...files.keys()].filter((p) => p.startsWith(`${dir}/`)).map((path) => ({ path, size: 1, mtimeMs: 0 }))),
+    };
+    const { collect } = collector({
+      containers: [record({ id: ID('b'), name: 'immich-server-1', compose: { project: 'immich', service: 'server' } }), record({ id: ID('c'), name: 'loose', compose: null })],
+    });
+    const report = await buildReport({ ...base(), fs, inventory: collect }, ROOT, versions);
+    expect(AgentReport.parse(report)).toEqual(report);
+    expect(report.stacks).toHaveLength(1);
+    expect(report.stacks?.[0]).toMatchObject({ manifest: { kind: 'stack', name: 'immich', updates: 'none' } });
+    expect(report.stacks?.[0]?.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(report.host?.containers.find((c) => c.name === 'immich-server-1')).toMatchObject({ tier: 'operated', app: 'immich' });
+    expect(report.host?.containers.find((c) => c.name === 'loose')).toMatchObject({ tier: 'observed', app: null });
+  });
+
+  it('carries no stacks key when nothing is adopted', async () => {
+    expect('stacks' in (await buildReport(base(), ROOT, versions))).toBe(false);
   });
 });

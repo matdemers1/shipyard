@@ -9,6 +9,7 @@ import {
   type HostContainer,
   type HostFilesystem,
   type Manifest,
+  type StackManifest,
 } from '@shipyard/schema';
 import type {
   DockerPort,
@@ -54,17 +55,22 @@ export interface Tier {
 
 /**
  * A container's tier (SHP-ADR-008), from this host's manifests only. A compose project some loaded
- * manifest names is `shipped` — the whole project belongs to that app, including services the
- * manifest does not map, such as its database. Anything else is `observed`.
- *
- * `operated` slots in here once the `kind: stack` manifest exists (SHP-ADR-010, SHP-P-15): a stack
- * manifest naming the project gives `operated` with the stack's name as `app`. Until then it is
- * never produced.
+ * app manifest names is `shipped` — the whole project belongs to that app, including services the
+ * manifest does not map, such as its database. A project an adopted stack names (a manifest under
+ * `<data root>/stacks/`, SHP-ADR-010, SHP-REQ-183) is `operated`, with the stack's name as `app`.
+ * Anything else is `observed`. An app manifest wins over a stack naming the same project: the
+ * deploy engine owns that project, and an adoption must never demote it.
  */
-export function deriveTier(composeProject: string | null, manifests: readonly Pick<Manifest, 'name' | 'compose'>[]): Tier {
+export function deriveTier(
+  composeProject: string | null,
+  manifests: readonly Pick<Manifest, 'name' | 'compose'>[],
+  stacks: readonly Pick<StackManifest, 'name' | 'compose'>[] = [],
+): Tier {
   if (composeProject !== null) {
     const owner = manifests.find((m) => m.compose.project === composeProject);
     if (owner !== undefined) return { tier: 'shipped', app: owner.name };
+    const stack = stacks.find((m) => m.compose.project === composeProject);
+    if (stack !== undefined) return { tier: 'operated', app: stack.name };
   }
   return { tier: 'observed', app: null };
 }
@@ -142,7 +148,9 @@ export interface InventoryOptions {
  * the Docker port cannot list the host (a fake without the inventory calls); rejects when the
  * Engine fails, which `buildReport` logs before sending the report without `host`.
  */
-export function createInventoryCollector(opts: InventoryOptions): (manifests: readonly Manifest[]) => Promise<HostInventory | undefined> {
+export function createInventoryCollector(
+  opts: InventoryOptions,
+): (manifests: readonly Manifest[], stacks?: readonly StackManifest[]) => Promise<HostInventory | undefined> {
   const { docker, dataRoot } = opts;
   const now = opts.now ?? Date.now;
   const statfs = opts.statfs ?? nodeStatfs;
@@ -232,7 +240,7 @@ export function createInventoryCollector(opts: InventoryOptions): (manifests: re
     return out;
   };
 
-  return async (manifests) => {
+  return async (manifests, stacks = []) => {
     const readContainers = docker.hostContainers?.bind(docker);
     const readVolumes = docker.hostVolumes?.bind(docker);
     const readDf = docker.systemDf?.bind(docker);
@@ -276,7 +284,7 @@ export function createInventoryCollector(opts: InventoryOptions): (manifests: re
     const inventory: HostInventory = {
       sampledAt: new Date(now()).toISOString(),
       containers: containers
-        .map((c) => hostContainer(c, imageById.get(c.imageId), manifests, stats.get(c.id) ?? null))
+        .map((c) => hostContainer(c, imageById.get(c.imageId), manifests, stacks, stats.get(c.id) ?? null))
         .filter((c): c is HostContainer => c !== null)
         .sort((a, b) => a.name.localeCompare(b.name)),
       volumes: volumes
@@ -313,10 +321,11 @@ function hostContainer(
   c: HostContainerRecord,
   image: HostImageRecord | undefined,
   manifests: readonly Manifest[],
+  stacks: readonly StackManifest[],
   stats: ContainerStats | null,
 ): HostContainer | null {
   if (!STATES.has(c.state)) return null;
-  const { tier, app } = deriveTier(c.compose?.project ?? null, manifests);
+  const { tier, app } = deriveTier(c.compose?.project ?? null, manifests, stacks);
   return {
     id: c.id,
     name: c.name,

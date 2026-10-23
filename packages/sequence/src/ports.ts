@@ -148,6 +148,44 @@ export interface RunningContainer {
   startedAt?: string;
   /** Docker's restart count for the container. */
   restartCount?: number;
+  /**
+   * The healthcheck's status from the container's inspect, `none` when it has no healthcheck. A
+   * lifecycle action waits for `healthy` where there is one (SHP-REQ-184). Optional so existing
+   * fakes need not set it; absent reads as no healthcheck.
+   */
+  health?: 'healthy' | 'unhealthy' | 'starting' | 'none';
+}
+
+// Container logs and redaction (SHP-ADR-011, SHP-REQ-189, SHP-REQ-190). Read-only Engine calls.
+
+export interface ContainerLogsOptions {
+  /** Lines from the end; at most `LOGS_MAX_TAIL`. */
+  tail: number;
+  /** ISO; only lines from then on. */
+  since?: string;
+  /** Keep the stream open for new lines until `signal` aborts. */
+  follow: boolean;
+  /** Aborting ends a followed stream: the iterator finishes without throwing. */
+  signal?: AbortSignal;
+}
+
+/** One demultiplexed log line, its Docker timestamp split off. Not yet redacted. */
+export interface ContainerLogLine {
+  stream: 'stdout' | 'stderr';
+  /** ISO, from Docker's `timestamps` prefix; null when the line carried none. */
+  at: string | null;
+  /** Without the timestamp and the line ending. */
+  text: string;
+}
+
+/**
+ * What the agent needs from a container's inspect to redact its logs, and nothing more: the Env
+ * *values* (never their names, never sent or logged) and compose's project label, which finds
+ * the manifest or stack whose env files apply.
+ */
+export interface ContainerRedactionFacts {
+  envValues: string[];
+  composeProject: string | null;
 }
 
 export interface HealthResponse {
@@ -289,6 +327,16 @@ export interface DockerPort {
   containerStats?(id: string): Promise<HostStatsSample | null>;
   /** Total and free bytes on the Docker root, through the same read-only helper as `freeBytes`. */
   dockerRootSpace?(): Promise<DockerRootSpace>;
+
+  // Logs (SHP-T-15.3): read-only, optional for the same reason; the agent refuses a log read when
+  // the configured port lacks either, rather than sending lines it cannot redact.
+  /**
+   * The container's logs, both streams, demultiplexed, oldest first (`timestamps: true`). Without
+   * `follow` it ends after the tail; with it, when `signal` aborts or the container's log ends.
+   */
+  containerLogs?(id: string, options: ContainerLogsOptions): AsyncIterable<ContainerLogLine>;
+  /** The container's Env values and compose project, or null when the Engine does not know the ID. */
+  inspectEnv?(id: string): Promise<ContainerRedactionFacts | null>;
 }
 
 // ─── BuildKit (SHP-T-7.7) ────────────────────────────────────────────────────

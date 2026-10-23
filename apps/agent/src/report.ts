@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
-import { Digest, REPORTED_RELEASES_PER_APP, type AgentBuildCache, type AgentReport, type HostInventory, type Manifest } from '@shipyard/schema';
-import { loadManifests, type DockerPort, type FsPort, type LedgerEntry, type LoadedManifest } from '@shipyard/sequence';
+import {
+  Digest,
+  REPORTED_RELEASES_PER_APP,
+  type AgentBuildCache,
+  type AgentReport,
+  type HostInventory,
+  type Manifest,
+  type StackManifest,
+} from '@shipyard/schema';
+import { loadManifests, loadStacks, type DockerPort, type FsPort, type LedgerEntry, type LoadedManifest, type LoadedStack } from '@shipyard/sequence';
 import type { AgentClient } from './client.js';
 
 /**
@@ -16,6 +24,9 @@ import type { AgentClient } from './client.js';
  * With an inventory port it also carries the host inventory (SHP-T-14.4, SHP-REQ-175): every
  * container, volume, image and network Docker knows about, read afresh for each report. It is
  * deliberately not part of `reportHash`, which exists to notice manifest edits.
+ *
+ * It carries the stacks adopted under `<data root>/stacks/` too (SHP-REQ-183), hashed like the
+ * apps, and they are part of `reportHash`: an edited stack file is reported at once.
  */
 
 export interface ReportPorts {
@@ -31,10 +42,10 @@ export interface ReportPorts {
   /** The BuildKit cache manager's snapshot (SHP-T-7.11); absent when builds are disabled. */
   buildCache?: () => AgentBuildCache | undefined;
   /**
-   * The host inventory, given the manifests just loaded (they decide each container's tier).
-   * Absent, or resolving undefined: the report carries no `host`, and the server keeps its last one.
+   * The host inventory, given the manifests and stacks just loaded (they decide each container's
+   * tier). Absent, or resolving undefined: the report carries no `host`, and the server keeps its last one.
    */
-  inventory?: (manifests: readonly Manifest[]) => Promise<HostInventory | undefined>;
+  inventory?: (manifests: readonly Manifest[], stacks: readonly StackManifest[]) => Promise<HostInventory | undefined>;
   /** How long a report waits for the inventory; default `INVENTORY_DEADLINE_MS`. Tests shorten it. */
   inventoryDeadlineMs?: number;
   log?: ReportLog;
@@ -64,15 +75,27 @@ export function combinedHash(entries: Iterable<{ name: string; sha256: string }>
   return createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
-/** The combined hash of the manifests currently on disk. Throws as `loadManifests` does. */
-export async function manifestsHash(fs: FsPort, dataRoot: string): Promise<string> {
-  const loaded = await loadManifests(fs, dataRoot);
-  return combinedHash([...loaded].map(([name, m]) => ({ name, sha256: m.sha256 })));
+/** A stack's entry in the combined hash: prefixed, so a stack and an app of one name never collide. */
+function stackKey(name: string): string {
+  return `stack/${name}`;
 }
 
-/** The combined hash of the manifests a report carries. */
+/** The combined hash of the manifests and stacks currently on disk. Throws as `loadManifests` and `loadStacks` do. */
+export async function manifestsHash(fs: FsPort, dataRoot: string): Promise<string> {
+  const loaded = await loadManifests(fs, dataRoot);
+  const stacks = await loadStacks(fs, dataRoot);
+  return combinedHash([
+    ...[...loaded].map(([name, m]) => ({ name, sha256: m.sha256 })),
+    ...[...stacks].map(([name, s]) => ({ name: stackKey(name), sha256: s.sha256 })),
+  ]);
+}
+
+/** The combined hash of the manifests and stacks a report carries. */
 export function reportHash(report: AgentReport): string {
-  return combinedHash(report.apps.map((a) => ({ name: a.manifest.name, sha256: a.manifestSha256 })));
+  return combinedHash([
+    ...report.apps.map((a) => ({ name: a.manifest.name, sha256: a.manifestSha256 })),
+    ...(report.stacks ?? []).map((s) => ({ name: stackKey(s.manifest.name), sha256: s.manifestSha256 })),
+  ]);
 }
 
 /**
@@ -115,16 +138,20 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
     apps.push({ manifest: m.manifest, manifestSha256: m.sha256, running });
   }
 
+  const stacks = [...(await loadStacks(ports.fs, dataRoot)).values()].sort((a, b) => a.manifest.name.localeCompare(b.manifest.name));
+
   const engine = (await ports.engineApiVersion()).trim();
   const releases = await ledgerReleases(ports, loaded);
   const buildCache = ports.buildCache?.();
-  const host = await hostInventory(ports, loaded);
+  const host = await hostInventory(ports, loaded, stacks);
   return {
     agentVersion: versions.agentVersion,
     composeVersion: await composeVersion(ports.docker, loaded),
     engineApiVersion: engine.length > 0 ? engine : UNKNOWN,
     patExpiresAt: versions.patExpiresAt,
     apps,
+    // Absent rather than empty when nothing is adopted, as an older agent's report is.
+    ...(stacks.length === 0 ? {} : { stacks: stacks.map((s) => ({ manifest: s.manifest, manifestSha256: s.sha256 })) }),
     ...(releases === undefined ? {} : { releases }),
     ...(buildCache === undefined ? {} : { buildCache }),
     ...(host === undefined ? {} : { host }),
@@ -137,12 +164,15 @@ export async function buildReport(ports: ReportPorts, dataRoot: string, versions
  * agent's heartbeat and must still reach the server. A collection that outlives its report keeps
  * running, and the next report waits on that one rather than starting another beside it.
  */
-async function hostInventory(ports: ReportPorts, loaded: LoadedManifest[]): Promise<HostInventory | undefined> {
+async function hostInventory(ports: ReportPorts, loaded: LoadedManifest[], stacks: LoadedStack[]): Promise<HostInventory | undefined> {
   const collect = ports.inventory;
   if (collect === undefined) return undefined;
   let pending = inFlight.get(collect);
   if (pending === undefined) {
-    const started = collect(loaded.map((m) => m.manifest)).finally(() => inFlight.delete(collect));
+    const started = collect(
+      loaded.map((m) => m.manifest),
+      stacks.map((s) => s.manifest),
+    ).finally(() => inFlight.delete(collect));
     // Abandoned at the deadline, it may still reject later; that is already logged below or moot.
     started.catch(() => undefined);
     inFlight.set(collect, started);

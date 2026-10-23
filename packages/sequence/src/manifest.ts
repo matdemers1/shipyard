@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 
-import { Manifest, refusal, type Refusal } from '@shipyard/schema';
+import { Manifest, StackManifest, refusal, type Refusal } from '@shipyard/schema';
 import { parse as parseYaml, YAMLParseError } from 'yaml';
 
 import type { FsPort } from './ports.js';
@@ -11,6 +11,10 @@ import type { FsPort } from './ports.js';
  * `<dataRoot>/apps`, validates each against the shared schema, and refuses to start — naming the
  * file and field — if any fails. Directory recursion, other file types and everything else in the
  * data root are ignored.
+ *
+ * Adopted stacks (SHP-ADR-010, SHP-REQ-183) are read the same way from `<dataRoot>/stacks`, apart
+ * from the apps so no deploy path ever reads one: all-or-nothing, hashed, named after their file.
+ * Unlike `apps/`, a missing `stacks/` directory is simply no stacks.
  */
 
 /** One validation problem, always tied to the file and the field path that caused it. */
@@ -30,6 +34,16 @@ export interface LoadedManifest {
 
 /** app name → its loaded manifest. */
 export type LoadedManifests = Map<string, LoadedManifest>;
+
+export interface LoadedStack {
+  manifest: StackManifest;
+  file: string;
+  /** Hex sha256 of the file's exact bytes, reported like an app manifest's (SHP-REQ-036). */
+  sha256: string;
+}
+
+/** stack name → its loaded stack manifest. */
+export type LoadedStacks = Map<string, LoadedStack>;
 
 /** Thrown to refuse to start: aggregates every issue found across every manifest file. */
 export class ManifestLoadError extends Error {
@@ -58,14 +72,45 @@ export async function loadManifests(fs: FsPort, dataRoot: string): Promise<Loade
     throw new ManifestLoadError([{ file: appsDir, path: '', message: 'apps directory does not exist' }]);
   }
 
-  const entries = await fs.list(appsDir);
+  return loadDir(fs, appsDir, Manifest, 'app');
+}
+
+/**
+ * Reads and validates every stack manifest in `<dataRoot>/stacks` (SHP-REQ-183); throws
+ * `ManifestLoadError` on any failure, so one bad file means no stacks at all rather than some.
+ * A data root without a `stacks/` directory has no adopted stacks.
+ */
+export async function loadStacks(fs: FsPort, dataRoot: string): Promise<LoadedStacks> {
+  const stacksDir = `${dataRoot}/stacks`;
+  if (!(await fs.exists(stacksDir))) return new Map();
+  return loadDir(fs, stacksDir, StackManifest, 'stack');
+}
+
+interface NamedSchema<T extends { name: string }> {
+  safeParse(input: unknown): { success: true; data: T } | { success: false; error: { issues: readonly ZodIssueLike[] } };
+}
+
+interface ZodIssueLike {
+  code: string;
+  path: PropertyKey[];
+  message: string;
+  keys?: string[];
+}
+
+async function loadDir<T extends { name: string }>(
+  fs: FsPort,
+  dir: string,
+  schema: NamedSchema<T>,
+  noun: 'app' | 'stack',
+): Promise<Map<string, { manifest: T; file: string; sha256: string }>> {
+  const entries = await fs.list(dir);
   const files = entries
     .map((entry) => entry.path)
     .filter((path) => /\.ya?ml$/i.test(path))
     .toSorted((a, b) => a.localeCompare(b));
 
   const issues: ManifestIssue[] = [];
-  const loaded: LoadedManifests = new Map();
+  const loaded = new Map<string, { manifest: T; file: string; sha256: string }>();
   const nameOwner = new Map<string, string>();
 
   for (const file of files) {
@@ -79,10 +124,10 @@ export async function loadManifests(fs: FsPort, dataRoot: string): Promise<Loade
       continue;
     }
 
-    const result = Manifest.safeParse(parsed);
+    const result = schema.safeParse(parsed);
     if (!result.success) {
       for (const zodIssue of result.error.issues) {
-        if (zodIssue.code === 'unrecognized_keys') {
+        if (zodIssue.code === 'unrecognized_keys' && zodIssue.keys !== undefined) {
           for (const key of zodIssue.keys) {
             issues.push({ file, path: fieldPath([...zodIssue.path, key]), message: `unrecognized key "${key}"` });
           }
@@ -102,7 +147,7 @@ export async function loadManifests(fs: FsPort, dataRoot: string): Promise<Loade
 
     const owner = nameOwner.get(manifest.name);
     if (owner !== undefined) {
-      issues.push({ file, path: 'name', message: `duplicate app name "${manifest.name}", already declared in ${owner}` });
+      issues.push({ file, path: 'name', message: `duplicate ${noun} name "${manifest.name}", already declared in ${owner}` });
       continue;
     }
 

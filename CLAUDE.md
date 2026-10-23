@@ -31,7 +31,10 @@ decisions SHP-D-001…087, risks SHP-R-001…010.
 
 1. **No endpoint, tool or manifest field accepts a command string.** Steps are argv arrays in a
    named compose service (SHP-D-055, SHP-D-044).
-2. The only request data that reaches the host is an **app name and a 40-hex SHA**.
+2. The only request data that reaches the host is an **app or stack name a host-local manifest
+   defines, a verb from a fixed enum, a compose service name, a 40-hex SHA and, for logs, a
+   container ID** (SHP-ADR-008; a registry digest joins them with SHP-P-16). The agent re-checks
+   each against its manifests and the Engine.
 3. The agent opens no port; the server never calls the agent.
 4. A step is **journaled locally before it runs** (SHP-D-029, SHP-D-081).
 5. Success = running digest **and** `org.opencontainers.image.revision` **and** `/health` schema
@@ -43,6 +46,13 @@ decisions SHP-D-001…087, risks SHP-R-001…010.
    a data root".
 9. Forward gates **fail closed** when GitHub/GHCR is unreachable; there is no override.
 10. No telemetry; no stored app secrets; step output redacted, backup/restore output never stored.
+
+## Tiers (SHP-ADR-008)
+
+Every container on the host is **Deployed** (a D3 app, `apps/*.yml`; the API value is `shipped`),
+**Operated** (a third-party stack adopted with `stacks/*.yml`, `docs/runbooks/adopt-stack.md`) or
+**Observed** (seen only). The console never says "Ship" (SHP-REQ-165). Lifecycle verbs need Deployed
+or Operated; logs work for any container and are redacted on the host and never stored (SHP-ADR-011).
 
 ## Conventions
 

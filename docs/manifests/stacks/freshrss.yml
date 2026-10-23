@@ -1,0 +1,11 @@
+# FreshRSS, installed by ZimaOS's app store, adopted into Shipyard's Operated tier (SHP-ADR-010).
+# Host-local: the copy that counts is <data root>/stacks/freshrss.yml (docs/runbooks/adopt-stack.md).
+# updates: none — ZimaOS's app store keeps the image current; Shipyard starts, stops, restarts and
+# recreates it and reads its logs.
+kind: stack
+name: freshrss
+compose:
+  files:
+    - /var/lib/casaos/apps/freshrss/docker-compose.yml
+  project: freshrss
+updates: none
